@@ -662,7 +662,7 @@ impl GuiHandle {
             && self.app.tmux.session_exists(&feature.tmux_session)
         {
             return Err(GuiError::conflict(
-                "Multiple features share this live tmux session. Stop that tmux session before starting or attaching a feature",
+                "Multiple features share this live background session. Stop that session before starting or opening a feature",
             ));
         }
         Ok(())
@@ -999,7 +999,7 @@ impl GuiHandle {
         self.app.tmux.kill_session(tmux_session).map_err(|error| GuiError {
             kind: GuiErrorKind::Internal,
             message: format!(
-                "Recovery could not be saved, and the newly started tmux session '{tmux_session}' could not be stopped: {error}"
+                "Recovery could not be saved, and the newly started background session '{tmux_session}' could not be stopped: {error}"
             ),
         })?;
         // A failed DB write leaves the attempted recovery in memory. Restore

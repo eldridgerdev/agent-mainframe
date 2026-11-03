@@ -319,7 +319,7 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             }
             if !harnesses(app)?.contains(harness) {
                 return Err(GuiError::conflict(
-                    "This harness is unavailable or disabled for this project",
+                    "This agent is unavailable or disabled for this project",
                 ));
             }
             if start.is_some() != end.is_some() {
@@ -380,7 +380,7 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             }
             if !harnesses(app)?.contains(&turn_data.harness) {
                 return Err(GuiError::conflict(
-                    "The answering harness is unavailable or disabled for this project",
+                    "The answering agent is unavailable or disabled for this project",
                 ));
             }
             let harness = turn_data.harness.clone();
@@ -489,7 +489,7 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             };
             if !harnesses(app)?.contains(&pending.harness) {
                 return Err(GuiError::conflict(
-                    "This harness is now unavailable or disabled; cancel the AI call",
+                    "This agent is now unavailable or disabled; cancel the AI call",
                 ));
             }
             fresh(state(&app.mode)?)?;

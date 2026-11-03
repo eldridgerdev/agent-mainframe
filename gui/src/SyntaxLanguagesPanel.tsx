@@ -78,7 +78,7 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
   function close() { if (!inFlight.current) { if (confirmation) setConfirmation(null); else onClose(); } }
   const busy = loading || requesting || !!operation?.running;
   return <Modal label="Syntax languages" title="Syntax languages" size="lg" onClose={close} dismissable={!requesting}
-    subtitle="Parsers shared by the desktop and TUI. Your open views and drafts stay in place."
+    subtitle="Parsers shared by the desktop app and AMF's terminal app. Your open views and drafts stay in place."
     footer={<><button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void load(true)}>Refresh languages</button>
       <button type="button" className="btn btn-ghost" disabled={requesting} onClick={close}>Close manager</button></>}>
     <p className="muted small">Install or repair clones a grammar from GitHub and compiles it with your C compiler. Uninstall removes its parser and managed source checkout. Files in your project stay unchanged.</p>

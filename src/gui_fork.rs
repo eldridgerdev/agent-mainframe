@@ -844,7 +844,7 @@ fn begin(gui: &mut GuiHandle, request: &ForkConfirmRequest) -> GuiResult<Begin> 
     if serde_json::to_value(&current_hook).ok() != serde_json::to_value(&prepared.hook).ok() {
         gui.fork.drop_record(&request.token);
         return Err(GuiError::conflict(
-            "The project's worktree hook changed since the preview; prepare the fork again",
+            "The project's setup script changed since the preview; prepare the fork again",
         ));
     }
     let hook_plan = match validate_request(gui.app_for_workflow(), &prepared, request, &new_branch)
@@ -901,7 +901,7 @@ fn validate_request(
     }
     if !app.allows_agent_for_repo(&repo, &request.agent) {
         return Err(GuiError::conflict(format!(
-            "Harness '{}' is not allowed for this workspace",
+            "Agent '{}' is not allowed for this workspace",
             request.agent.display_name()
         )));
     }
@@ -1153,16 +1153,16 @@ fn execute(gui: &Mutex<GuiHandle>, plan: Plan) -> (Option<Box<Prepared>>, Step) 
                 created(
                     false,
                     hook_report,
-                    vec!["The worktree hook was cancelled and its process tree stopped.".into()],
+                    vec!["The setup script was cancelled and its processes stopped.".into()],
                     format!(
-                        "Forked '{new_branch}' and kept it stopped: cancelled during the worktree hook."
+                        "Forked '{new_branch}' and kept it stopped: cancelled during the setup script."
                     ),
                 ),
             );
         }
         if !ok {
             notes.push(format!(
-                "The worktree hook failed ({}); the fork was created anyway.",
+                "The setup script failed ({}); the fork was created anyway.",
                 detail.unwrap_or_else(|| "no detail".into())
             ));
         }
@@ -1947,7 +1947,7 @@ mod tests {
         let hook = hook.unwrap();
         assert!(!hook.succeeded && !hook.cancelled);
         assert_eq!(hook.detail.as_deref(), Some("broken"));
-        assert!(notes.iter().any(|n| n.contains("hook failed")));
+        assert!(notes.iter().any(|n| n.contains("setup script failed")));
         assert!(!started);
     }
 

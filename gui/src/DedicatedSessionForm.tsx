@@ -109,7 +109,7 @@ export default function DedicatedSessionForm({ workflow, expected, onCreated, on
       </p>
       {error && <p className="callout callout-danger" role="alert">{error} <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setError(null); setReload((n) => n + 1); }}>Refresh</button></p>}
       {catalog && <>
-        <Field label="Harness">
+        <Field label="Agent">
           <select value={agent} disabled={busy || !!done} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
             {catalog.agents.map((a) => <option key={a.agent} value={a.agent} disabled={!!a.unavailable}>{a.label}{a.unavailable ? ` (unavailable)` : ""}</option>)}
           </select>

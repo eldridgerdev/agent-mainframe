@@ -86,7 +86,7 @@ fn save_at(path: &Path, revision: &str, mut rows: Vec<PresetRow>) -> GuiResult<P
             .is_some_and(|stored| stored.preset == row.preset);
         if !stored_unchanged && !row.preset.mode.supports_agent(&row.preset.agent) {
             return Err(anyhow::anyhow!(
-                "Preset \"{}\": Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.",
+                "Preset \"{}\": Codex does not support Vibeless. Choose Vibe or SuperVibe, or another agent.",
                 row.preset.name
             )
             .into());

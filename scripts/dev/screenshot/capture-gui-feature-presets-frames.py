@@ -189,7 +189,7 @@ try:
     unchanged()
     input_field('Preset name', 'Shipping')
     input_field('Branch prefix', 'ship')
-    input_field('Harness', 'opencode')
+    input_field('Agent', 'opencode')
     input_field('Mode', 'supervibe')
     input_field('Planning', 'quick')
     for label in ['Review','Chrome','Remote Control']: toggle(label)
@@ -208,7 +208,7 @@ try:
     assert saved['extension']['feature_presets'][1]['future_row']=='untouched'
     unchanged()
     input_field('Stored preset','3'); click('Delete preset'); click('Add preset')
-    input_field('Preset name','Launchable'); input_field('Harness','codex'); input_field('Mode','vibe'); click('Save presets')
+    input_field('Preset name','Launchable'); input_field('Agent','codex'); input_field('Mode','vibe'); click('Save presets')
     wait('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Save presets")?.disabled')
     assert [p['name'] for p in config()['extension']['feature_presets']]==['Shipping','Shared','Hidden Pi','Launchable']
     click('Cancel'); click('Feature presets')

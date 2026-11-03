@@ -206,7 +206,7 @@ fn project_view(input: &PendingInput, context: usize) -> SupervisedEditView {
     let answered = proceed_signal.is_some_and(Path::exists);
     let unavailable = match (proceed_signal, non_empty(input.response_file.as_deref())) {
         (None, _) | (_, None) => {
-            Some("This request has no reply path; answer it from the AMF TUI.".to_string())
+            Some("This request has no reply path; answer it from AMF's terminal app.".to_string())
         }
         _ if !answered && input.notification_type == "change-reason" && !opencode_edit_is_waiting(input) => {
             Some("The agent is no longer waiting for this edit (or this legacy request has no waiting owner).".to_string())

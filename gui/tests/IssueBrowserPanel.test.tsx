@@ -173,7 +173,7 @@ it("seeds the harness from the project's preferred one, not the first listed", a
   backend({ issue_browser_list: () => list, issue_fix_preview: () => preview({ preferred_agent: "codex" }), issue_fix_create: () => created });
   mount();
   await openIssue("7");
-  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("codex");
+  expect((screen.getByLabelText("Agent") as HTMLSelectElement).value).toBe("codex");
   const create = await screen.findByRole("button", { name: "Create feature" });
   await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(create);
@@ -185,7 +185,7 @@ it("falls back to the first offered harness when the preferred one is not offere
   backend({ issue_browser_list: () => list, issue_fix_preview: () => preview({ preferred_agent: "pi" }) });
   mount();
   await openIssue("7");
-  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("claude");
+  expect((screen.getByLabelText("Agent") as HTMLSelectElement).value).toBe("claude");
 });
 
 it("keeps the user's edits across Reload issue and refreshes only untouched fields", async () => {

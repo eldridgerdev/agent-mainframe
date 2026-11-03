@@ -51,7 +51,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
           {view.scope === "repo_tree" ? "Show branch changes" : "Show repo tree"}
         </button>
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void onAct({ kind: "refresh" })}>Refresh files</button>
-        <Field label="Answering harness">
+        <Field label="Answer with">
           <select value={view.harness} disabled={busy} onChange={(e) => void onAct({ kind: "settings", harness: e.target.value as AgentSlug, level: view.level })}>
             {view.harnesses.map((h) => <option key={h} value={h}>{h}</option>)}
           </select>

@@ -230,9 +230,9 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                   {scope.label}{scope.available ? "" : ` (unavailable: ${scope.reason ?? "not here"})`}
                 </option>)}
               </select></Field>
-              <Field label="Harness"><select disabled={busy} value={draft.harness ?? ""}
+              <Field label="Agent"><select disabled={busy} value={draft.harness ?? ""}
                 onChange={(event) => setDraft({ ...draft, harness: (event.target.value || null) as AgentSlug | null })}>
-                <option value="">Shared (all harnesses)</option>
+                <option value="">Shared (all agents)</option>
                 {HARNESSES.map((slug) => <option key={slug} value={slug}>{HARNESS_LABELS[slug]} only</option>)}
               </select></Field>
             </div>

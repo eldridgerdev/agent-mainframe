@@ -30,7 +30,7 @@ function mount(element: React.ReactElement, allowed: (projectId: string | null) 
   clients.push(client);
   return render(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
 }
-const offered = () => Array.from((screen.getByLabelText("Harness") as HTMLSelectElement).options).map((option) => option.text);
+const offered = () => Array.from((screen.getByLabelText("Agent") as HTMLSelectElement).options).map((option) => option.text);
 
 it("offers a new feature only the harnesses its project allows and submits one of them", async () => {
   const onSubmit = vi.fn();
@@ -51,13 +51,13 @@ it("follows the chosen project's own list when starting a TODO in a new feature"
     pending={false} onCancel={vi.fn()} onSubmit={onSubmit} />,
     (projectId) => projectId === "one" ? [supported[0], supported[2]] : [supported[3]]);
   await waitFor(() => expect(offered()).toEqual(["Claude", "Codex"]));
-  fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "codex" } });
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "codex" } });
   fireEvent.change(screen.getByLabelText("Project"), { target: { value: "two" } });
   await waitFor(() => expect(offered()).toEqual(["codex — unavailable", "Pi"]));
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   const button = screen.getByRole("button", { name: "Create and start" }) as HTMLButtonElement;
   await waitFor(() => expect(button.disabled).toBe(true));
-  fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "pi" } });
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "pi" } });
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", agent: "pi" }), "none");
@@ -70,5 +70,5 @@ it("blocks creation with actionable error when project defaults cannot be read",
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("project_harness_choices", { projectId: "one" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Invalid JSON");
   expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", true);
-  expect(offered()).toEqual(["Choose a harness…"]);
+  expect(offered()).toEqual(["Choose an agent…"]);
 });

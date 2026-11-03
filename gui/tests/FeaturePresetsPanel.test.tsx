@@ -21,7 +21,7 @@ it("saves every known field with original identity only on explicit Save", async
   vi.mocked(invoke).mockResolvedValueOnce(view).mockImplementationOnce(async (_, payload) => ({ ...payload as object, revision: "rev2" }));
   render(<FeaturePresetsPanel onClose={vi.fn()} />);
   await screen.findByLabelText("Preset name");
-  change("Preset name", "Renamed"); change("Branch prefix", "fix"); change("Harness", "opencode"); change("Mode", "supervibe"); change("Planning", "quick");
+  change("Preset name", "Renamed"); change("Branch prefix", "fix"); change("Agent", "opencode"); change("Mode", "supervibe"); change("Planning", "quick");
   for (const label of ["Review", "Chrome", "Remote Control"]) fireEvent.click(screen.getByLabelText(label));
   expect(invoke).toHaveBeenCalledTimes(1);
   click("Save presets");
@@ -58,7 +58,7 @@ it("refuses duplicate names and locks discard controls during a pending save", a
 it("blocks saving a Codex + Vibeless preset and says why next to the selects", async () => {
   vi.mocked(invoke).mockResolvedValueOnce(view);
   render(<FeaturePresetsPanel onClose={vi.fn()} />);
-  await screen.findByLabelText("Preset name"); change("Harness", "codex"); change("Mode", "vibeless");
+  await screen.findByLabelText("Preset name"); change("Agent", "codex"); change("Mode", "vibeless");
   expect(screen.getByRole("alert").textContent).toContain("Codex does not support Vibeless");
   expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", true);
   change("Mode", "vibe");
@@ -90,7 +90,7 @@ it("prefills presets but preserves subsequent edits and quick-plan selection at 
   const onSubmit = creation({ ...preset, review: true, enable_chrome: true, plan_mode: true, quick_plan: true });
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
   expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "feat/");
-  change("Branch / feature name", "custom/edited"); fireEvent.click(screen.getByRole("checkbox", { name: "Chrome" }));
+  change("Branch / feature name", "custom/edited"); fireEvent.click(screen.getByRole("checkbox", { name: /^Chrome/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Create and plan" })).toHaveProperty("disabled", false));
   click("Create and plan");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "custom/edited", review: true, enable_chrome: false, plan_mode: true }), "quick");
@@ -118,10 +118,10 @@ it("retains an unavailable preset harness visibly and blocks until explicit opt-
   const onSubmit = creation({ ...preset, agent: "codex", mode: "vibe" });
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
   expect(screen.getByText(/not offered for this project/)).toBeTruthy();
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   change("Branch / feature name", "feat/x");
   expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", true);
-  change("Harness", "claude");
+  change("Agent", "claude");
   await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   click("Create feature");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "claude" }), "none");

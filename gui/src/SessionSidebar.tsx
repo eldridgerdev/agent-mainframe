@@ -183,7 +183,7 @@ function Section({
   const completeTodo = section.actions.find((action) => action.kind === "complete_todo");
 
   const button = (action: SidebarAction) => {
-    const title = (text: string) => `${text} (TUI: ${TUI_KEY[action.kind]})`;
+    const title = (text: string) => `${text} (terminal app key: ${TUI_KEY[action.kind]})`;
     switch (action.kind) {
       case "open_plan":
         return <button key={action.kind} type="button" className="sb-action" title={title("Read the current plan")} onClick={onOpenPlan}>Open</button>;

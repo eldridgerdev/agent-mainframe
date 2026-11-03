@@ -134,7 +134,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
       {(kind === "current" || kind === "existing") && <Field label="Agent session"><select value={selected} disabled={busy} onChange={event => edit(() => setSelected(event.target.value))}>
         <option value="">Choose an agent session</option>{rows.map(row => <option key={JSON.stringify(row.target)} value={JSON.stringify(row.target)} disabled={!!row.unavailable}>{row.label}{row.stopped ? " (stopped; draft only)" : ""}{row.unavailable ? ` — ${row.unavailable}` : ""}</option>)}
       </select>{rows.length === 0 && <p>No sessions are available for this destination type.</p>}</Field>}
-      {(kind === "dedicated" || kind === "companion") && <Field label="Agent harness"><select value={agent} disabled={busy} onChange={event => edit(() => setAgent(event.target.value as AgentSlug))}>
+      {(kind === "dedicated" || kind === "companion") && <Field label="Agent"><select value={agent} disabled={busy} onChange={event => edit(() => setAgent(event.target.value as AgentSlug))}>
         {catalog.agents.map(row => <option key={row.agent} value={row.agent} disabled={!!row.unavailable}>{row.label}{row.unavailable ? ` — ${row.unavailable}` : ""}</option>)}
       </select></Field>}
       {kind === "companion" && <>
@@ -151,7 +151,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
         <h3>{preview.value.label}</h3><p>Feedback file: {preview.value.source_path}/.claude/final-review-feedback.md</p>
         {preview.value.destination_path && <p>Destination checkout: {preview.value.destination_path}</p>}
         {preview.value.base_sha && <p>Branch basis: {preview.value.base_branch} at {preview.value.base_sha}</p>}
-        <p>{preview.value.creates_companion ? "Creates a companion checkout and stopped feature, runs the chosen worktree hook, then starts its agent if the source and destination are still fresh." : preview.value.creates_session ? "Creates and starts a dedicated Final Review session." : "Uses the selected existing session without starting it."}</p>
+        <p>{preview.value.creates_companion ? "Creates a companion checkout and stopped feature, runs the project's setup script, then starts its agent if the source and destination are still fresh." : preview.value.creates_session ? "Creates and starts a dedicated Final Review session." : "Uses the selected existing session without starting it."}</p>
         {!fresh && <p role="status">The review changed. Preview again before preparing.</p>}
         {preview.value.resource_warning && <><p role="alert">{preview.value.resource_warning}</p><label className="checkbox"><input type="checkbox" disabled={busy} checked={approved} onChange={event => { if (!pending.current) setApproved(event.target.checked); }} /> Proceed despite this resource warning</label></>}
         <button className="btn btn-primary" disabled={busy || !fresh || (!!preview.value.resource_warning && !approved)} onClick={() => void prepare()}>Prepare destination</button>

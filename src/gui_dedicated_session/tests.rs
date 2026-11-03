@@ -440,7 +440,7 @@ fn a_feature_sharing_a_tmux_session_is_refused() {
     let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
     let failure = error(preview(&mut gui, &req));
     assert_eq!(failure.kind, GuiErrorKind::Conflict);
-    assert!(failure.message.contains("shares a tmux session"));
+    assert!(failure.message.contains("shares a background session"));
 }
 
 #[test]

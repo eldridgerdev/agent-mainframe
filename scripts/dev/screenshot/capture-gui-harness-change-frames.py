@@ -51,7 +51,7 @@ with GuiFrames.from_argv() as frames:
     def action(op, **kwargs): return driver.run({'op':op, **kwargs})
     def batch(*actions): return driver.run({'op':'batch','actions':list(actions)})
     def click(name, scope=None): return action('click',name=name, **({'scope':scope} if scope else {}))
-    def choose(value): return action('select',name='Replacement harness',value=value,scope='[role=dialog]')
+    def choose(value): return action('select',name='New agent',value=value,scope='[role=dialog]')
     def consent(): return click('I understand and confirm this harness change','[role=dialog]')
     def open_dialog():
         batch({'op':'click','name':'More feature actions'},{'op':'click','name':'Change harness…'},

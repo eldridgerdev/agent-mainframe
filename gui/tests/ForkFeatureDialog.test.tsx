@@ -119,7 +119,7 @@ it("requires the project's hook choice before forking and sends it", async () =>
   });
   open();
   await screen.findByLabelText(/Choose setup/);
-  await waitFor(() => expect(screen.getByLabelText(/^Harness/)).toHaveProperty("value", "claude"));
+  await waitFor(() => expect(screen.getByLabelText(/^Agent/)).toHaveProperty("value", "claude"));
   expect(forkButton().disabled).toBe(true);
   fireEvent.change(screen.getByLabelText(/Choose setup/), { target: { value: "Other" } });
   expect(forkButton().disabled).toBe(false);
@@ -199,7 +199,7 @@ it("shows the running phase, blocks closing, and cancels through the backend", a
   await ready();
   fireEvent.click(forkButton());
 
-  expect(await screen.findByText("Running the worktree hook…")).toBeTruthy();
+  expect(await screen.findByText("Running your project's setup script…")).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   expect(onClose).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel fork" }));
@@ -252,7 +252,7 @@ it("will not fork with a harness the project does not offer", async () => {
   await screen.findByLabelText("New branch / feature name");
   await screen.findByText(/pi is not available for this project/);
   expect(forkButton().disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText(/^Harness/), { target: { value: "codex" } });
+  fireEvent.change(screen.getByLabelText(/^Agent/), { target: { value: "codex" } });
   expect(forkButton().disabled).toBe(false);
 });
 

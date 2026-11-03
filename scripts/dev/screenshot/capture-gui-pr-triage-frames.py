@@ -202,7 +202,7 @@ try:
     assert ai_calls() == [] and gh_writes() == []
 
     click("Investigate…")
-    select("Investigating harness", "codex")
+    select("Investigate with", "codex")
     fill("What do you suspect?", "Refunds (negative totals) may round the wrong way.")
     click("Preview AI call")
     wait(has_button("Continue AI call"))

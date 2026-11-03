@@ -228,7 +228,7 @@ try:
 
     click("New override…")
     wait('!!document.querySelector(".overrides-textarea")')
-    choose("Harness", "")
+    choose("Agent", "")
     fill("Template", draft)
     capture("002-editing-feature-override.png", "New override opens the effective template in a local editor. Scope and harness pickers offer only scopes this context allows.", ["Save to scope", "Harness", "Placeholders are not validated", "Save override"], f'document.querySelector(".overrides-textarea").value==={json.dumps(draft)} && document.querySelectorAll(".overrides-editor select")[0].value==="feature" && document.querySelectorAll(".overrides-editor select")[1].value===""')
 

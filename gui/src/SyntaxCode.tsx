@@ -154,13 +154,13 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
   const verb = info.status === "broken" ? "Repair" : "Install";
   return <span className="syntax-badge">
     {info.status === "highlighted"
-      ? <span className="syntax-chip syntax-chip-on" title="Syntax highlighting uses the parser the TUI installed">{info.language}</span>
+      ? <span className="syntax-chip syntax-chip-on" title="Syntax highlighting uses the parser installed for AMF">{info.language}</span>
       : <span className="syntax-chip" title={reason ? `Shown as plain text: ${reason}` : undefined}>Plain text{reason ? ` · ${reason}` : ""}</span>}
     <button type="button" className="btn btn-ghost btn-sm" onClick={openSyntaxLanguages}>Manage syntax languages</button>
     {installable && !running && !confirming && <button type="button" className="btn btn-ghost btn-sm"
       onClick={() => { setError(null); setConfirming(true); }}>{verb} {info.language} parser…</button>}
     {installable && confirming && !running && <span className="syntax-install callout callout-warning" role="group" aria-label={`${verb} ${info.language} parser`}>
-      <p>{verb} the {info.language} parser? AMF clones its tree-sitter grammar from GitHub and compiles it with your C compiler (<code>cc</code>) into AMF's config directory. The TUI uses the same parser.</p>
+      <p>{verb} the {info.language} parser? AMF clones its tree-sitter grammar from GitHub and compiles it with your C compiler (<code>cc</code>) into AMF's config directory. AMF's terminal app uses the same parser.</p>
       <button type="button" className="btn btn-secondary btn-sm" disabled={requesting} onClick={() => setConfirming(false)}>Cancel</button>
       <button type="button" className="btn btn-primary btn-sm" disabled={requesting} onClick={() => void start()}>{requesting && <Spinner />} {verb} parser</button>
     </span>}

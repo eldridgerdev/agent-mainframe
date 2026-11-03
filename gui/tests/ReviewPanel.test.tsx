@@ -582,7 +582,7 @@ it("keeps a multiline question through pre-call cancellation, failed commands an
   fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
   const textbox = screen.getByRole("textbox", { name: "Review question" });
   fireEvent.change(textbox, { target: { value: "Why?\nCheck the helper 🦀" } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Answering harness" }), { target: { value: "codex" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Answer with" }), { target: { value: "codex" } });
   fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: null, end: null, question: "Why?\nCheck the helper 🦀", harness: "codex" }));
   update({ view: { ...view, revision: view.revision + 1, ai: { ...view.ai, precall: { title: "Question", harness: "Codex", preview: "preview", viewing: false } } } });
@@ -599,7 +599,7 @@ it.each(["claude", "codex", "opencode", "pi"])("asks selected source coordinates
   fireEvent.click(screen.getAllByRole("button", { name: "Select line 1" })[0]);
   fireEvent.click(screen.getByRole("button", { name: "Ask about selection" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Why this line?" } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Answering harness" }), { target: { value: harness } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Answer with" }), { target: { value: harness } });
   fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, question: "Why this line?", harness }));
   update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ question: "Why this line?", answer: "An explanation", error: null, focus: "code.rs, new line 1", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, harness }] } } });
@@ -650,7 +650,7 @@ it("retries a failed question about its own file, lines and harness, not the cur
   fireEvent.click(screen.getByText("Review questions (1)"));
   fireEvent.click(screen.getByRole("button", { name: "Retry question" }));
   expect(screen.getByText("Question about code.rs, line 1 – line 1")).toBeTruthy();
-  expect((screen.getByRole("combobox", { name: "Answering harness" }) as HTMLSelectElement).value).toBe("codex");
+  expect((screen.getByRole("combobox", { name: "Answer with" }) as HTMLSelectElement).value).toBe("codex");
   fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: failed.start, end: failed.end, question: "Why this line?", harness: "codex" }));
 });

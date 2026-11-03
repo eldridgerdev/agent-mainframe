@@ -55,7 +55,7 @@ export default function ThemePicker({ onClose, appearance }: { onClose: () => vo
     </div>
     <label className="field">Theme
       <select aria-label="Theme" value={choice} onChange={(event) => setThemePreference(event.target.value)}>
-        <option value="follow-tui">Follow TUI theme</option>
+        <option value="follow-tui">Follow AMF's terminal app theme</option>
         <option value="system">Follow system</option>
         <option value="light">Light</option>
         <option value="dark">Dark</option>
@@ -63,7 +63,7 @@ export default function ThemePicker({ onClose, appearance }: { onClose: () => vo
         {missing && <option value={choice}>Unavailable: {choice}</option>}
       </select>
     </label>
-    <p className="muted small">GUI choices are remembered independently. Follow TUI theme picks up changes made in the TUI within a few seconds.</p>
+    <p className="muted small">The desktop app remembers its own choice. Following the terminal app's theme picks up changes made there within a few seconds.</p>
     {missing && <p role="status">The selected theme is unavailable. Using the system palette until it is restored or another theme is selected.</p>}
     {catalog.isError && <p role="alert">Could not load themes. Built-in choices remain available. <button onClick={() => void catalog.refetch()}>Retry</button></p>}
     {catalog.data && <><p className="small">Custom JSON themes: <span className="mono">{catalog.data.directory}</span>. Files reload automatically.</p>

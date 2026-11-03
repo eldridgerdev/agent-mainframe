@@ -242,7 +242,7 @@ try:
     evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
     assert rows() == after
     capture("004-reuses-existing-session.png", "Reopening the form finds the labelled session and says so: it is reused, nothing new is created, and the button changes to Use existing session.", ["already exists", "Use existing session"])
-    select("Harness", "codex")
+    select("Agent", "codex")
     wait(f'!!document.querySelector("[role=alert]") && {form()}.innerText.includes("already runs Claude")')
     capture("005-other-harness-conflict.png", "Asking for Codex under the same name is a conflict, not a silent reuse: the PR Triage label already runs Claude. No session is created.", ["already runs Claude"], allow_alert=True)
     assert rows() == after

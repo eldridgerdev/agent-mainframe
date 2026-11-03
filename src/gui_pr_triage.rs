@@ -5282,7 +5282,14 @@ mod tests {
                     .contains("older PR head")
         );
         let row = target_row(&view, &shared);
-        assert!(row.stopped && row.unavailable.as_deref().unwrap().contains("tmux session"));
+        assert!(
+            row.stopped
+                && row
+                    .unavailable
+                    .as_deref()
+                    .unwrap()
+                    .contains("background session")
+        );
         // The opened feature shares its tmux session now, so it is listed
         // disabled with the reason instead of vanishing.
         let opened_row = target_row(&view, "fix-agent");
@@ -5292,7 +5299,7 @@ mod tests {
                 .unavailable
                 .as_deref()
                 .unwrap()
-                .contains("tmux session")
+                .contains("background session")
         );
         for absent in [stranger, other_pr, other_src] {
             assert!(

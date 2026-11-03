@@ -240,7 +240,7 @@ try:
     select_line(9)
     click("Ask about selection")
     fill("Review question", "Why does this round before formatting? Check negative totals.")
-    select("Answering harness", "codex")
+    select("Answer with", "codex")
     click("Ask review question")
     wait('document.body.innerText.includes("Continue AI call")')
     approve_call()

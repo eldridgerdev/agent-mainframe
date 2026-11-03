@@ -19,7 +19,7 @@
 //! The list here is therefore the second layer only: each row names the
 //! on-disk request kind (waiting for input, turn ended, edit review, ...), its
 //! message, how old the file is, and where to jump. The first layer is stated
-//! as a limit in [`NeedsAttentionView::limits`] instead of being faked.
+//! as [`NeedsAttentionView::explanation`] instead of being faked.
 //!
 //! # Writes
 //!
@@ -42,10 +42,12 @@ use crate::project::{Feature, Project, ProjectStatus};
 use crate::ui::list::format_age;
 
 /// What the panel says about the part of the TUI's list it cannot reproduce.
-pub const TUI_ONLY_LIMIT: &str = "Question, Completed and Waiting labels come from live hook \
-events that only a running TUI receives and keeps in memory; they are not saved anywhere the \
-desktop app can read. Rows below are the requests hooks left on disk, so a stopped agent that \
-reported only to a TUI is not listed.";
+/// The Question/Completed/Waiting labels come from live hook events that only
+/// a running TUI receives and keeps in memory, so a stopped agent that
+/// reported only to a TUI is not listed. Worded for a GUI user, who has not
+/// met "hook" or "TUI".
+pub const TUI_ONLY_LIMIT: &str = "Only requests saved by the agent's notification are listed. \
+Answers given in the AMF terminal app, or by a stopped agent, may not appear here.";
 
 const MESSAGE_MAX_CHARS: usize = 240;
 
@@ -84,6 +86,9 @@ pub struct NeedsAttentionView {
     /// Session waits not listed because the agent is working again; the TUI
     /// retires these on the same signal.
     pub hidden_resumed: usize,
+    /// Why an agent might be missing from the list: what the GUI cannot see.
+    pub explanation: String,
+    /// Counts of requests left out, one sentence each.
     pub limits: Vec<String>,
 }
 
@@ -150,7 +155,7 @@ fn build(app: &App) -> GuiResult<NeedsAttentionView> {
         .collect();
     let stale_after = app.config.waiting_stale_threshold();
     let mut view = NeedsAttentionView {
-        limits: vec![TUI_ONLY_LIMIT.to_string()],
+        explanation: TUI_ONLY_LIMIT.to_string(),
         ..Default::default()
     };
     let now = SystemTime::now();
@@ -413,7 +418,7 @@ mod tests {
         assert_eq!(session.session_id, fx.target.session_id);
         assert_eq!(session.feature_id, fx.target.feature_id);
         // The TUI-only limit is always stated.
-        assert!(view.limits[0].contains("only a running TUI"));
+        assert!(view.explanation.contains("AMF terminal app"));
     }
 
     #[test]

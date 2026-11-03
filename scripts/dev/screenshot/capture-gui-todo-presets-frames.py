@@ -296,7 +296,7 @@ try:
     capture('008-edited-direct-launch.png', 'After applying a project preset, manual branch, planning and Chrome edits stay authoritative. Direct creation will use OpenCode, SuperVibe and review, with Chrome off.',
             ['Start in a new feature','Start directly','Create and start','Review','Chrome'],
             'Array.from(document.querySelectorAll("input")).some(e=>e.value==="launch/edited-invoice")')
-    no_reservation(); click('Create and start')
+    no_reservation(); click('Create and start'); click('Create in SuperVibe')  # the Shared preset is SuperVibe
     wait('document.body.innerText.includes("Offline planning fixture ready")')
     wait('document.querySelector(`textarea[aria-label="Draft prompt"]`)?.value.includes("Implement invoice guard")')
     created=rows("SELECT workdir,agent,mode,review,plan_mode,enable_chrome,id FROM features WHERE branch='launch/edited-invoice'")

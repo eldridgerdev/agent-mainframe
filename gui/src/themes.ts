@@ -18,17 +18,20 @@ export interface ThemeCatalog {
   directory: string;
 }
 const key = "amf.gui.theme";
+/** With nothing saved, the desktop follows the system's light/dark setting.
+ * "follow-tui" (match the terminal app's theme) is an explicit choice. */
+export const DEFAULT_THEME_PREFERENCE = "system";
 const listeners = new Set<() => void>();
 let preference: string | undefined;
 export function readThemePreference(): string {
   if (preference !== undefined) return preference;
-  try { preference = window.localStorage.getItem(key) || "follow-tui"; }
-  catch { preference = "follow-tui"; }
+  try { preference = window.localStorage.getItem(key) || DEFAULT_THEME_PREFERENCE; }
+  catch { preference = DEFAULT_THEME_PREFERENCE; }
   return preference;
 }
 export function setThemePreference(value: string) {
   try {
-    if (value === "follow-tui") window.localStorage.removeItem(key);
+    if (value === DEFAULT_THEME_PREFERENCE) window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);
   } catch { /* In-memory switching still works when storage is unavailable. */ }
   receiveThemePreference(value);
@@ -43,7 +46,7 @@ export function useThemePreference() {
   return useSyncExternalStore((listener) => {
     listeners.add(listener);
     return () => { listeners.delete(listener); };
-  }, readThemePreference, () => "follow-tui");
+  }, readThemePreference, () => DEFAULT_THEME_PREFERENCE);
 }
 export function resolveTheme(catalog: ThemeCatalog | undefined, choice: string): GuiTheme | undefined {
   if (["light", "dark", "system"].includes(choice)) {

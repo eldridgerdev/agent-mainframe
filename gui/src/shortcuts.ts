@@ -125,7 +125,7 @@ const BASE_SHORTCUTS = [
   { id: "menu.edge", keys: ["Home", "End"], label: "First or last menu item", group: "Dialogs and menus", scope: "menu", handler: "external", source: "ui.tsx (Menu)" },
   { id: "menu.choose", keys: ["Enter"], label: "Choose the menu item", group: "Dialogs and menus", scope: "menu", handler: "external", source: "ui.tsx (Menu)" },
   { id: "menu.close", keys: ["Tab"], label: "Close the menu", group: "Dialogs and menus", scope: "menu", handler: "external", source: "ui.tsx (Menu)" },
-  { id: "tabs.move", keys: ["ArrowLeft", "ArrowRight"], label: "Previous or next tab or option", group: "Dialogs and menus", scope: "tabs", handler: "external", source: "ui.tsx (onTablistKeyDown, Segmented)" },
+  { id: "tabs.move", keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], label: "Previous or next tab or option (↑ and ↓ on option rows only)", group: "Dialogs and menus", scope: "tabs", handler: "external", source: "ui.tsx (onTablistKeyDown, Segmented)" },
   { id: "tabs.edge", keys: ["Home", "End"], label: "First or last tab or option", group: "Dialogs and menus", scope: "tabs", handler: "external", source: "ui.tsx (onTablistKeyDown, Segmented)" },
   // Screenshots
   { id: "screenshots.move", keys: ["ArrowLeft", "ArrowRight"], label: "Previous or next screenshot", group: "Screenshots", scope: "screenshot-viewer", handler: "external", source: "ScreenshotViewer.tsx" },
@@ -304,7 +304,8 @@ export function shortcutCollisions(defs: readonly ShortcutDef[] = SHORTCUTS): st
  *  dialog, where workspace shortcuts must not fire. */
 export function keyIsForOtherInput(event: KeyboardEvent): boolean {
   const target = event.target instanceof Element ? event.target : null;
-  return !!target?.closest(".term-frame, input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")
+  // An open menu owns the keys pressed in it (arrows, Enter, typeahead).
+  return !!target?.closest(".term-frame, input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox'], [role='menu']")
     || hasVisibleDialog();
 }
 
@@ -351,8 +352,15 @@ function clearPending() {
   pendingTimer = null;
 }
 
+/** Keys that only hold a modifier. Pressing Shift to type the `G` of
+ *  `"Ctrl+Space G"` must neither break nor complete a sequence. */
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Hyper", "Super", "CapsLock", "Fn", "FnLock", "NumLock"]);
+
 function dispatch(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.isComposing) return;
+  // keyCode 229 is WebKit's (macOS Tauri) composition keydown, sent before
+  // `isComposing` turns true.
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+  if (MODIFIER_KEYS.has(event.key)) return;
   const mac = isMacPlatform();
   const complete: { def: ShortcutDef; handler: ShortcutHandler }[] = [];
   let prefix = false;

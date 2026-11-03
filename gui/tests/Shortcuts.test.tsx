@@ -107,6 +107,32 @@ describe("dispatcher", () => {
     expect(go).toHaveBeenCalledTimes(1);
     expect(plain).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps a sequence alive across modifier-only presses (Shift to type G)", () => {
+    setShortcutRegistryForTest([def("leader.go", ["Ctrl+Space G"], "workspace")]);
+    const go = vi.fn();
+    render(<Bound id="leader.go" handler={go} />);
+    fireEvent.keyDown(document.body, { key: "Control", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: " ", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: "Shift", shiftKey: true });
+    fireEvent.keyDown(document.body, { key: "G", code: "KeyG", shiftKey: true });
+    expect(go).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores IME composition and keys pressed inside an open menu", () => {
+    const onHelp = vi.fn();
+    render(<Bound id="help.shortcuts" handler={onHelp} />);
+    fireEvent.keyDown(document.body, { key: "?", keyCode: 229 });
+    fireEvent.keyDown(document.body, { key: "?", isComposing: true });
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    const item = document.createElement("button");
+    menu.appendChild(item);
+    document.body.appendChild(menu);
+    fireEvent.keyDown(item, { key: "?" });
+    menu.remove();
+    expect(onHelp).not.toHaveBeenCalled();
+  });
 });
 
 describe("Keyboard shortcuts dialog", () => {

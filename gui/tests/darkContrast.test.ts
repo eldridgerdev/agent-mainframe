@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { DARK_TERMINAL_THEME } from "../src/terminalTheme";
-import { blocks, token, parse, over, contrast, type Rgb } from "./contrast";
+import { allStyles, blocks, token, parse, over, contrast, type Rgb } from "./contrast";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const dark = blocks(css).dark;
+const rulesCss = allStyles();
 const surfaces = ["bg", "bg-sidebar", "surface", "surface-2", "surface-3"];
 const backgrounds = Object.fromEntries(surfaces.map((name) => [name, parse(token(dark, name)).rgb]));
 const failures: string[] = [];
@@ -33,7 +34,7 @@ it("keeps dark body text, status/context colours and chrome readable on real sur
   for (const colour of ["accent", "accent-hover", "green", "amber", "red", "border-strong"]) {
     check(`filled ${colour} control`, parse(token(dark, "accent-fg")).rgb, parse(token(dark, colour)).rgb);
   }
-  expect(dark).toContain(".switch::after { background: var(--accent-fg); }");
+  expect(blocks(rulesCss).dark).toContain(".switch::after { background: var(--accent-fg); }");
   expect(failures).toEqual([]);
 });
 
@@ -74,13 +75,13 @@ it("keeps the kind, merged-PR and supervibe tokens readable in both dark blocks"
     expect(failures).toEqual([]);
   }
   // Only the token form remains: no per-mode literal overrides.
-  expect(css).toContain("background: var(--purple-soft); color: var(--purple);");
-  expect(css).not.toMatch(/\[data-theme="(light|dark)"\]\)? \.(kind-|tree-pr)/);
+  expect(rulesCss).toContain("background: var(--purple-soft); color: var(--purple);");
+  expect(rulesCss).not.toMatch(/\[data-theme="(light|dark)"\]\)? \.(kind-|tree-pr)/);
 });
 
 it("draws the supervibe label on the surface with a decorative rainbow ring", () => {
   failures.length = 0;
-  const rule = css.match(/\.tree-chip-mode\.mode-supervibe \{([^}]+)\}/)![1];
+  const rule = rulesCss.match(/\.tree-chip-mode\.mode-supervibe \{([^}]+)\}/)![1];
   expect(rule).toContain("linear-gradient(var(--surface), var(--surface)) padding-box");
   expect(rule).toMatch(/linear-gradient\(90deg, [^)]+\) border-box/);
   expect(rule).toContain("color: var(--text)");

@@ -883,6 +883,37 @@ shared history and a failed refresh with labeled previous results. It uses
 private fixtures and a separate development port, without calling AI agents.
 macOS runtime validation remains open.
 
+### Help and keyboard shortcuts
+
+**Help**, pinned at the bottom of the projects sidebar (outside the
+collapsible **Tools** group, so it is always visible), opens
+**Keyboard shortcuts**, this guide (**Documentation**, in your browser) and
+**Show first-run steps again**, which reopens the welcome steps until you pick
+a project or another page. Press **?** outside terminals, text inputs and
+dialogs to open the shortcut list directly. It groups every key the GUI
+handles (sidebar, prompt composer, terminal scrolling, dialogs and menus,
+Changes, screenshots), says where each one works, and filters by action,
+group or key.
+
+Every shortcut lives in one typed registry, `src/shortcuts.ts`. The dialog,
+menu hints (`MenuItem.shortcut` takes a registry id), tooltips and
+`aria-keyshortcuts` read from it, so a hint cannot drift from its key. To add
+a shortcut:
+
+1. Add one entry to `BASE_SHORTCUTS`: `id`, `keys` (e.g. `"Mod+K"`, `"?"`,
+   or a leader sequence such as `"Ctrl+Space G"`), `label`, `group`, `scope`
+   and `handler`.
+2. For `handler: "dispatch"` (the `workspace` and `global` scopes), call
+   `useShortcut(id, handler)` in the component that owns the action; return
+   `false` to let the key through. Keys handled by their own component use
+   `handler: "external"` and name the file in `source`.
+3. Run `npm test`: `tests/Shortcuts.test.tsx` fails when two entries share a
+   key in scopes that can be active together, or when one binding starts
+   another.
+
+`Mod` is Cmd on macOS and Ctrl elsewhere. A bare character matches what is
+typed, case included, so `g` and `G` are different keys, as in the TUI.
+
 ## Checks
 
 ```sh

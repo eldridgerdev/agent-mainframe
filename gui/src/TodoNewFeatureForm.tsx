@@ -7,7 +7,8 @@ import {
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import { Field, Modal, Segmented, Spinner, Switch } from "./ui";
 import { useCreationHarness } from "./useCreationHarness";
-import CreationHarnessField from "./CreationHarnessField";
+import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
+import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
 
 type PlanKind = "none" | "full" | "quick";
 
@@ -16,7 +17,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   todoTitle: string;
   projects: Project[];
   agents: HarnessInfo[];
-  modes: (Pick<ModeInfo, "slug" | "display_name"> & Partial<Pick<ModeInfo, "unsupported_agents">>)[];
+  modes: (Pick<ModeInfo, "slug" | "display_name"> & Partial<Pick<ModeInfo, "unsupported_agents" | "description">>)[];
   pending: boolean;
   onCancel: () => void;
   onSubmit: (request: CreateFeatureRequest, planKind: PlanKind) => void | Promise<unknown>;
@@ -124,16 +125,17 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
           </select>
         </Field>
         <Field label="Branch"><input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} required autoFocus /></Field>
-        <div className="form-row">
-          <CreationHarnessField harness={harness} supported={agents} disabled={busy} />
-          <Field label="Mode"><select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
+        <div className="form-row creation-agent-mode">
+          <CreationHarnessSelect harness={harness} supported={agents} disabled={busy} />
+          <Field label="Mode" hint={modes.find((candidate) => candidate.slug === mode)?.description}><select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
             {modes.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>)}
           </select></Field>
         </div>
+        <CreationHarnessNotices harness={harness} disabled={busy} />
         <div className="field"><span className="field-label">Planning</span><Segmented label="Planning" value={planKind} onChange={setPlanKind} options={[
           { value: "none", label: "Start directly" }, { value: "quick", label: "Quick Plan" }, { value: "full", label: "Full Plan" },
-        ]} /></div>
-        <div className="form-row"><Switch checked={review} onChange={setReview} label="Review" /><Switch checked={chrome} onChange={setChrome} label="Chrome" /></div>
+        ]} /><span className="field-hint">{PLAN_HINTS[planKind]}</span></div>
+        <div className="form-row"><Switch checked={review} onChange={setReview} label="Review" hint={REVIEW_HINT} /><Switch checked={chrome} onChange={setChrome} label="Chrome" hint={CHROME_HINT} /></div>
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
         <WorktreeHookField hook={hook} disabled={busy} />
       </fieldset>

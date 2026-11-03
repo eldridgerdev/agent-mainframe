@@ -1330,9 +1330,9 @@ it("loads inherited project choices before feature creation, retries errors and 
   expect(await screen.findByText("Loading the project's default agent…")).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Agent" })).toHaveProperty("disabled", true);
   await act(async () => finish(creationChoices([])));
-  expect((await screen.findByRole("alert")).textContent).toContain("No allowed, installed agents");
+  expect((await screen.findByRole("alert")).textContent).toContain("No agent is available yet.");
   expect(screen.getByRole("combobox", { name: "Agent" })).toHaveProperty("disabled", true);
-  fireEvent.click(screen.getByRole("button", { name: "Reload agents" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
   await screen.findByText("Loading the project's default agent…");
   await act(async () => finish(creationChoices(["claude"])));
   const harness = await screen.findByRole("combobox", { name: "Agent" });

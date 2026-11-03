@@ -347,3 +347,68 @@ it("hooks the destination picker up to the AI review with the PR head and disabl
   expect(uses.map((b) => b.disabled)).toEqual([false, true]);
   expect(within(region).getByText(/Refreshing the agent list/)).toBeTruthy();
 });
+
+it("shows the AI pre-call notice as an inline confirmation with Cancel and Run reachable", async () => {
+  let precall = true;
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return reviewing;
+    if (command === "pr_triage_snapshot" || command === "pr_triage_act") return reviewing;
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_switch_threads") return undefined;
+    if (command === "pr_workspace_fix_targets") return [];
+    if (command === "pr_workspace_ai_snapshot" || command === "pr_workspace_ai_act") {
+      const kind = (args as { action?: { kind: string } } | undefined)?.action?.kind;
+      if (kind === "cancel_precall") precall = false;
+      return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", running: false, stage: null, activity: null, elapsed_seconds: 0, token_estimate: null, findings: [], summary: null, error: null, result_revision: null,
+        precall: precall ? { title: "AI PR review", harness: "claude", preview: "x".repeat(4000), viewing: false } : null, can_cancel: precall };
+    }
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
+  const aiTab = await screen.findByRole("button", { name: "AI Review" }) as HTMLButtonElement;
+  await waitFor(() => expect(aiTab.disabled).toBe(false));
+  fireEvent.click(aiTab);
+  const notice = await screen.findByRole("alert", { name: "Confirm AI review" });
+  expect(notice.hasAttribute("data-confirm-callout")).toBe(true);
+  expect(notice.textContent).toContain("Nothing is posted to GitHub");
+  // Run is the confirm, after Cancel, and both live inside the notice.
+  const buttons = within(notice).getAllByRole("button").map((b) => b.textContent);
+  expect(buttons).toEqual(["Cancel", "Run AI review"]);
+  expect(document.activeElement).toBe(within(notice).getByRole("button", { name: "Run AI review" }));
+  fireEvent.click(within(notice).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("alert", { name: "Confirm AI review" })).toBeNull());
+  expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "cancel_precall")).toBe(true);
+});
+
+it("says why the Files and AI tabs are locked before a PR is open", async () => {
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin" || command === "pr_triage_snapshot") return picker;
+    if (command === "pr_workspace_select_pr") return undefined;
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
+  await screen.findByRole("button", { name: /#42 Add feature/ });
+  for (const name of ["Files", "AI Review"]) {
+    const tab = screen.getByRole("button", { name }) as HTMLButtonElement;
+    expect(tab.disabled).toBe(true);
+    expect(tab.title).toBe("Open a pull request in Threads first.");
+  }
+  expect((screen.getByRole("button", { name: "Threads" }) as HTMLButtonElement).title).toBe("");
+});
+
+it("keeps the embedded Threads view from closing the whole workspace and starts the PR description collapsed", async () => {
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin" || command === "pr_triage_snapshot" || command === "pr_triage_act") return reviewing;
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_threads") return undefined;
+    if (command === "pr_triage_description") return "Body";
+    return undefined;
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
+  const threads = await screen.findByRole("region", { name: "Review comments" });
+  expect(within(threads).queryByRole("button", { name: "Close" })).toBeNull();
+  const description = threads.querySelector("details.pr-description") as HTMLDetailsElement;
+  expect(description).toBeTruthy();
+  expect(description.open).toBe(false);
+});

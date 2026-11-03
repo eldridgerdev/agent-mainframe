@@ -989,7 +989,11 @@ fn a_failing_hook_keeps_the_companion_with_no_agent() {
     let done = fx.create("broken-hook");
     assert_eq!(done.state, OperationState::Created, "{}", done.message);
     assert!(done.hook_warning.as_deref().unwrap().contains("broke"));
-    assert!(done.message.contains("hook failed"), "{}", done.message);
+    assert!(
+        done.message.contains("setup script failed"),
+        "{}",
+        done.message
+    );
     assert!(
         done.message.contains("no agent was started"),
         "{}",

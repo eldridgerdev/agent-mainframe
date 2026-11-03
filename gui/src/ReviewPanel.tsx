@@ -155,7 +155,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
   };
   return <Modal hidden={hidden} label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close} dismissable={!commandBusy && !view.preparation && !destinationOpen}
     footer={<button className="btn btn-secondary" disabled={commandBusy || !!view.finish?.completing || !!view.preparation || destinationOpen} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
-    <p>Review progress is shared with the TUI. Pause and reopen to resume. Complete the review and hand off feedback from the pre-finish summary.</p>
+    <p>Review progress is saved and shared with AMF's terminal app. Pause and reopen to resume. Complete the review and hand off feedback from the pre-finish summary.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
@@ -207,7 +207,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
     {ai.precall && <section className="review-confirm" role="alertdialog" aria-label="Review AI call">
-      <p>Headless AI call: {ai.precall.title} · {ai.precall.harness}. This reads the checkout and may use paid harness credits.</p>
+      <p>Background AI call: {ai.precall.title} · {ai.precall.harness}. This reads your files and uses your agent account's usage.</p>
       {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
       {onEditPrompt && <button className="btn btn-secondary" disabled={commandBusy} onClick={onEditPrompt}>Edit prompt</button>}
@@ -221,7 +221,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
     {ai.question_error && <p role="alert">{ai.question_error}</p>}
     <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !view.files.length || view.error !== null}
       onClick={() => void onAct({ kind: "overview" })}>Changeset overview</button>
-    <p className="muted small">Walkthroughs, overview and co-review use Claude. Questions offer the project's allowed harnesses.</p>
+    <p className="muted small">Walkthroughs, overview and co-review use Claude. Questions offer the project's allowed agents.</p>
     {ai.overview && <details className="review-note"><summary>AI changeset overview</summary><Markdown source={ai.overview} /></details>}
     {ai.questions.length > 0 && <details className="review-note"><summary>Review questions ({ai.questions.length})</summary>{ai.questions.map((turn, index) => <section key={index}>
       <p><strong>{turn.question}</strong></p><details><summary>Question context</summary><pre>{turn.focus}</pre></details>
@@ -253,9 +253,9 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       }
     }}>
       <p>Question about {question.path}{question.span && `, ${locationLabel(question.span.start)} – ${locationLabel(question.span.end)}`}</p>
-      <p className="muted small">The answering harness reads the repository and reviewed diff. Answers stay in this review while it is open. Follow-ups include earlier answers for this review version.</p>
+      <p className="muted small">The answering agent reads the repository and reviewed diff. Answers stay in this review while it is open. Follow-ups include earlier answers for this review version.</p>
       <Field label="Review question"><textarea rows={4} value={question.text} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, text: event.target.value })} /></Field>
-      <Field label="Answering harness"><select value={question.harness} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, harness: event.target.value as AgentSlug })}>
+      <Field label="Answer with"><select value={question.harness} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, harness: event.target.value as AgentSlug })}>
         {ai.harnesses.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
       </select></Field>
       <button className="btn btn-primary" disabled={busy || ai.running || pending !== null || !question.text.trim()}>Ask review question</button>

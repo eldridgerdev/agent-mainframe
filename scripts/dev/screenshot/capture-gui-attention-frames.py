@@ -154,7 +154,7 @@ try:
     capture(
         "001-attention-list.png",
         "Four on-disk requests with reason, age and message; the unowned one explains why it cannot be opened, the edit review explains why it cannot be dismissed, and the stopped feature's leftover wait is counted but hidden. The limit note states that Question/Completed labels exist only in a running TUI.",
-        ["Needs attention", "Waiting for input", "Turn ended", "Edit waiting for review", "could not be matched", "Supervised edits", "only a running TUI", "stopped features"],
+        ["Needs attention", "Waiting for input", "Turn ended", "Edit waiting for review", "could not be matched", "Supervised edits", "Why might an agent be missing?", "stopped features"],
         'document.querySelectorAll(".attention-row").length===4 && Array.from(document.querySelectorAll("button")).find(b=>(b.getAttribute("aria-label")||"").startsWith("Dismiss Add receipt export: Edit")).disabled',
     )
     assert stop_file.exists()

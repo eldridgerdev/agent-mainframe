@@ -753,7 +753,7 @@ fn supported_modes() -> Vec<ModeInfo> {
                 .and_then(|value| value.as_str().map(str::to_string))
                 .unwrap_or_default(),
             display_name: mode.display_name().to_string(),
-            description: mode.description().to_string(),
+            description: mode.permission_summary().to_string(),
             unsupported_agents: AgentKind::ALL
                 .iter()
                 .filter(|agent| !mode.supports_agent(agent))

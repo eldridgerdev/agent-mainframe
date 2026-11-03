@@ -74,8 +74,8 @@ it.each(["none", "full", "quick"] as const)("honors a preset's %s route and subs
   const { onSubmit } = mount({}, [{ ...preset, plan_mode: kind !== "none", quick_plan: kind === "quick" }]);
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
   expect(screen.getByLabelText("Branch")).toHaveProperty("value", "feat/improve-the-api");
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
-  change("Branch", "edited/meaningful-name"); fireEvent.click(screen.getByRole("switch", { name: "Chrome" }));
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
+  change("Branch", "edited/meaningful-name"); fireEvent.click(screen.getByRole("switch", { name: /^Chrome/ }));
   const button = kind === "none" ? "Create and start" : kind === "full" ? "Start plan" : "Start Quick Plan";
   await ready(button); click(button);
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "edited/meaningful-name", agent: "codex", mode: "supervibe", review: true, enable_chrome: false, plan_mode: kind !== "none" }), kind);
@@ -106,7 +106,7 @@ it("retains Remote Control intent through edits, custom settings and project swi
 it("never submits an unavailable preset harness or an unsupported mode", async () => {
   const { onSubmit } = mount({}, [{ ...preset, agent: "pi", mode: "vibe", plan_mode: false }, { ...preset, name: "Unsupported", mode: "vibeless", plan_mode: false }]);
   await ready(); change("Feature preset", "0");
-  expect(screen.getByText(/not offered for this project/)).toBeTruthy(); expect(screen.getByLabelText("Harness")).toHaveProperty("value", "pi");
+  expect(screen.getByText(/not offered for this project/)).toBeTruthy(); expect(screen.getByLabelText("Agent")).toHaveProperty("value", "pi");
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   change("Feature preset", "1"); expect(screen.getByText(/Vibeless is unavailable with Codex/)).toBeTruthy();
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
@@ -119,12 +119,12 @@ it("leaves the mode unchanged and says why when a preset's mode is not listed", 
   await ready(); change("Mode", "supervibe"); change("Feature preset", "0");
   expect(screen.getByText(/Ship uses the retired mode, which is not available here/)).toBeTruthy();
   expect(screen.getByLabelText("Mode")).toHaveProperty("value", "supervibe");
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   change("Feature preset", "1");
   expect(screen.getByText(/Both uses pi, which is not offered.*It also uses the retired mode/)).toBeTruthy();
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "pi");
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "pi");
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
-  change("Harness", "codex"); await ready(); click("Create and start");
+  change("Agent", "codex"); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "supervibe", review: true }), "none");
 });
 it("loads the chosen project's presets without discarding its edited branch", async () => {
@@ -136,8 +136,8 @@ it("loads the chosen project's presets without discarding its edited branch", as
   expect(screen.getByLabelText("Feature preset")).toHaveProperty("value", "");
   expect(screen.getByLabelText("Branch")).toHaveProperty("value", "custom/retain");
   // Returned data reordered the old index; no preset is silently reapplied.
-  expect(screen.getByLabelText("Harness").querySelectorAll("option")).toHaveLength(2);
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  expect(screen.getByLabelText("Agent").querySelectorAll("option")).toHaveLength(2);
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   expect(screen.getByRole("button", { name: "Start Quick Plan" })).toHaveProperty("disabled", true);
   change("Project", "demo");
   await screen.findByRole("option", { name: "Second only" });
@@ -153,13 +153,13 @@ it.each(["project_harness_choices", "feature_presets_choices"])("blocks failed %
   await client.invalidateQueries({ queryKey: [command === "project_harness_choices" ? "project-harness-choices" : "feature-presets"] });
   await screen.findByText(/Unreadable config/); fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
   vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null);
-  click(command === "project_harness_choices" ? "Retry harnesses" : "Retry presets"); await ready(); click("Create and start"); expect(onSubmit).toHaveBeenCalledOnce();
+  click(command === "project_harness_choices" ? "Retry" : "Retry presets"); await ready(); click("Create and start"); expect(onSubmit).toHaveBeenCalledOnce();
 });
 it("blocks loading, empty harnesses and a deleted destination without falling back", async () => {
   const { onSubmit, rerender, client } = mount({ projects });
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true); await ready();
   vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices([]) : name === "feature_presets_choices" ? [] : null);
-  await client.invalidateQueries({ queryKey: ["project-harness-choices"] }); await screen.findByText(/No allowed, installed harnesses/);
+  await client.invalidateQueries({ queryKey: ["project-harness-choices"] }); await screen.findByText(/No allowed, installed agents/);
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   rerender({ projects: [projects[1]] }); await screen.findByText(/Choose an available git project/);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();

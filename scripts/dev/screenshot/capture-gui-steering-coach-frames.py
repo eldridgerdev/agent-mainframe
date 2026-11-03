@@ -178,11 +178,11 @@ try:
     click("New feature")
     wait('!!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
     wait('!!document.querySelector("[role=dialog] input[type=checkbox]")')
-    box = '''Array.from(document.querySelectorAll("[role=dialog] label")).find(l=>l.textContent.includes("Prompt coach (experimental)")).querySelector("input")'''
+    box = '''Array.from(document.querySelectorAll("[role=dialog] label")).find(l=>l.textContent.includes("Steering coach (experimental)")).querySelector("input")'''
     assert evaluate(f"!{box}.checked"), "the coach must be off by default"
     evaluate(f"{box}.click()")
     wait(f"{box}.checked")
-    capture("001-creation-checkbox.png", "The New feature form offers 'Prompt coach (experimental)', off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Prompt coach (experimental)", "check your first prompt for scope"], f"{box}.checked", allow_alert=True)  # a runner without Claude shows a harness alert here
+    capture("001-creation-checkbox.png", "The New feature form offers 'Steering coach (experimental)', off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Steering coach (experimental)", "get feedback on your first message"], f"{box}.checked", allow_alert=True)  # a runner without Claude shows a harness alert here
     click("Cancel")
     wait('!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
 

@@ -56,7 +56,7 @@ def main():
             {"op": "wait", "text": "Repository path"},
             {"op": "fill", "name": "Repository path", "value": str(repo)},
             {"op": "fill", "name": "Project name", "value": "Native driver fixture"},
-            {"op": "select", "name": "Preferred harness", "value": ""},
+            {"op": "select", "name": "Preferred agent", "value": ""},
             {"op": "snapshot", "scope": "[role=dialog]", "text_limit": 800},
         ]})
         metrics["six_action_batch_seconds"] = round(time.monotonic() - batch_start, 2)

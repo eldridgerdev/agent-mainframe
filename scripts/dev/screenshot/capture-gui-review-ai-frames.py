@@ -215,7 +215,7 @@ try:
     wait('document.body.innerText.includes("Continue AI call")')
     click("View prompt")
     wait('document.body.innerText.includes("You are helping a reviewer understand")')
-    capture("002-review-ai-prompt-preview.png", "Before generation, the GUI shows the real resolved prompt and explicit continue/cancel controls; no fixture call has run yet.", ["Headless AI call: Final Review: file walkthrough", "You are helping a reviewer understand", "File: invoice.test.ts", "Continue AI call", "Cancel AI call"], '!document.querySelector(".review-confirm pre").hidden')
+    capture("002-review-ai-prompt-preview.png", "Before generation, the GUI shows the real resolved prompt and explicit continue/cancel controls; no fixture call has run yet.", ["Background AI call: Final Review: file walkthrough", "You are helping a reviewer understand", "File: invoice.test.ts", "Continue AI call", "Cancel AI call"], '!document.querySelector(".review-confirm pre").hidden')
     assert calls() == []
     click("Cancel AI call")
     wait('!document.body.innerText.includes("Continue AI call")')
@@ -250,8 +250,8 @@ try:
     select_line(9)
     click("Ask about selection")
     fill("Review question", "Why does this round before formatting?\nCheck negative totals and the selected formatter.")
-    select("Answering harness", "codex")
-    capture("005-local-review-question.png", "A multiline question is drafted locally for a selected source line, with Codex chosen from the four allowed answering harnesses. Editing does not launch a call.", ["Question about invoice.ts, line 9 – line 9", "Answering harness", "Ask review question", "The answering harness reads the repository"], 'document.querySelector(".review-editor textarea").value.includes("Check negative totals") && Array.from(document.querySelectorAll("select")).find(s=>s.value==="codex").options.length===4')
+    select("Answer with", "codex")
+    capture("005-local-review-question.png", "A multiline question is drafted locally for a selected source line, with Codex chosen from the four allowed answering harnesses. Editing does not launch a call.", ["Question about invoice.ts, line 9 – line 9", "Answer with", "Ask review question", "The answering harness reads the repository"], 'document.querySelector(".review-editor textarea").value.includes("Check negative totals") && Array.from(document.querySelectorAll("select")).find(s=>s.value==="codex").options.length===4')
     assert len(calls()) == 3
     click("Ask review question")
     wait('document.body.innerText.includes("Continue AI call")')

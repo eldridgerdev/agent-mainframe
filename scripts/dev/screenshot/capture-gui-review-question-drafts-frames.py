@@ -240,7 +240,7 @@ try:
     select_line(9)
     click("Ask about selection")
     fill("Review question", "Why does this round before formatting? Check negative totals.")
-    select("Answering harness", "codex")
+    select("Answer with", "codex")
     click("Ask review question")
     wait('document.body.innerText.includes("Continue AI call")')
     approve_call()
@@ -251,7 +251,7 @@ try:
     assert calls() == [{"harness": "codex", "kind": "question"}]
 
     click("Draft inline comment")
-    wait('document.body.innerText.includes("Headless AI call: Review: draft comment from answer")')
+    wait('document.body.innerText.includes("Background AI call: Review: draft comment from answer")')
     focus(".review-confirm")
     capture("002-draft-call-confirmation.png", "Drafting is a separate Codex call requiring explicit prompt preview/confirmation; it has not run yet.", ["Review: draft comment from answer", "Codex", "View prompt", "Continue AI call", "Cancel AI call"])
     click("View prompt")

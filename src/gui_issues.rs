@@ -516,7 +516,7 @@ impl GuiHandle {
         let repo = project.repo.clone();
         if !app.allows_agent_for_repo(&repo, &request.request.agent) {
             return Err(GuiError::conflict(format!(
-                "Harness '{}' is not allowed for this project",
+                "Agent '{}' is not allowed for this project",
                 request.request.agent.display_name()
             )));
         }

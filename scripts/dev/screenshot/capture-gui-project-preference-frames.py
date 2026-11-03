@@ -42,16 +42,16 @@ with GuiFrames.from_argv() as frames:
     def dismiss_toasts(): frames.evaluate('Array.from(document.querySelectorAll(`.toast button[aria-label="Dismiss"]`)).forEach(button=>button.click())')
     def open_project():
         action('click',selector='nav[aria-label=Workspace] [aria-describedby="tree-project-proof-project"]')
-        action('wait',text='Preferred harness',scope='main')
+        action('wait',text='Preferred agent',scope='main')
     frames.window.configure(width=1320,height=960)
     action('wait',text='Billing API',scope='nav[aria-label=Workspace]')
     open_project()
-    click('Preferred harness')
+    click('Preferred agent')
     wait('!!document.querySelector(`[role=dialog] select`) && !document.querySelector(`[role=dialog] select`).disabled')
     initial_rows, initial_panes = rows(), original_panes()
     assert preference()=='claude' and selected()=='claude'
-    frames.capture('001-project-preference.png','The project preference is a separate action from agent availability and changes only new-feature defaults.', ['Project preferred harness','Existing sessions keep their harness','Nothing starts or stops'])
-    select('Preferred harness','opencode'); click('Cancel','[role=dialog]')
+    frames.capture('001-project-preference.png','The project preference is a separate action from agent availability and changes only new-feature defaults.', ['Project preferred agent','Existing sessions keep their harness','Nothing starts or stops'])
+    select('Preferred agent','opencode'); click('Cancel','[role=dialog]')
     frames.capture('002-unsaved-preference.png','Cancel protects an edited preference; choosing OpenCode alone changes no saved bindings or running panes.', ['Discard unsaved settings','Keep editing','Discard changes'])
     assert preference()=='claude' and rows()==initial_rows and original_panes()==initial_panes
     click('Keep editing')
@@ -60,28 +60,28 @@ with GuiFrames.from_argv() as frames:
         db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
     click('Save settings','[role=dialog]')
     action('wait',text='changed. Reload before saving.',scope='[role=dialog]')
-    frames.capture('003-stale-preference.png','A real external SQLite preference edit invalidates the open form without touching any existing session.', ['changed. Reload before saving.','Project preferred harness'],allow_alert=True)
+    frames.capture('003-stale-preference.png','A real external SQLite preference edit invalidates the open form without touching any existing session.', ['changed. Reload before saving.','Project preferred agent'],allow_alert=True)
     assert preference()=='pi' and rows()==initial_rows and original_panes()==initial_panes
     click('Reload settings','[role=dialog]'); click('Discard changes')
     wait('document.querySelector(`[role=dialog] select`)?.value === "pi"')
-    select('Preferred harness','opencode'); click('Save settings','[role=dialog]')
+    select('Preferred agent','opencode'); click('Save settings','[role=dialog]')
     wait('!document.querySelector(`[role=dialog]`)')
     assert preference()=='opencode' and rows()==initial_rows and original_panes()==initial_panes
     assert query("SELECT agent,mode FROM features WHERE id='proof-feature'")==[('claude','supervibe')]
     frames.capture('004-preference-saved.png','Saving the project preference preserves the running Claude feature and every session binding and pane PID.', ['Billing API','Project preference saved','Existing sessions keep their harness'])
     dismiss_toasts(); click('New feature')
-    wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Harness"))?.querySelector("select").value === "opencode" && !Array.from(document.querySelectorAll(`[role=dialog] button`)).find(b=>b.textContent.trim()==="Reload harnesses")?.disabled')
-    assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Harness")).querySelector("select").value')=='opencode'
+    wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent"))?.querySelector("select").value === "opencode" && !Array.from(document.querySelectorAll(`[role=dialog] button`)).find(b=>b.textContent.trim()==="Reload agents")?.disabled')
+    assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent")).querySelector("select").value')=='opencode'
     fill('Branch / feature name','preferred-new-feature')
-    frames.capture('005-ordinary-default.png','An ordinary new feature initializes from the project OpenCode preference rather than the first supported harness.', ['New feature','Branch / feature name','Harness'],
+    frames.capture('005-ordinary-default.png','An ordinary new feature initializes from the project OpenCode preference rather than the first supported harness.', ['New feature','Branch / feature name','Agent'],
         expression='document.querySelector(`[role=dialog] input.mono`).value === "preferred-new-feature"')
     select('Feature preset','0'); fill('Branch / feature name','preferred-new-feature')
-    click('Reload harnesses','[role=dialog]')
-    wait('!Array.from(document.querySelectorAll(`[role=dialog] button`)).find(b=>b.textContent.trim()==="Reload harnesses").disabled')
-    assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Harness")).querySelector("select").value')=='claude'
+    click('Reload agents','[role=dialog]')
+    wait('!Array.from(document.querySelectorAll(`[role=dialog] button`)).find(b=>b.textContent.trim()==="Reload agents").disabled')
+    assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent")).querySelector("select").value')=='claude'
     frames.capture('006-explicit-preset.png','A deliberate Claude preset remains authoritative after refreshing project choices; the edited branch is retained.', ['Feature preset','New feature'],
         expression='document.querySelector(`[role=dialog] input.mono`).value === "preferred-new-feature" && document.querySelector(`[aria-label="Feature preset"]`).value === "0"')
-    select('Harness','opencode'); select('Mode','supervibe'); click('Create feature','[role=dialog]')
+    select('Agent','opencode'); select('Mode','supervibe'); click('Create feature','[role=dialog]')
     wait('!document.querySelector(`[role=dialog]`)')
     wait_for(lambda: query("SELECT agent FROM features WHERE branch='preferred-new-feature'")==[('opencode',)], 'Ordinary feature did not save OpenCode')
     action('wait',text='Opencode 1',scope='main')
@@ -93,7 +93,7 @@ with GuiFrames.from_argv() as frames:
     action('wait',text='Start work on a TODO',scope='[role=dialog]')
     select('Where','__new__'); action('click',selector='[role=dialog] button.btn-primary')
     wait('!!document.querySelector(`[role=dialog] [aria-label="Feature preset"]`)')
-    wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Harness"))?.querySelector("select").value === "opencode"')
+    wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent"))?.querySelector("select").value === "opencode"')
     click('Quick Plan','[role=dialog]')
     frames.capture('008-todo-default.png','TODO creation and planning initialize with the same project OpenCode default; selecting Quick Plan does not replace the chosen harness.', ['Plan in a new feature','Quick Plan','Prepare tax audit'])
     click('Start directly','[role=dialog]'); select('Mode','supervibe'); click('Create and start','[role=dialog]')

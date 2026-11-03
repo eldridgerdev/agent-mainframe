@@ -229,7 +229,7 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
       </div>
       {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>
         <button className="btn btn-secondary" disabled={locked || comment === file.comment} onClick={() => void act({ kind: "file_comment", path: file.diff.path, text: comment })}>Save file comment</button></>}
-      {embedded ? <div className="row"><p className="muted small">Comments save to the shared PR review draft, the same one PR Review and the terminal UI use. The summary, preview and posting stay in PR Review.</p>
+      {embedded ? <div className="row"><p className="muted small">Comments save to the shared PR review draft, the same one PR Review and AMF's terminal app use. The summary, preview and posting stay in PR Review.</p>
         <button className="btn btn-secondary" disabled={locked || dirty} onClick={embedded.onOpenReview}>Preview and post in PR Review…</button></div> : <>
       <Field label="Review summary"><textarea value={summary} disabled={locked} onChange={(e) => setSummary(e.target.value)} /></Field>
       <button className="btn btn-secondary" disabled={locked || summary === view.summary} onClick={() => void act({ kind: "summary", text: summary })}>Save summary</button>

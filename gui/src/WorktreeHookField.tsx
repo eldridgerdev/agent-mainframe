@@ -35,7 +35,7 @@ export default function WorktreeHookField({ hook, disabled }: {
   if (hook.query.isPending) return <p className="field-hint"><Spinner /> Loading worktree setup…</p>;
   if (!hook.query.data) return null;
   return (
-    <Field label={hook.query.data.title} hint="Runs when the worktree is created.">
+    <Field label={hook.query.data.title} hint="Your project's setup script runs when the separate checkout is created.">
       <select aria-label={hook.query.data.title} value={hook.choice} onChange={(event) => hook.setChoice(event.target.value)} required disabled={disabled}>
         <option value="" disabled>Choose an option</option>
         {hook.query.data.options.map((option) => <option key={option} value={option}>{option}</option>)}

@@ -217,7 +217,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
         delete next[confirm.id];
         return next;
       });
-      setNotice(`${outcome.message}. The agent continues once its hook reads the answer.`);
+      setNotice(`${outcome.message}. The agent continues once it reads the answer.`);
       setLost(null);
       setConfirm(null);
       void queryClient.invalidateQueries({ queryKey: PENDING_EDITS_KEY });
@@ -272,7 +272,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
     </div>}
     {view && !query.error && (edits.length === 0
       ? <EmptyState icon="check" title="No edits are waiting for review">
-        Edits a Vibeless agent asks to write appear here. Requests already delivered to a running AMF TUI are answered there.
+        Edits a Vibeless agent asks to write appear here. Requests already delivered to AMF's terminal app are answered there.
       </EmptyState>
       : <div className="diff-reader">
         <nav className="diff-files" aria-label="Pending edits">{edits.map((candidate) => <button key={candidate.id}

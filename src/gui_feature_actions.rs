@@ -301,7 +301,7 @@ pub(crate) fn summary_generate_with(
         || ack.revision != notice.revision
     {
         return Err(GuiError::conflict(
-            "The prompt or harness changed after the notice was shown. Review it again.",
+            "The prompt or agent changed after the notice was shown. Review it again.",
         ));
     }
     gui.summary_outcome = None;

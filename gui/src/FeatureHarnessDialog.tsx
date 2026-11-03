@@ -45,16 +45,16 @@ export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClo
       onResync(); inFlight.current = false; if (mounted.current) setBusy(false);
     }
   }
-  return <Modal label="Change feature harness" title="Change feature harness" subtitle={view?.feature_name}
+  return <Modal label="Change agent" title="Change agent" subtitle={view?.feature_name}
     dismissable={!busy} onClose={() => { if (!inFlight.current) onClose(); }}
     footer={<><button className="btn btn-secondary" disabled={busy} onClick={onClose}>Cancel</button>
       <button className="btn btn-secondary" disabled={busy} onClick={() => void load()}>Reload</button>
-      <button className="btn btn-primary" disabled={!canApply} onClick={() => void apply()}>Change harness</button></>}>
+      <button className="btn btn-primary" disabled={!canApply} onClick={() => void apply()}>Change agent</button></>}>
     {busy && <Spinner />}
     {error && <p className="error-message" role="alert">{error}</p>}
-    {(hasDrafts || sending) && <p role="alert">{sending ? "Wait for the current prompt send to finish." : "This feature has unsent agent drafts. Cancel and send or explicitly clear them before changing harness."}</p>}
+    {(hasDrafts || sending) && <p role="alert">{sending ? "Wait for the current prompt send to finish." : "This feature has unsent agent drafts. Cancel and send or explicitly clear them before changing the agent."}</p>}
     {view && <>
-      <Field label="Replacement harness"><select value={agent} disabled={busy} onChange={(event) => {
+      <Field label="New agent"><select value={agent} disabled={busy} onChange={(event) => {
         setAgent(event.target.value as AgentSlug); setConfirmed(false);
       }}>
         {view.choices.map((choice) => <option key={choice.agent} value={choice.agent} disabled={!!choice.unavailable}>
@@ -62,11 +62,11 @@ export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClo
         </option>)}
       </select></Field>
       {!view.choices.some((choice) => !choice.unavailable && choice.agent !== view.current_agent)
-        && <p>No other installed harness is allowed for this feature and mode.</p>}
-      <p>{view.agent_rows ? `All ${view.agent_rows} agent session rows will switch` : "An agent session row will be added"} to the selected harness. Their conversation IDs and token usage bindings will be cleared. Terminal and custom session definitions stay the same.</p>
+        && <p>No other installed agent is allowed for this feature and mode.</p>}
+      <p>{view.agent_rows ? `All ${view.agent_rows} agent session rows will switch` : "An agent session row will be added"} to the selected agent. Their past conversations can no longer be resumed. Terminal and custom session definitions stay the same.</p>
       <p>{view.running ? "The running feature and all its sessions will stop. Previously runnable sessions restart; individually stopped sessions remain stopped." : "The feature will remain stopped. This change does not launch any sessions."}</p>
       <label className="checkbox-row"><input type="checkbox" checked={confirmed} disabled={busy || agent === view.current_agent}
-        onChange={(event) => setConfirmed(event.target.checked)} /> I understand and confirm this harness change</label>
+        onChange={(event) => setConfirmed(event.target.checked)} /> I understand and confirm this agent change</label>
     </>}
   </Modal>;
 }

@@ -242,7 +242,7 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
       onClick={() => void refresh()}>{query.isFetching && <Spinner />}Refresh</button></>}
     footer={footer}>
     {error && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
-    {query.isLoading && <p className="muted"><Spinner /> Checking tmux activity…</p>}
+    {query.isLoading && <p className="muted"><Spinner /> Checking which features are idle…</p>}
     {query.error && <div className="callout callout-danger" role="alert">
       <p>Could not check dormancy: {asGuiError(query.error).message}</p>
     </div>}
@@ -259,7 +259,7 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
       <p>{editorResult.response.message}</p>
       <EditorReport editors={editorResult.response.editors} />
     </section> : results ? <section aria-label="Stop results" className="dormancy-results">
-      <p>Each feature was checked again just before stopping. Only AMF's own tmux session and editor windows were touched.</p>
+      <p>Each feature was checked again just before stopping. Only AMF's own sessions and editor windows were touched.</p>
       <ul>
         {results.map((result) => <li key={key(result)} className={`dormancy-result dormancy-result-${result.outcome}`}>
           <Icon name={result.outcome === "stopped" ? "check" : "alert"} />
@@ -272,11 +272,11 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
         </li>)}
       </ul>
     </section> : confirming && view ? <section role="alertdialog" aria-label="Confirm stopping dormant features" className="dormancy-confirm">
-      <p>Stop {chosen.length} dormant feature{chosen.length === 1 ? "" : "s"}? Each feature's tmux session and every session in it ends; saved conversations stay resumable and nothing is deleted.</p>
+      <p>Stop {chosen.length} dormant feature{chosen.length === 1 ? "" : "s"}? Each feature's running sessions end; saved conversations stay resumable and nothing is deleted.</p>
       <ul>{chosen.map((observation) => <li key={key(observation)}><strong>{observation.feature_name}</strong>{" "}
         <span className="muted">({observation.tmux_session})</span></li>)}</ul>
       <p>{editorPolicy(view)}</p>
-      <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its tmux session, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
+      <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its running sessions, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
     </section> : view && (!view.enabled
       ? <EmptyState icon="alert" title="Dormancy detection is off">
           Open Settings and set both thresholds above 0 to list idle, unattended features.

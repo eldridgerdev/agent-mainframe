@@ -200,7 +200,7 @@ try:
     capture("001-fix-targets.png", "An actionable PR comment offers existing feature agents as fix destinations, including stopped sessions. Preparing a fix starts no agent and writes nothing to GitHub.", ["PR #12", "Fix agent", "Prepare fix…", "Does this round negative totals"])
     assert ai_calls() == [] and gh_writes() == []
     click("Investigate…")
-    select("Investigating harness", "codex")
+    select("Investigate with", "codex")
     click("Preview AI call")
     wait(has_button("Continue AI call"))
     click("Continue AI call")

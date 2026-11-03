@@ -455,7 +455,7 @@ function StartTodoDialog({
       <div className="form-stack">
         <Field
           label="Where"
-          hint={isNew ? "Creates a new git worktree feature for this TODO." : undefined}
+          hint={isNew ? "New feature (its own branch and folder) for this TODO." : undefined}
         >
           <select value={where} onChange={(event) => setWhere(event.target.value)}>
             {launchTargets.map((candidate) => (

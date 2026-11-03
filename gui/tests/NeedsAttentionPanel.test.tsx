@@ -12,8 +12,8 @@ const row = (over: Partial<AttentionRow> = {}): AttentionRow => ({
   message: "Which database?", age: "5m ago", age_secs: 300, stale: false, session: target,
   jump_note: null, dismissable: true, dismiss_note: null, ...over,
 });
-const view = (rows: AttentionRow[], limits = ["Labels come from a running TUI."]): NeedsAttentionView =>
-  ({ rows, hidden_stopped: 0, hidden_resumed: 0, limits });
+const view = (rows: AttentionRow[], limits: string[] = []): NeedsAttentionView =>
+  ({ rows, hidden_stopped: 0, hidden_resumed: 0, explanation: "Answers given in the AMF terminal app may not appear here.", limits });
 const clients: QueryClient[] = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach(c => c.clear()); vi.resetAllMocks(); });
 function mount() {
@@ -22,13 +22,14 @@ function mount() {
   render(<QueryClientProvider client={client}><NeedsAttentionPanel onJump={onJump} onClose={onClose} /></QueryClientProvider>);
   return { onJump, onClose };
 }
-it("shows reason, age, message and the TUI-only limit, and jumps by exact target without any write", async () => {
+it("shows reason, age, message and why an agent may be missing, and jumps by exact target without any write", async () => {
   vi.mocked(invoke).mockResolvedValue(view([row()]));
   const { onJump, onClose } = mount();
   expect(await screen.findByText("Waiting for input")).toBeTruthy();
   expect(screen.getByText("5m ago")).toBeTruthy();
   expect(screen.getByText("Which database?")).toBeTruthy();
-  expect(screen.getByRole("note").textContent).toContain("running TUI");
+  expect(screen.getByText("Why might an agent be missing?")).toBeTruthy();
+  expect(screen.getByRole("note").textContent).toContain("AMF terminal app");
   fireEvent.click(screen.getByRole("button", { name: "Open session for feat" }));
   await waitFor(() => expect(onJump).toHaveBeenCalledWith(target));
   expect(onClose).toHaveBeenCalled();
@@ -50,7 +51,7 @@ it("dismisses by stable id plus modified time and replaces the list with the ref
   fireEvent.click(await screen.findByRole("button", { name: /Dismiss feat/ }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("needs_attention_dismiss",
     { id: "/w/.claude/notifications/a.json", modifiedMs: 1000 }));
-  expect(await screen.findByText("Nothing listed needs attention.")).toBeTruthy();
+  expect(await screen.findByText("Nothing is waiting for you right now.")).toBeTruthy();
 });
 it("shows a refusal from the backend and keeps the row", async () => {
   vi.mocked(invoke).mockImplementation(async (command) => {

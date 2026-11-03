@@ -696,7 +696,7 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
                 .or_else(|| allowed.first().cloned());
             if default_harness.is_none() {
                 return Err(GuiError::conflict(
-                    "No AI harness is enabled for this project",
+                    "No AI agent is enabled for this project",
                 ));
             }
             if let AppMode::AiReview(state) = &mut app.mode {
@@ -862,7 +862,7 @@ pub(crate) fn companion_based_on(feature: &crate::project::Feature, head_sha: &s
 
 pub(crate) const COMPANION_OLDER_HEAD: &str = "This companion is based on an older PR head; start a fresh triage companion for the current head, or choose the opened feature";
 pub(crate) const SHARED_TMUX_SESSION: &str =
-    "Shares its tmux session with another feature, so it cannot receive a fix";
+    "Shares its background session with another feature, so it cannot receive a fix";
 
 /// The one test for where a PR fix may go: the opened feature, or a verified
 /// companion of this PR at `head_sha`. Any other feature is refused (never
@@ -897,7 +897,7 @@ pub(crate) fn destination_feature_kind(
     }
     if tmux_session_shared(app, &feature.tmux_session) {
         return Err(GuiError::conflict(
-            "The selected agent session shares its tmux session with another feature; choose another",
+            "The selected agent session shares its background session with another feature; choose another",
         ));
     }
     Ok(kind)
@@ -1728,10 +1728,12 @@ mod tests {
         let rows = fix_targets(&mut gui, &request.workflow_id).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.stopped));
-        assert!(
-            rows.iter()
-                .all(|r| r.unavailable.as_deref().unwrap().contains("tmux session"))
-        );
+        assert!(rows.iter().all(|r| {
+            r.unavailable
+                .as_deref()
+                .unwrap()
+                .contains("background session")
+        }));
     }
 
     #[test]
@@ -1773,7 +1775,7 @@ mod tests {
         let shared = add_destination(&mut gui, &request, "triage-c", Some((42, "")), true);
         let err = prepare_fix_read(&mut gui, shared).err().unwrap();
         assert!(
-            err.message.contains("shares its tmux session"),
+            err.message.contains("shares its background session"),
             "{}",
             err.message
         );

@@ -305,7 +305,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
 
         {view?.precall && <section className="review-confirm" role="alertdialog" aria-label="Investigation AI call">
-          <p>Headless AI call: {view.precall.title} · {view.precall.harness}. It reads the checkout without changing it and may use paid harness credits.</p>
+          <p>Background AI call: {view.precall.title} · {view.precall.harness}. It only reads your files but uses your agent account's usage.</p>
           {view.precall.viewing && <pre className="doc doc-mono">{view.precall.preview}</pre>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_toggle_view" })}>{view.precall.viewing ? "Hide prompt" : "View prompt"}</button>
           <button className="btn btn-primary" disabled={busy} onClick={() => void confirmInvestigation()}>Continue AI call</button>
@@ -479,7 +479,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             </p>}
 
             {investigate && investigate.commentId === selected.id && <section className="review-editor" aria-label="Investigation request" ref={reveal}>
-              <Field label="Investigating harness">
+              <Field label="Investigate with">
                 <select value={investigate.harness} disabled={busy || !!view?.precall} onChange={(e) => setInvestigate({ ...investigate, harness: e.target.value as AgentSlug })}>
                   {view!.harnesses.map((h) => <option key={h} value={h}>{h}</option>)}
                 </select>

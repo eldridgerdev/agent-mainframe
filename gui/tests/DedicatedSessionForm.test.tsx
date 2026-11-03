@@ -156,7 +156,7 @@ it("re-previews on a harness change and keeps creation disabled until the previe
   backend({ preview: (agent, name) => preview({ agent: agent as never, label: name ?? "PR Triage", revision: `rev-${agent}-${name}` }) });
   render(<DedicatedSessionForm workflow={workflow} onCreated={vi.fn()} onClose={vi.fn()} />);
   await create();
-  fireEvent.change(screen.getByRole("combobox", { name: "Harness" }), { target: { value: "codex" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), { target: { value: "codex" } });
   const button = screen.getByRole("button", { name: "Create (stopped)" }) as HTMLButtonElement;
   expect(button.disabled).toBe(true);
   await waitFor(() => expect(button.disabled).toBe(false));
@@ -175,7 +175,7 @@ it("lists an unavailable harness with its reason and never selects it", async ()
   const pi = screen.getByRole("option", { name: /Pi \(unavailable\)/ }) as HTMLOptionElement;
   expect(pi.disabled).toBe(true);
   expect(screen.getByText(/pi is not installed/)).toBeTruthy();
-  expect((screen.getByRole("combobox", { name: "Harness" }) as HTMLSelectElement).value).toBe("claude");
+  expect((screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement).value).toBe("claude");
 });
 
 it("refuses to preview when the panel's PR is not the live one", async () => {

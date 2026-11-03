@@ -12,8 +12,8 @@ const POLL_MS = 300;
 const POLL_RETRIES = 3;
 
 const PHASE_LABEL: Record<PrDestinationOperation["phase"], string> = {
-  starting: "Starting", fetching: "Fetching the PR head from the remote", creating_worktree: "Creating the worktree",
-  running_hook: "Running the setup hook", registering: "Registering the stopped feature", done: "Finished",
+  starting: "Starting", fetching: "Fetching the PR head from the remote", creating_worktree: "Creating the separate checkout",
+  running_hook: "Running the setup script", registering: "Registering the stopped feature", done: "Finished",
 };
 
 /** The operation's final answer in the shape the dedicated-session form hands its caller. */
@@ -153,9 +153,9 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
   // A setup hook runs files from the PR checkout; without a confirmed `origin`
   // branch (a fork, or an unreachable remote) that needs an explicit yes.
   const hookAck = companion?.hook && companion.pr_branch_on_origin !== true
-    ? `The setup hook would run files from this PR's checkout, and ${companion.pr_branch_on_origin === false ? `the PR branch “${companion.pr_branch}” is not on the remote (for example a fork)` : "AMF could not confirm the PR branch on the remote"}. That code is not from your repository.`
+    ? `The setup script would run files from this PR's checkout, and ${companion.pr_branch_on_origin === false ? `the PR branch “${companion.pr_branch}” is not on the remote (for example a fork)` : "AMF could not confirm the PR branch on the remote"}. That code is not from your repository.`
     : null;
-  const lateGate = needsApproval && !(hookAck && needsApproval.includes("setup hook would run files")) ? needsApproval : null;
+  const lateGate = needsApproval && !(hookAck && needsApproval.includes("setup script would run files")) ? needsApproval : null;
   const resourceGate = current?.resource_warning ?? lateGate;
   const gate = resourceGate || hookAck;
   const hookNeedsChoice = !!companion?.hook?.choice_required;
@@ -206,7 +206,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
     <section className="review-editor companion-feature-form" aria-label="New triage feature">
       <h3>New triage feature</h3>
       <p>
-        An isolated feature with its own worktree and a new branch, started from <strong>this PR&apos;s head commit</strong> and
+        An isolated feature with its own separate checkout (worktree) and a new branch, started from <strong>this PR&apos;s head commit</strong> and
         linked to PR #{catalog?.identity.pr_number ?? expected?.pr_number ?? "?"}. The agent is created <strong>stopped</strong>: nothing runs
         and no prompt is sent; start it from its session tab. Nothing is pushed to the remote and nothing is posted to GitHub.
       </p>
@@ -215,7 +215,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
         <Field label="Feature and branch name" hint={`Suggested from the PR branch “${catalog.pr_branch || catalog.source_branch}”. Always a new branch; an existing one is never reused or reset.`}>
           <input type="text" value={branch} maxLength={100} disabled={locked} onChange={(event) => setBranch(event.target.value)} />
         </Field>
-        <Field label="Harness">
+        <Field label="Agent">
           <select value={agent} disabled={locked} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
             {catalog.agents.map((a) => <option key={a.agent} value={a.agent} disabled={!!a.unavailable}>{a.label}{a.unavailable ? " (unavailable)" : ""}</option>)}
           </select>
@@ -223,12 +223,12 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
         {unavailable.length > 0 && <p className="small muted">{unavailable.map((a) => `${a.label}: ${a.unavailable}`).join(" · ")}</p>}
         <Field label="Mode" hint={catalog.modes.find((m) => m.mode === mode)?.description}>
           <select value={mode} disabled={locked} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-            {catalog.modes.map((m) => <option key={m.mode} value={m.mode} disabled={unsupported(m)}>{m.label}{unsupported(m) ? " (not supported by this harness)" : ""}</option>)}
+            {catalog.modes.map((m) => <option key={m.mode} value={m.mode} disabled={unsupported(m)}>{m.label}{unsupported(m) ? " (not supported by this agent)" : ""}</option>)}
           </select>
         </Field>
         <label className="row small"><input type="checkbox" checked={review} disabled={locked} onChange={(event) => setReview(event.target.checked)} /><span>Review workflow</span></label>
         <label className="row small"><input type="checkbox" checked={chrome} disabled={locked} onChange={(event) => setChrome(event.target.checked)} /><span>Enable Chrome</span></label>
-        {hook?.prompt_title && <Field label={hook.prompt_title} hint="The worktree setup hook asks this once, before the feature is registered.">
+        {hook?.prompt_title && <Field label={hook.prompt_title} hint="The project's setup script asks this once, before the feature is added.">
           <select value={hookChoice} disabled={locked} onChange={(event) => setHookChoice(event.target.value)}>
             <option value="">Choose a setup option</option>
             {hook.options.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -242,15 +242,15 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
           <dt>Checkout</dt><dd><code>{companion.destination_path}</code></dd>
           <dt>Started from</dt><dd>PR head <code>{companion.base_short}</code>{companion.will_fetch ? " (fetched from the remote first)" : ""}</dd>
           <dt>PR branch (on the remote)</dt><dd>{companion.pr_branch || "unknown"}{companion.pr_branch_on_origin === true ? " · found" : companion.pr_branch_on_origin === false ? " · not found" : " · not checked"}</dd>
-          <dt>Harness and mode</dt><dd>{companion.agent} · {companion.mode}{companion.review ? " · review" : ""}{companion.enable_chrome ? " · Chrome" : ""}</dd>
-          {companion.hook && <><dt>Setup hook</dt><dd><code>{companion.hook.script}</code>{companion.hook.choice ? ` · ${companion.hook.prompt_title ?? "choice"}: ${companion.hook.choice}` : ""}</dd></>}
+          <dt>Agent and mode</dt><dd>{companion.agent} · {companion.mode}{companion.review ? " · review" : ""}{companion.enable_chrome ? " · Chrome" : ""}</dd>
+          {companion.hook && <><dt>Setup script</dt><dd><code>{companion.hook.script}</code>{companion.hook.choice ? ` · ${companion.hook.prompt_title ?? "choice"}: ${companion.hook.choice}` : ""}</dd></>}
         </dl>
         {companion.pr_branch_note && <p className={companion.pr_branch_on_origin === false ? "callout callout-danger" : "small muted"} role={companion.pr_branch_on_origin === false ? "alert" : undefined}>{companion.pr_branch_note}</p>}
         <ul>{current.consequences.map((line) => <li key={line}>{line}</li>)}</ul>
       </div>}
       {gate && !operationId && <label className="row small">
         <input type="checkbox" checked={approved} disabled={locked} onChange={(event) => setApproved(event.target.checked)} />
-        <span>{resourceGate ? <>I approve despite the resource warning: {resourceGate}{hookAck ? ` ${hookAck}` : ""}</> : <>I understand and approve running the setup hook: {hookAck}</>}</span>
+        <span>{resourceGate ? <>I approve despite the resource warning: {resourceGate}{hookAck ? ` ${hookAck}` : ""}</> : <>I understand and approve running the setup script: {hookAck}</>}</span>
       </label>}
       {operationId && !operationLost && <div className="callout callout-accent" role="status" aria-live="polite">
         {running && <p className="row"><Spinner /> <strong>{operation ? PHASE_LABEL[operation.phase] : "Starting"}…</strong></p>}

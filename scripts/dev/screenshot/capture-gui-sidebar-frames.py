@@ -126,7 +126,7 @@ def capture(name, note, expects, expression=None):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    assert not evaluate('!!document.querySelector("[role=alert]")'), body
+    assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.4)

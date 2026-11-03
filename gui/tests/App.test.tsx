@@ -260,7 +260,7 @@ it("retains the worktree disposition through the project-list choice and submits
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
   fireEvent.click(await screen.findByRole("radio", { name: "Move them to the global list" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
-  fireEvent.click(await screen.findByRole("radio", { name: "Keep on Second" }));
+  fireEvent.click(await screen.findByRole("radio", { name: "Move it to Second" }));
   const button = screen.getByRole("button", { name: "Delete feature", exact: true });
   fireEvent.click(button);
   fireEvent.click(button);
@@ -287,7 +287,7 @@ it("cancels a project-list choice without issuing another deletion request", asy
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Delete feature" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
-  await screen.findByRole("radio", { name: "Keep on First" });
+  await screen.findByRole("radio", { name: "Move it to First" });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "delete_feature")).toHaveLength(1);
@@ -639,7 +639,7 @@ it("completes once and appends the unsent feedback prompt to the agent's compose
   });
   fireEvent.click(featureTool("Final Review"));
   fireEvent.click(await screen.findByRole("button", { name: "Complete review…" }));
-  const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
+  const confirm = screen.getByRole("alert", { name: "Complete Final Review" });
   expect(within(confirm).getByText(/opens the "address the feedback" prompt as an unsent draft in Agent/)).toBeTruthy();
   const handoff = within(confirm).getByRole("button", { name: "Complete and hand off to Agent" });
   fireEvent.click(handoff);
@@ -774,7 +774,7 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "keep feedback" } });
     fireEvent.click(review);
     expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
-    const discard = screen.getByRole("alertdialog", { name: "Discard unsent feedback" });
+    const discard = screen.getByRole("alert", { name: "Discard unsent feedback" });
     fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
     expect((screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("keep feedback");
     fireEvent.click(review);
@@ -1269,7 +1269,7 @@ async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktr
 
 it("cancels dormant deletion and refreshes the list without opening or deleting the feature", async () => {
   const { client, loads } = await openDormantDeletion(() => { throw new Error("must not delete"); }, false, true);
-  expect(screen.getByText(/repository checkout itself is left alone/)).toBeTruthy();
+  expect(screen.getByText(/project's own folder, which is left alone/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
   await waitFor(() => expect(loads()).toBe(2));
@@ -1295,11 +1295,11 @@ it("carries a dormant observation through TODO choices and blocks duplicate dele
     fireEvent.keyDown(window, { key: "Escape" });
     return new Promise((resolve) => { finish = resolve; });
   }, true);
-  expect(screen.getByText(/Uncommitted changes in it are discarded/)).toBeTruthy();
+  expect(screen.getByText(/Changes you have not committed there are lost/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
   fireEvent.click(await screen.findByRole("radio", { name: "Move them to the global list" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
-  await screen.findByRole("radio", { name: "Keep on Survivor" });
+  await screen.findByRole("radio", { name: "Move it to Survivor" });
   const confirm = screen.getByRole("button", { name: "Delete feature", exact: true });
   fireEvent.click(confirm);
   fireEvent.click(confirm);
@@ -1550,7 +1550,7 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   client.clear();
 });
 
-it("blocks changing harness for an unsent draft in another agent tab and preserves it on Cancel", async () => {
+it("blocks switching agent for an unsent draft in another agent tab and opens its composer", async () => {
   const client = await openFeature([session("Agent", "claude"), session("Other", "claude")], [], "idle", true, true);
   const original = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation((command, args, options) => command === "feature_harness_load" ? Promise.resolve({
@@ -1561,14 +1561,16 @@ it("blocks changing harness for an unsent draft in another agent tab and preserv
   fireEvent.click(screen.getByRole("tab", { name: "Other" }));
   expect(draftInput().value).toBe("");
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Change agent…" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Switch agent…" }));
   await screen.findByLabelText("New agent");
   fireEvent.change(screen.getByLabelText("New agent"), { target: { value: "opencode" } });
-  fireEvent.click(screen.getByLabelText("I understand and confirm this agent change"));
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
-  expect(within(screen.getByRole("dialog", { name: "Change agent" })).getByRole("alert").textContent).toContain("unsent agent drafts");
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+  fireEvent.click(screen.getByLabelText("I understand the conversations will be reset"));
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", true);
+  expect(within(screen.getByRole("dialog", { name: "Switch agent" })).getByRole("alert").textContent).toContain("unsent agent drafts");
+  // "Open composer" closes the dialog and shows the session holding the draft.
+  fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
+  expect(screen.queryByRole("dialog", { name: "Switch agent" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "Agent" }).getAttribute("aria-selected")).toBe("true");
   expect(draftInput().value).toBe("Keep this unsent draft");
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "feature_harness_apply")).toBe(false);
   client.clear();

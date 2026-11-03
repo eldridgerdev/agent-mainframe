@@ -56,7 +56,7 @@ it("posts findings only after confirmation and prepares a selected or batch fix 
   })));
   expect(await screen.findByRole("button", { name: "Post to GitHub…" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Post to GitHub…" }));
-  expect(await screen.findByRole("alertdialog", { name: "Confirm post AI review to GitHub" })).toBeTruthy();
+  expect(await screen.findByRole("alert", { name: "Confirm post AI review to GitHub" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Post review to GitHub" }));
   await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "post")).toBe(true));
   expect(await screen.findByText("Posted")).toBeTruthy();

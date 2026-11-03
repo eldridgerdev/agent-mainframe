@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import FeaturePresetsPanel from "../src/FeaturePresetsPanel";
 import { CreateFeatureForm } from "../src/App";
 import type { FeaturePreset } from "../src/api";
+import { getConfirm } from "./confirmCallout";
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const clients: QueryClient[] = [];
@@ -35,7 +36,7 @@ it("retains failed drafts, confirms cancel/reload, and stages delete/add without
   render(<FeaturePresetsPanel onClose={onClose} />);
   await screen.findByLabelText("Preset name"); change("Preset name", "Edited"); click("Save presets");
   expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Global config changed");
-  click("Cancel"); expect(screen.getByRole("alertdialog")).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
+  click("Cancel"); expect(getConfirm()).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
   click("Keep editing"); expect(screen.getByLabelText("Preset name")).toHaveProperty("value", "Edited");
   click("Reload presets"); click("Discard changes");
   await waitFor(() => expect(screen.getByLabelText("Preset name")).toHaveProperty("value", "Ship"));

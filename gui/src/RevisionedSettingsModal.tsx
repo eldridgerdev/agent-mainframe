@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { asGuiError } from "./api";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 
 /** One scoped slice of a config file, with the revision it was read at. The
  * backend refuses a save made against an older revision. */
@@ -82,17 +82,17 @@ export default function RevisionedSettingsModal<S, V extends RevisionedView<S> =
     {busy && <p role="status"><Spinner /> Loading or saving settings…</p>}
     {error && <p className="callout callout-danger" role="alert">{error}</p>}
     {view && <div className="form-stack">{children(busy, view)}</div>}
-    {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">
+    {discard && <ConfirmCallout label="Discard unsaved settings" className="callout callout-warning">
       <p>Discard unsaved settings and {discard === "close" ? "close" : "reload"}?</p>
       <button className="btn btn-secondary" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         setDiscard(null);
       }}>Keep editing</button>
-      <button className="btn btn-warning" disabled={busy} onClick={() => {
+      <button className="btn btn-danger" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         const action = discard; setDiscard(null);
         if (action === "close") onClose(); else void load();
       }}>Discard changes</button>
-    </div>}
+    </ConfirmCallout>}
   </Modal>;
 }

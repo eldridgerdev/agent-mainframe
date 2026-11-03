@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -239,7 +239,7 @@ try:
     wait('document.querySelectorAll(".review-inline-thread").length===2')
     pick("Select base line 8")
     click("Suggest replacement")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("pr-files-lines-suggestion-refused.png", "The dialog's rule applies here: a suggestion over a removed base line is refused with the reason, and nothing is saved.", ["removed (base-only) line", "Saved line comments (2)"], allow_alert=True)
     pick("Select line 10")
     click("Suggest replacement")

@@ -159,7 +159,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     # Focus restoration is asserted before this call. Blur only the terminal
@@ -257,8 +257,8 @@ def edit_ready(path):
 
 
 def confirm_open():
-    wait('!!document.querySelector("[role=alertdialog][aria-label=\\"Confirm answer\\"]")')
-    evaluate('document.querySelector("[role=alertdialog][aria-label=\\"Confirm answer\\"]").scrollIntoView({block:"nearest"})')
+    wait('!!document.querySelector("[data-confirm-callout][aria-label=\\"Confirm answer\\"]")')
+    evaluate('document.querySelector("[data-confirm-callout][aria-label=\\"Confirm answer\\"]").scrollIntoView({block:"nearest"})')
 
 
 tmux = ["tmux", "-S", os.environ["AMF_TMUX_SOCKET"]]
@@ -359,7 +359,7 @@ try:
     pathlib.Path(guide_request["response_file"]).write_text(json.dumps(external))
     pathlib.Path(guide_request["proceed_signal"]).write_text("")
     click("Send approval")
-    wait('document.querySelector("[role=alert]")?.textContent.includes("already answered")')
+    wait('document.querySelector("[role=alert]:not([data-confirm-callout])")?.textContent.includes("already answered")')
     assert json.loads(pathlib.Path(guide_request["response_file"]).read_text()) == external, "The GUI overwrote another interface's answer"
     os.killpg(guide_hook.pid, signal.SIGCONT)
     code, stderr = finish(guide_hook)

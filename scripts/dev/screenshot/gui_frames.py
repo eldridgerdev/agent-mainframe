@@ -165,7 +165,7 @@ class GuiFrames:
         for text in expects:
             assert text in body, (text, body)
         if not allow_alert:
-            assert not self.evaluate('!!document.querySelector("[role=alert]")'), body
+            assert not self.evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
         if expression:
             assert self.evaluate(expression), expression
         time.sleep(0.25)

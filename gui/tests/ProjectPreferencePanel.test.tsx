@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { invoke } from "@tauri-apps/api/core";
 import ProjectPreferencePanel from "../src/ProjectPreferencePanel";
 import { creationChoices } from "./creationChoices";
+import { getConfirm } from "./confirmCallout";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
@@ -16,7 +17,7 @@ it("saves only explicit preference settings and protects cancel/reload drafts", 
   vi.mocked(invoke).mockResolvedValue(creationChoices(["claude", "opencode"]));
   render(<ProjectPreferencePanel projectId="one" supported={[...supported]} onClose={close} onSaved={saved} />);
   await screen.findByLabelText(/^Preferred agent/); choose("opencode");
-  expect(invoke).toHaveBeenCalledTimes(1); click("Cancel"); expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(invoke).toHaveBeenCalledTimes(1); click("Cancel"); expect(getConfirm()).toBeTruthy();
   click("Keep editing"); click("Save settings");
   await waitFor(() => expect(saved).toHaveBeenCalledOnce());
   expect(invoke).toHaveBeenLastCalledWith("project_preference_save", { projectId: "one", revision: "choices-rev", settings: { preferred_agent: "opencode" } });

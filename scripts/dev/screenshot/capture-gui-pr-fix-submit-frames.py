@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -219,7 +219,7 @@ try:
     wait(has_button("Send fix to agent"))
     (state / "head.txt").write_text("feed" + "1" * 36 + "\n")
     click("Send fix to agent")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("003-stale-send-refusal.png", "A new PR head refuses sending while retaining the exact confirmation. No agent receives the instruction.", ["The PR has new commits", "Send fix to agent"], allow_alert=True)
     assert not pathlib.Path(os.environ["AMF_GUI_FIX_PROMPTS"]).exists()
     (state / "head.txt").write_text("c0ffee" + "0" * 34 + "\n")

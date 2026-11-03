@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -245,7 +245,7 @@ try:
     capture("006-changed-elsewhere.png", "A change made elsewhere is flagged with a Reload instead of being silently adopted.", ["changed elsewhere", "Reload"])
     set_input('section[aria-label="Nickname"] input', "Stale overwrite")
     click("Save nickname")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     assert db("SELECT nickname FROM features WHERE id='shot-feature'") == [("Renamed in the TUI",)]
     capture("007-stale-refused.png", "Saving over the stale nickname is refused with an explicit message; the other change survives.", ["The nickname changed since you opened this"], allow_alert=True)
 

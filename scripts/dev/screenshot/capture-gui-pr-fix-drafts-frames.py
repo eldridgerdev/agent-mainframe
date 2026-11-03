@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -225,12 +225,12 @@ try:
     original = evaluate('document.querySelector(".review-editor textarea").value')
     fill("Fix prompt", original + "\nAdd regression coverage for negative invoice totals.")
     click("Cancel fix draft")
-    wait('!!document.querySelector(".review-editor [role=alertdialog]")')
+    wait('!!document.querySelector(".review-editor [data-confirm-callout]")')
     capture("003-discard-protection.png", "Cancelling an edited fix requires an explicit discard. Keeping the edit preserves the operator's text and leaves both the agent and GitHub untouched.", ["Discard your edited fix prompt?", "Keep editing", "Discard fix prompt"], 'document.querySelector(".review-editor textarea").value.endsWith("Add regression coverage for negative invoice totals.")')
     click("Keep editing")
     (state / "head.txt").write_text("feed" + "1" * 36 + "\n")
     click("Open in agent composer")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("004-stale-head-refusal.png", "The PR head moved after preparation. Confirmation rereads GitHub and refuses the handoff while keeping the edited prompt. No fix starts and no reply is posted.", ["The PR has new commits; cancel the fix draft and refresh", "Fix prompt", "Open in agent composer"], 'document.querySelector(".review-editor textarea").value.endsWith("Add regression coverage for negative invoice totals.")', allow_alert=True)
     (state / "head.txt").write_text("c0ffee" + "0" * 34 + "\n")
     click("Open in agent composer")

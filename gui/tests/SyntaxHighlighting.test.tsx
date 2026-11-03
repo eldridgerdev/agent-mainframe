@@ -9,6 +9,7 @@ import ReviewPanel from "../src/ReviewPanel";
 import { SyntaxBadge } from "../src/SyntaxCode";
 import type { DiffFile, DiffHunk, DiffView, LearningView, ReviewView } from "../src/api";
 import type { SyntaxInfo, SyntaxInstallView } from "../src/syntaxApi";
+import { queryConfirm } from "./confirmCallout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const clients: QueryClient[] = [];
@@ -212,7 +213,7 @@ it("keeps a Learning question mounted while the language manager owns Escape", a
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.keyDown(window, { key: "Escape" });
   expect(close).not.toHaveBeenCalled();
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   rerender(<LearningPanel {...props} />);
   expect(screen.getByRole("textbox", { name: "Question" })).toBe(question);
   expect(question).toHaveProperty("value", "Keep my unsent parser question");

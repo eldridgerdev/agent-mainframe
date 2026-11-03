@@ -36,18 +36,71 @@ const ICONS = {
   minimize: "M5 12h14",
   alert: "M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
   check: "M5 12l5 5L20 7",
-  inbox: "M22 12h-6l-2 3h-4l-2-3H2M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z",
   file: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6",
   search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5",
   collapseAll: "M7 20l5-5 5 5M7 4l5 5 5-5",
   expandAll: "M7 15l5 5 5-5M7 9l5-5 5 5",
+  chevronLeft: "M15 6l-6 6 6 6",
+  bell: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
+  checkList: "M3 6l2 2 3-3M3 13l2 2 3-3M12 6.5h9M12 13.5h9M4 20h.01M12 20h9",
+  listPlus: "M3 6h12M3 12h12M3 18h7M18 14v8M14 18h8",
+  palette: "M12 21a9 9 0 1 1 9-9c0 2.5-2 3.5-4 3.5h-2a2 2 0 0 0-1.5 3.3A1.4 1.4 0 0 1 12 21zM7.5 11.5h.01M10 7.5h.01M15 7.5h.01",
+  sliders: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4",
+  layers: "M12 3l9 4.5-9 4.5-9-4.5zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
+  gauge: "M12 14l4-4M3.3 19a10 10 0 1 1 17.4 0",
+  code: "M16 18l6-6-6-6M8 6l-6 6 6 6",
+  plug: "M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z",
+  moon: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z",
+  bookmark: "M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z",
+  bug: "M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1V6a3 3 0 0 1 6 0v1.1M12 20v-9M6 13H2M22 13h-4M3 21c0-2.1 1.7-3.9 3.8-4M21 21c0-2.1-1.7-3.9-3.8-4M20.97 5c0 2.1-1.6 3.8-3.5 4M3 5c0 2.1 1.6 3.8 3.5 4M6 13a6 6 0 0 0 12 0v-3a4 4 0 0 0-4-4h-4a4 4 0 0 0-4 4z",
+  issue: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
+  book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5zM4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5",
+  bookOpen: "M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z",
+  camera: "M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  clipboardCheck: "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M9 2h6v4H9zM9 14l2 2 4-4",
+  pencil: "M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z",
+  shieldCheck: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4",
+  compass: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM16.2 7.8l-2.1 6.3-6.3 2.1 2.1-6.3z",
+  star: "M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z",
+  appWindow: "M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 9h18M7 6.5h.01M10 6.5h.01",
+  gitPullRequest: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v6M18 15V9a3 3 0 0 0-3-3h-4M13 3l-3 3 3 3",
+  gitCompare: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 15V9a3 3 0 0 0-3-3h-4M13 3l-3 3 3 3M6 9v6a3 3 0 0 0 3 3h4M11 15l3 3-3 3",
+  gitPullRequestDraft: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v6M18 5v.01M18 9v.01M18 13v.01",
 } as const;
 
 export type IconName = keyof typeof ICONS;
 
+/** One glyph per meaning. Sizes: 14px inside buttons, 16px (the default)
+ * in navigation and menus, 12px only in chips and disclosure toggles.
+ *
+ * | Icon | Means |
+ * |---|---|
+ * | bell | Needs attention |
+ * | checkList / list / listPlus | Global TODOs / a feature's TODOs / quick TODO |
+ * | palette | Appearance |
+ * | sliders | Prompt overrides |
+ * | layers | Feature presets |
+ * | gauge / code / plug | Context settings / syntax languages / agent availability |
+ * | moon | Dormant features |
+ * | bookmark | Session bookmarks |
+ * | bug / issue | Debug log / GitHub issues |
+ * | book / bookOpen | Prompt library / Learning |
+ * | camera | Screenshots |
+ * | clipboardCheck | Final review |
+ * | pencil | Rename and edit |
+ * | shieldCheck | Supervised edits |
+ * | compass | Steering coach |
+ * | star | Preferred agent |
+ * | appWindow | VS Code windows |
+ * | gitPullRequest / gitCompare / gitPullRequestDraft | PR triage / PR review / PR workspace |
+ * | sparkles / zap | AI planning and vibe modes / quick plan |
+ * | terminal | Agent and terminal sessions |
+ * | file | A document or file |
+ */
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   return (
     <svg
+      data-icon={name}
       className="icon"
       width={size}
       height={size}

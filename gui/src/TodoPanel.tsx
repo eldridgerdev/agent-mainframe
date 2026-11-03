@@ -224,7 +224,7 @@ export default function TodoPanel({
         <div className="todo-header-actions">
           {canStart && (
             <button className="btn btn-sm btn-secondary" onClick={() => setNextOpen(true)}>
-              <Icon name="zap" size={12} /> Implement next
+              <Icon name="zap" size={14} /> Implement next
             </button>
           )}
           {todos.length > 0 && (
@@ -277,7 +277,7 @@ export default function TodoPanel({
             const launching = launchingTodoId === todo.id;
             const hasWork = Boolean(todo.work.agent_session_id || todo.linked_feature_id);
             const menuItems = [
-              { label: "Edit…", icon: "list" as const, onSelect: () => setEditTodo(todo) },
+              { label: "Edit…", icon: "pencil" as const, onSelect: () => setEditTodo(todo) },
               { label: "Move up", icon: "arrowUp" as const, disabled: index === 0 || reorderMutation.isPending, onSelect: () => reorder(index, -1) },
               { label: "Move down", icon: "arrowDown" as const, disabled: index === todos.length - 1 || reorderMutation.isPending, onSelect: () => reorder(index, 1) },
               ...(otherScopes.length > 0
@@ -315,7 +315,7 @@ export default function TodoPanel({
                       aria-label={`Go to the work for ${todo.title}`}
                       onClick={() => void jump(todo)}
                     >
-                      <Icon name="terminal" size={12} /> Go to work
+                      <Icon name="terminal" size={14} /> Go to work
                     </button>
                   )}
                   {canStart && status === "not_started" && (
@@ -324,7 +324,7 @@ export default function TodoPanel({
                       disabled={launching}
                       onClick={() => setStartDialog(todo)}
                     >
-                      {launching ? <Spinner /> : <Icon name="play" size={12} />}
+                      {launching ? <Spinner /> : <Icon name="play" size={14} />}
                       {launching ? "Starting…" : "Start"}
                     </button>
                   )}
@@ -446,7 +446,7 @@ function StartTodoDialog({
         <>
           <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
           <button className="btn btn-primary" onClick={() => onConfirm(where, effectiveHow)}>
-            {effectiveHow === "plan" ? <Icon name="sparkles" /> : <Icon name="play" size={12} />}
+            {effectiveHow === "plan" ? <Icon name="sparkles" /> : <Icon name="play" size={14} />}
             {effectiveHow === "plan" ? "Start planning" : "Start agent"}
           </button>
         </>

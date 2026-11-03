@@ -1420,6 +1420,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-dir { display: block; width: 100%; padding: 6px 8px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
 .diff-dir:hover { background: var(--surface-2); }
 .diff-dir small, .diff-tree-empty { color: var(--text-muted); font-weight: 400; }
+.diff-dir > .icon { display: inline-block; vertical-align: -1px; }
 .diff-tree-empty { padding: 8px; }
 .diff-amf-group { border-top: 1px solid var(--border); }
 .diff-file:hover, .diff-file-selected { background: var(--surface-2); }

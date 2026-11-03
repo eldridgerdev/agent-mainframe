@@ -41,7 +41,7 @@ export default function SteeringPanel({ text, onClose }: { text: string; onClose
   return (
     <section className="steering-panel" aria-label="Steering coach" data-stale={stale ? "true" : "false"}>
       <header className="steering-head">
-        <Icon name="sparkles" />
+        <Icon name="compass" />
         <strong>Steering Coach</strong>
         {analysis && !stale && !analysis.blank && <span className={`steering-score steering-${tone}`}>Score: {analysis.score} / {analysis.max_score}</span>}
         <span className="muted small">Advisory only. Your draft stays unsent.</span>

@@ -1370,7 +1370,7 @@ export default function App() {
         <nav className="nav" aria-label="Workspace">
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button className="nav-item" onClick={() => setShowAttention(true)}>
-            <Icon name="inbox" />
+            <Icon name="bell" />
             <span className="nav-label">Needs attention</span>
             {attentionCount > 0 && <span className="nav-count nav-count-attention" title="Requests waiting on disk">{attentionCount}</span>}
           </button>
@@ -1378,7 +1378,7 @@ export default function App() {
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
           >
-            <Icon name="inbox" />
+            <Icon name="checkList" />
             <span className="nav-label">Global TODOs</span>
           </button>
           <div className="nav-section nav-section-toggle">
@@ -1389,30 +1389,30 @@ export default function App() {
             </button>
           </div>
           <div id="workspace-tools" className="nav-tools" hidden={toolsCollapsed}>
-            <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
+            <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="palette" /><span className="nav-label">Appearance</span></button>
             <button className="nav-item" onClick={() => openPromptLibrary()}>
-              <Icon name="file" /><span className="nav-label">Prompt library</span>
+              <Icon name="book" /><span className="nav-label">Prompt library</span>
             </button>
 
             <button className="nav-item" onClick={openPromptOverrides}>
-              <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
+              <Icon name="sliders" /><span className="nav-label">Prompt overrides</span>
             </button>
 
-            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
+            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="camera" /><span className="nav-label">Validation screenshots</span></button>
 
-            <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
-            <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
-            <button className="nav-item" onClick={() => setShowSyntaxLanguages(true)}><Icon name="list" /><span className="nav-label">Syntax languages</span></button>
-            <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
+            <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="layers" /><span className="nav-label">Feature presets</span></button>
+            <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="gauge" /><span className="nav-label">Context settings</span></button>
+            <button className="nav-item" onClick={() => setShowSyntaxLanguages(true)}><Icon name="code" /><span className="nav-label">Syntax languages</span></button>
+            <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="plug" /><span className="nav-label">Agent availability</span></button>
 
             <button className="nav-item" onClick={() => setShowDormancy(true)}>
-              <Icon name="zap" /><span className="nav-label">Dormant features</span>
+              <Icon name="moon" /><span className="nav-label">Dormant features</span>
             </button>
 
-            <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
+            <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="bookmark" /><span className="nav-label">Session bookmarks</span></button>
 
             <button className="nav-item" onClick={() => setShowDebugLog(true)}>
-              <Icon name="list" /><span className="nav-label">Debug log</span>
+              <Icon name="bug" /><span className="nav-label">Debug log</span>
             </button>
           </div>
 
@@ -1478,7 +1478,7 @@ export default function App() {
             <div className="nav-note">
               <p>No projects yet. Add a git repository to start.</p>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowCreateProject(true)}>
-                <Icon name="plus" size={12} /> Add project
+                <Icon name="plus" size={14} /> Add project
               </button>
             </div>
           )}
@@ -1652,7 +1652,7 @@ export default function App() {
         {view?.kind === "todos" && (
           <div className="page">
             <PageHeader
-              icon="inbox"
+              icon="checkList"
               title="Global TODOs"
               subtitle="Work that isn't tied to one project. Start it in any feature."
             />
@@ -2185,12 +2185,12 @@ function StartStopButton({ status, starting, stopping, onStart, onStop, size, ti
   const list = size === "sm";
   return status === "stopped" ? (
     <button className={`btn btn-sm ${list ? "btn-secondary" : "btn-primary"}`} onClick={onStart} disabled={starting}>
-      {starting ? <Spinner /> : <Icon name="play" size={12} />}
+      {starting ? <Spinner /> : <Icon name="play" size={14} />}
       {starting ? "Starting…" : "Start"}
     </button>
   ) : (
     <button className={`btn btn-sm ${list ? "btn-ghost" : "btn-secondary"}`} onClick={onStop} disabled={stopping} title={title}>
-      {stopping ? <Spinner /> : <Icon name="stop" size={12} />}
+      {stopping ? <Spinner /> : <Icon name="stop" size={14} />}
       {stopping ? "Stopping…" : "Stop"}
     </button>
   );
@@ -2238,7 +2238,7 @@ function ProjectView({
         actions={
           <>
             {project.is_git && <button className="btn btn-ghost btn-sm" aria-label="Issues" title="Issues" onClick={onIssues}>
-              <Icon name="list" size={14} /><span className="btn-label-optional">Issues</span>
+              <Icon name="issue" size={14} /><span className="btn-label-optional">Issues</span>
             </button>}
             {project.is_git && <Menu
               label="Pull request tools"
@@ -2247,8 +2247,8 @@ function ProjectView({
               className="btn btn-ghost btn-sm"
               title="Triage or review a pull request"
               items={[
-                { label: "PR Triage", icon: "inbox", onSelect: onPrTriage },
-                { label: "PR Review", icon: "file", onSelect: onPrReview },
+                { label: "PR Triage", icon: "gitPullRequest", onSelect: onPrTriage },
+                { label: "PR Review", icon: "gitCompare", onSelect: onPrReview },
               ]}
             />}
             <Menu
@@ -2256,8 +2256,8 @@ function ProjectView({
               className="btn btn-ghost btn-icon btn-sm"
               title="Project settings"
               items={[
-                { label: "Agent availability", icon: "list", onSelect: onAgentAvailability },
-                { label: "Preferred agent", icon: "check", onSelect: onProjectPreference },
+                { label: "Agent availability", icon: "plug", onSelect: onAgentAvailability },
+                { label: "Preferred agent", icon: "star", onSelect: onProjectPreference },
               ]}
             />
             <span className="page-actions-sep" aria-hidden="true" />
@@ -2515,13 +2515,13 @@ function FeatureView({
         actions={
           <>
             <button className="btn btn-ghost btn-icon btn-sm" aria-label="Quick TODO" title="Quick TODO" onClick={onQuickTodo}>
-              <Icon name="list" size={14} />
+              <Icon name="listPlus" size={14} />
             </button>
             {project.is_git && <button className="btn btn-ghost btn-sm" aria-label="Changes" title="Changes on this branch" onClick={onDiff}>
               <Icon name="branch" size={14} /><span className="btn-label-optional">Changes</span>
             </button>}
             {pendingEdits > 0 && <button className="btn btn-ghost btn-sm" onClick={onSupervisedEdits}>
-              <Icon name="check" size={14} /> Supervised edits
+              <Icon name="shieldCheck" size={14} /> Supervised edits
               <span className="nav-count nav-count-attention">{pendingEdits}</span>
             </button>}
             {(feature.review_source || feature.triage_source) && (
@@ -2544,16 +2544,16 @@ function FeatureView({
                 { label: "Plan interview", icon: "sparkles", hint: "Full", onSelect: () => onPlan(false) },
                 { label: "Quick Plan", icon: "zap", hint: "Fast", onSelect: () => onPlan(true) },
                 { section: "Review" },
-                { label: "Learning", icon: "search", disabled: learningBusy, hint: learningBusy ? "Working…" : undefined, onSelect: onLearning },
+                { label: "Learning", icon: "bookOpen", disabled: learningBusy, hint: learningBusy ? "Working…" : undefined, onSelect: onLearning },
                 ...(project.is_git ? [{
-                  label: "Final Review", icon: "check" as const, disabled: reviewBusy,
+                  label: "Final Review", icon: "clipboardCheck" as const, disabled: reviewBusy,
                   hint: reviewBusy ? "Working…" : undefined, onSelect: onReview,
                 }] : []),
-                { label: "Screenshots", icon: "file", onSelect: () => onScreenshots(null) },
+                { label: "Screenshots", icon: "camera", onSelect: () => onScreenshots(null) },
                 ...(project.is_git ? [
                   { section: "Pull request" },
-                  { label: "PR Triage", icon: "inbox" as const, onSelect: onPrTriage },
-                  { label: "PR Workspace", icon: "file" as const, hint: "Experimental", onSelect: onPrWorkspace },
+                  { label: "PR Triage", icon: "gitPullRequest" as const, onSelect: onPrTriage },
+                  { label: "PR Workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", onSelect: onPrWorkspace },
                 ] : []),
               ]}
             />
@@ -2585,9 +2585,9 @@ function FeatureView({
                 }),
                 { section: "Feature" },
                 // While edits wait, the header's counted button is the way in.
-                ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
+                ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "shieldCheck" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
-                { label: "Rename, ready and summary…", icon: "check" as const, onSelect: () => onFeatureActions(null) },
+                { label: "Rename, ready and summary…", icon: "pencil" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
@@ -2638,8 +2638,8 @@ function FeatureView({
                       hint: isStopped ? "Starts the feature" : undefined,
                       onSelect: sessionLifecycle(session).onStart,
                     },
-                  { label: "Rename session…", icon: "check" as const, onSelect: () => onFeatureActions(session.id) },
-                  { label: "Screenshots for this session", icon: "file", onSelect: () => onScreenshots(session.id) },
+                  { label: "Rename session…", icon: "pencil" as const, onSelect: () => onFeatureActions(session.id) },
+                  { label: "Screenshots for this session", icon: "camera", onSelect: () => onScreenshots(session.id) },
                   "separator",
                   { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
                 ]}
@@ -2667,7 +2667,7 @@ function FeatureView({
             onClick={() => onTab(VSCODE_TAB)}
             title="VS Code windows AMF opened for this feature"
           >
-            <Icon name="file" size={14} /> VS Code
+            <Icon name="appWindow" size={14} /> VS Code
             {editors.length > 0 && <span className="nav-count">{editors.length}</span>}
           </button>
         )}
@@ -2701,7 +2701,7 @@ function FeatureView({
                     <button className="btn btn-primary"
                       onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
                       disabled={starting || activeLifecycle?.starting}>
-                      {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
+                      {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={14} />}
                       {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
                     </button>
                   }

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { blocks, token, parse, over, contrast, type Rgb } from "./contrast";
+import { blocks, readCss, token, parse, over, contrast, type Rgb } from "./contrast";
 
 // Every syntax role must stay readable (WCAG AA body text, 4.5:1) on the
 // backgrounds code is drawn on: the code surface, the added/removed row
@@ -9,9 +9,10 @@ import { blocks, token, parse, over, contrast, type Rgb } from "./contrast";
 const read = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 const syntaxCss = read("syntax.css");
 const styles = read("styles.css");
+const reviewCss = readCss("styles/review.css");
 
 function rowTint(kind: "added" | "removed"): string {
-  const match = styles.match(new RegExp(`\\.diff-${kind}\\s*\\{\\s*background:\\s*([^;]+);`));
+  const match = reviewCss.match(new RegExp(`\\.diff-${kind}\\s*\\{\\s*background:\\s*([^;]+);`));
   expect(match, kind).toBeTruthy();
   return match![1].trim().replace(/,\s*\./g, ", 0.");
 }

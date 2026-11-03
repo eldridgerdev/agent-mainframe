@@ -161,6 +161,9 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
               {answer.spawned_session_id ? "Return to editing agent" : "Open editing agent"}
             </button>
           </div>
+          {/* Disabled reasons as visible text, not only a tooltip. */}
+          {!answer.todo_id && !view.can_keep_todo && <p className="field-hint">Keep as TODO is unavailable: AMF can't reach its database, so there's no TODO list to add to.</p>}
+          {question.trim() && <p className="field-hint">Send or clear your question before opening an editing agent.</p>}
           {keepDraft?.qaId === answer.id && <form className="learning-question" aria-label="Keep as TODO"
             onSubmit={(e) => { e.preventDefault(); void keep(); }}>
             <p className="field-hint">A note about your code, not a change to it. Nothing is written until you save.</p>

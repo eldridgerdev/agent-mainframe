@@ -106,7 +106,7 @@ async function fillAndCreate() {
 
 it("creation form: the coach is off by default and passes no option", async () => {
   const onSubmit = form();
-  expect(screen.getByRole("checkbox", { name: /Prompt coach \(experimental\)/ })).toHaveProperty("checked", false);
+  expect(screen.getByRole("switch", { name: /Prompt coach \(experimental\)/ })).toHaveProperty("checked", false);
   await fillAndCreate();
   expect(onSubmit).toHaveBeenCalledOnce();
   expect(onSubmit.mock.calls[0]).toHaveLength(2);
@@ -114,7 +114,7 @@ it("creation form: the coach is off by default and passes no option", async () =
 
 it("creation form: ticking the coach reports it, and planning turns it off", async () => {
   const onSubmit = form();
-  const box = screen.getByRole("checkbox", { name: /Prompt coach \(experimental\)/ });
+  const box = screen.getByRole("switch", { name: /Prompt coach \(experimental\)/ });
   fireEvent.click(box);
   expect(box).toHaveProperty("checked", true);
   fireEvent.click(screen.getByRole("radio", { name: "Quick Plan" }));
@@ -165,7 +165,7 @@ it("creating with the coach opens an empty, unsent draft with the checklist and 
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  fireEvent.click(await screen.findByRole("checkbox", { name: /Prompt coach \(experimental\)/ }));
+  fireEvent.click(await screen.findByRole("switch", { name: /Prompt coach \(experimental\)/ }));
   await fillAndCreate();
   const panel = await screen.findByRole("region", { name: "Steering coach" });
   await within(panel).findByText(/Start with the concrete task\./);
@@ -181,7 +181,7 @@ it("without the coach, creating leaves the composer plain", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  await screen.findByRole("checkbox", { name: /Prompt coach/ });
+  await screen.findByRole("switch", { name: /Prompt coach/ });
   await fillAndCreate();
   await screen.findByRole("textbox", { name: "Draft prompt" });
   expect(screen.queryByRole("region", { name: "Steering coach" })).toBeNull();
@@ -235,7 +235,7 @@ it("hides the score for a blank draft", async () => {
 
 it("creation form: clearing planning does not bring a previously ticked coach back", async () => {
   const onSubmit = form();
-  const box = screen.getByRole("checkbox", { name: /Prompt coach \(experimental\)/ });
+  const box = screen.getByRole("switch", { name: /Prompt coach \(experimental\)/ });
   fireEvent.click(box);
   fireEvent.click(screen.getByRole("radio", { name: "Full Plan" }));
   fireEvent.click(screen.getByText("Start directly"));
@@ -254,7 +254,7 @@ it("tells the user when the created feature has no agent session to coach", asyn
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  fireEvent.click(await screen.findByRole("checkbox", { name: /Prompt coach \(experimental\)/ }));
+  fireEvent.click(await screen.findByRole("switch", { name: /Prompt coach \(experimental\)/ }));
   await fillAndCreate();
   expect(await screen.findByText(/no agent session to coach/)).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Steering coach" })).toBeNull();

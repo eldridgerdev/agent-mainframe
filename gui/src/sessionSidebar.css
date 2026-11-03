@@ -151,7 +151,11 @@
 }
 .sb-actions, .sb-action-group { display: inline-flex; gap: 4px; }
 .sb-action {
-  padding: 1px 7px;
+  /* The pill stays small; the button keeps a 24px target. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 1px 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-2);

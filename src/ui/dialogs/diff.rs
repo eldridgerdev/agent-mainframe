@@ -2314,6 +2314,19 @@ pub(super) fn draw_patch(
     state: &mut DiffViewerState,
     theme: &Theme,
 ) {
+    draw_patch_with_gutter(frame, area, state, theme, false);
+}
+
+/// [`draw_patch`] with a choice of unified gutter. `compact_gutter` shows one
+/// line-number column instead of old + new, for panes too narrow to spend two
+/// columns of numbers on every wrapped row (the PR workspace's code pane).
+pub(super) fn draw_patch_with_gutter(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut DiffViewerState,
+    theme: &Theme,
+    compact_gutter: bool,
+) {
     let border = if state.focus == DiffViewerFocus::Patch {
         theme.warning.to_color()
     } else {
@@ -2344,6 +2357,7 @@ pub(super) fn draw_patch(
                 layout: DiffViewerLayout::Unified,
                 include_prologue: true,
                 new_file_presentation: is_new_diff_file(file),
+                compact_gutter,
                 commented: &commented,
                 draft: &draft,
                 blocker: &blocker,
@@ -2389,6 +2403,7 @@ pub(super) fn draw_patch(
             scroll: state.patch_scroll,
             include_prologue: true,
             new_file_presentation: file.map(is_new_diff_file).unwrap_or(false),
+            compact_gutter,
             cursor: cursor_loc,
             commented,
             draft,
@@ -2546,6 +2561,10 @@ pub(crate) struct PatchPanelOptions {
     pub scroll: usize,
     pub include_prologue: bool,
     pub new_file_presentation: bool,
+    /// One line-number column (new, or old for a removed line) instead of two
+    /// (unified view only). For narrow panes, where every gutter column is
+    /// taken from wrapped code.
+    pub compact_gutter: bool,
     /// Review line cursor location (unified view only); highlighted when set.
     pub cursor: Option<DiffLineLocation>,
     /// Diff-line locations that carry a kept (non-draft) review comment (unified
@@ -2574,6 +2593,7 @@ impl Default for PatchPanelOptions {
             scroll: 0,
             include_prologue: true,
             new_file_presentation: false,
+            compact_gutter: false,
             cursor: None,
             commented: std::collections::HashSet::new(),
             draft: std::collections::HashSet::new(),
@@ -2621,6 +2641,7 @@ pub(crate) fn draw_patch_panel(
         layout: options.layout.clone(),
         include_prologue: options.include_prologue,
         new_file_presentation: options.new_file_presentation,
+        compact_gutter: options.compact_gutter,
         commented: &options.commented,
         draft: &options.draft,
         blocker: &options.blocker,
@@ -2670,6 +2691,8 @@ struct PatchRows {
     rows: std::collections::HashMap<DiffLineLocation, std::ops::Range<usize>>,
     /// Width of one line-number column in the unified gutter.
     number_width: usize,
+    /// The unified gutter has one number column rather than two.
+    compact_gutter: bool,
 }
 
 struct PatchRowsRequest<'a> {
@@ -2679,6 +2702,7 @@ struct PatchRowsRequest<'a> {
     layout: DiffViewerLayout,
     include_prologue: bool,
     new_file_presentation: bool,
+    compact_gutter: bool,
     commented: &'a std::collections::HashSet<DiffLineLocation>,
     draft: &'a std::collections::HashSet<DiffLineLocation>,
     blocker: &'a std::collections::HashSet<DiffLineLocation>,
@@ -2727,6 +2751,7 @@ impl PatchRowsRequest<'_> {
         std::mem::discriminant(&self.layout).hash(&mut hasher);
         self.include_prologue.hash(&mut hasher);
         self.new_file_presentation.hash(&mut hasher);
+        self.compact_gutter.hash(&mut hasher);
 
         let file = self.file;
         file.path.hash(&mut hasher);
@@ -2775,6 +2800,7 @@ impl PatchRowsRequest<'_> {
                 self.theme,
                 self.include_prologue,
                 self.new_file_presentation,
+                self.compact_gutter,
                 None,
                 self.commented,
                 self.draft,
@@ -2788,6 +2814,7 @@ impl PatchRowsRequest<'_> {
             lines,
             rows,
             number_width: line_number_width(self.file),
+            compact_gutter: self.compact_gutter,
         }
     }
 }
@@ -2813,6 +2840,17 @@ fn cached_patch_rows(request: PatchRowsRequest<'_>) -> std::rc::Rc<PatchRows> {
     })
 }
 
+/// Column of the unified gutter's marker glyph: after one number column and a
+/// space when compact, after two of each otherwise. The gutter is this plus
+/// the two-cell marker.
+fn gutter_marker_col(number_width: usize, compact: bool) -> usize {
+    if compact {
+        number_width + 1
+    } else {
+        number_width * 2 + 2
+    }
+}
+
 struct PatchCursor {
     location: DiffLineLocation,
     has_comment: bool,
@@ -2834,7 +2872,7 @@ fn paint_patch_cursor(
         return;
     };
     let number_width = rows.number_width;
-    let marker_col = number_width * 2 + 2;
+    let marker_col = gutter_marker_col(number_width, rows.compact_gutter);
     let gutter_width = marker_col + 2;
     let marker = if cursor.has_comment {
         "◆"
@@ -2864,8 +2902,8 @@ fn paint_patch_cursor(
                 continue;
             }
             cell.set_bg(selection_bg);
-            let is_number =
-                dx < number_width || (number_width + 1..number_width * 2 + 1).contains(&dx);
+            let is_number = dx < number_width
+                || (!rows.compact_gutter && (number_width + 1..number_width * 2 + 1).contains(&dx));
             if is_number {
                 cell.set_fg(text_fg);
             } else if dx >= marker_col {
@@ -3907,6 +3945,7 @@ fn patch_lines(
         theme,
         include_prologue,
         new_file_presentation,
+        false,
         cursor,
         commented,
         draft,
@@ -3928,6 +3967,7 @@ fn indexed_patch_lines(
     theme: &Theme,
     include_prologue: bool,
     new_file_presentation: bool,
+    compact_gutter: bool,
     cursor: Option<DiffLineLocation>,
     commented: &std::collections::HashSet<DiffLineLocation>,
     draft: &std::collections::HashSet<DiffLineLocation>,
@@ -3942,7 +3982,11 @@ fn indexed_patch_lines(
     }
 
     let number_width = line_number_width(file);
-    let gutter_width = number_width * 2 + 4;
+    let columns = GutterColumns {
+        number_width,
+        compact: compact_gutter,
+    };
+    let gutter_width = gutter_marker_col(number_width, compact_gutter) + 2;
     if content_width <= gutter_width + 4 {
         return raw_patch_wrapped_lines(file, content_width, theme);
     }
@@ -3976,7 +4020,7 @@ fn indexed_patch_lines(
                 None,
                 plain_chunks(meta, meta_style(meta, theme)),
                 meta_style(meta, theme),
-                number_width,
+                columns,
                 text_width,
                 GutterAnnotation::default(),
                 theme,
@@ -3993,7 +4037,7 @@ fn indexed_patch_lines(
             None,
             plain_chunks(&format_hunk_header(hunk), hunk_style),
             hunk_style,
-            number_width,
+            columns,
             text_width,
             GutterAnnotation::default(),
             theme,
@@ -4023,7 +4067,7 @@ fn indexed_patch_lines(
                                 .or_else(|| highlighted_line(highlights.old.as_ref(), old_line)),
                         ),
                         context_row_style(theme),
-                        number_width,
+                        columns,
                         text_width,
                         ann,
                         theme,
@@ -4056,7 +4100,7 @@ fn indexed_patch_lines(
                                 .as_ref(),
                         ),
                         removed_row_style(theme),
-                        number_width,
+                        columns,
                         text_width,
                         ann,
                         theme,
@@ -4090,7 +4134,7 @@ fn indexed_patch_lines(
                                 .as_ref(),
                         ),
                         added_style,
-                        number_width,
+                        columns,
                         text_width,
                         ann,
                         theme,
@@ -4104,7 +4148,7 @@ fn indexed_patch_lines(
                         None,
                         plain_chunks(&diff_line.text, meta_subtle_style(theme)),
                         meta_subtle_style(theme),
-                        number_width,
+                        columns,
                         text_width,
                         GutterAnnotation::default(),
                         theme,
@@ -4575,13 +4619,23 @@ struct GutterAnnotation {
     search_match: bool,
 }
 
+/// The unified gutter's number columns: two (old, new) of `number_width`
+/// each, or one when `compact`, which shows the new line number and falls
+/// back to the old one for a removed line. The row's `+`/`-` sign and colour
+/// still say which side a compact number belongs to.
+#[derive(Clone, Copy)]
+struct GutterColumns {
+    number_width: usize,
+    compact: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn wrap_gutter_line(
     old_number: Option<usize>,
     new_number: Option<usize>,
     chunks: Vec<StyledChunk>,
     style: Style,
-    number_width: usize,
+    columns: GutterColumns,
     text_width: usize,
     annotation: GutterAnnotation,
     theme: &Theme,
@@ -4631,17 +4685,15 @@ fn wrap_gutter_line(
     } else {
         ("│ ", line_number_fg(style, row_bg))
     };
+    let number_width = columns.number_width;
+    let label = |number: Option<usize>, index: usize| {
+        if index == 0 {
+            line_number_label(number, number_width)
+        } else {
+            blank_line_number_label(number_width)
+        }
+    };
     for (index, chunk_line) in wrapped.into_iter().enumerate() {
-        let old_label = if index == 0 {
-            line_number_label(old_number, number_width)
-        } else {
-            blank_line_number_label(number_width)
-        };
-        let new_label = if index == 0 {
-            line_number_label(new_number, number_width)
-        } else {
-            blank_line_number_label(number_width)
-        };
         // The marker glyph only shows on the first visual line of a logical
         // row; continuation lines keep the plain separator (tinted on cursor).
         let (sep_text, sep_fg) = if index == 0 {
@@ -4649,16 +4701,26 @@ fn wrap_gutter_line(
         } else {
             ("│ ", number_fg)
         };
-        let mut line = vec![
-            Span::styled(old_label, Style::default().fg(number_fg).bg(gutter_bg)),
-            Span::styled(" ", Style::default().bg(gutter_bg)),
-            Span::styled(new_label, Style::default().fg(number_fg).bg(gutter_bg)),
+        let number_style = Style::default().fg(number_fg).bg(gutter_bg);
+        let mut line = if columns.compact {
+            vec![Span::styled(
+                label(new_number.or(old_number), index),
+                number_style,
+            )]
+        } else {
+            vec![
+                Span::styled(label(old_number, index), number_style),
+                Span::styled(" ", Style::default().bg(gutter_bg)),
+                Span::styled(label(new_number, index), number_style),
+            ]
+        };
+        line.extend([
             Span::styled(" ", Style::default().bg(gutter_bg)),
             Span::styled(
                 sep_text.to_string(),
                 Style::default().fg(sep_fg).bg(gutter_bg),
             ),
-        ];
+        ]);
         if annotation.cursor {
             // Bold the content of the cursor row for extra emphasis without
             // disturbing syntax-highlight colours.
@@ -6569,7 +6631,10 @@ index 0000000..1111111
             (removed, set(&[]), set(&[removed]), set(&[])),
             (context, set(&[removed]), set(&[wrapped]), set(&[context])),
         ];
-        for (cursor, commented, draft, matched) in cases {
+        for (compact_gutter, (cursor, commented, draft, matched)) in [false, true]
+            .into_iter()
+            .flat_map(|compact| cases.iter().map(move |case| (compact, case)))
+        {
             for scroll in 0..6 {
                 let render = |cached: bool| {
                     let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
@@ -6584,7 +6649,8 @@ index 0000000..1111111
                                     PatchPanelOptions {
                                         title: "Patch".into(),
                                         scroll,
-                                        cursor: Some(cursor),
+                                        compact_gutter,
+                                        cursor: Some(*cursor),
                                         commented: commented.clone(),
                                         draft: draft.clone(),
                                         matched: matched.clone(),
@@ -6593,19 +6659,20 @@ index 0000000..1111111
                                     &theme,
                                 );
                             } else {
-                                let lines = patch_lines(
+                                let lines = indexed_patch_lines(
                                     &file,
                                     area.width - 2,
                                     &theme,
                                     true,
                                     false,
-                                    Some(cursor),
-                                    &commented,
-                                    &draft,
+                                    compact_gutter,
+                                    Some(*cursor),
+                                    commented,
+                                    draft,
                                     &HashSet::new(),
                                     &HashSet::new(),
-                                    &matched,
-                                    &mut None,
+                                    matched,
+                                    &mut std::collections::HashMap::new(),
                                 );
                                 let block = Block::default()
                                     .title(" Patch [unified] ")
@@ -6626,9 +6693,86 @@ index 0000000..1111111
                 assert_eq!(
                     render(true),
                     render(false),
-                    "cursor {cursor:?} at scroll {scroll}"
+                    "cursor {cursor:?} at scroll {scroll}, compact gutter {compact_gutter}"
                 );
             }
         }
+    }
+
+    /// The compact gutter keeps one number column: the new line number, or
+    /// the old one for a removed line, and hands the freed columns to code.
+    #[test]
+    fn compact_gutter_shows_one_number_column_and_widens_the_code() {
+        use std::collections::{HashMap, HashSet};
+
+        let file = crate::diff::parse_unified_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -10,3 +10,3 @@\n keep\n-old_name\n+new_name\n tail\n",
+        )
+        .unwrap()
+        .remove(0);
+        let theme = Theme::default();
+        let render = |compact: bool, width: u16| {
+            let mut rows = HashMap::new();
+            let lines = indexed_patch_lines(
+                &file,
+                width,
+                &theme,
+                false,
+                false,
+                compact,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut rows,
+            );
+            let text: Vec<String> = lines.iter().map(line_text).collect();
+            (text, rows)
+        };
+
+        let (full, _) = render(false, 40);
+        let (compact, rows) = render(true, 40);
+        assert!(
+            full.iter().any(|row| row.starts_with("10 10 │  keep")),
+            "{full:?}"
+        );
+        let row = |loc: DiffLineLocation| compact[rows[&loc].start].clone();
+        assert!(
+            row(DiffLineLocation {
+                old_line: Some(10),
+                new_line: Some(10),
+            })
+            .starts_with("10 │  keep"),
+            "{compact:?}"
+        );
+        assert!(
+            row(DiffLineLocation {
+                old_line: Some(11),
+                new_line: None,
+            })
+            .starts_with("11 │ -old_name"),
+            "a removed line keeps its old number: {compact:?}"
+        );
+        assert!(
+            row(DiffLineLocation {
+                old_line: None,
+                new_line: Some(11),
+            })
+            .starts_with("11 │ +new_name"),
+            "{compact:?}"
+        );
+
+        // A line that wraps in the two-column gutter fits on one row once
+        // the second number column is gone.
+        // At 16 columns the code gets 11 compact and 8 full: "+new_name" is 9.
+        let (full, _) = render(false, 16);
+        let (compact, _) = render(true, 16);
+        assert!(
+            compact.iter().any(|row| row.contains("+new_name")),
+            "{compact:?}"
+        );
+        assert!(full.len() > compact.len(), "{full:?} vs {compact:?}");
     }
 }

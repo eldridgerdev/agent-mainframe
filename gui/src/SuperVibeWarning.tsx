@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ModeSlug } from "./api";
 import { ConfirmCallout } from "./ui";
 
@@ -14,6 +14,14 @@ export function modeHint(description: ReactNode | undefined, mode: ModeSlug | st
 
 export function SuperVibeNote() {
   return <span className="supervibe-note" data-supervibe-note="">SuperVibe skips every permission check. {SUPERVIBE_RISK}</span>;
+}
+
+/** Whether the create-time confirm is open. Any mode change (the field, a
+ * preset) closes it, so switching away and back never reopens it unasked. */
+export function useSuperVibeConfirm(mode: ModeSlug) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [mode]);
+  return [open && mode === "supervibe", setOpen] as const;
 }
 
 /** The TUI's "SuperVibe Mode" confirmation before a feature is created in

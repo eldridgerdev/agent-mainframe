@@ -5,7 +5,7 @@ import {
 } from "./issueApi";
 import { ApprovalDialog, Field, Icon, Modal, Spinner, Switch } from "./ui";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
-import { SuperVibeConfirm, modeHint } from "./SuperVibeWarning";
+import { SuperVibeConfirm, modeHint, useSuperVibeConfirm } from "./SuperVibeWarning";
 
 /** The issue text is GitHub-authored data: it is shown as plain text, never
  * rendered as markup, and reaches the agent only inside the labeled prompt. */
@@ -237,7 +237,7 @@ function IssueFixForm({
     setStale(false);
   }, [preview]);
   const [approval, setApproval] = useState<string | null>(null);
-  const [confirmSuperVibe, setConfirmSuperVibe] = useState(false);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useSuperVibeConfirm(mode);
   const modeSelect = useRef<HTMLSelectElement>(null);
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
   const hasDuplicate = preview.linked_features.length > 0;
@@ -361,7 +361,7 @@ function IssueFixForm({
               </select>
             </Field>
           </div>
-          {confirmSuperVibe && mode === "supervibe" && <SuperVibeConfirm busy={busy}
+          {confirmSuperVibe && <SuperVibeConfirm busy={busy}
             onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }} onConfirm={() => void submit(false, true)} />}
           {isGit && (
             <Switch checked={useWorktree} onChange={setUseWorktree} disabled={busy}

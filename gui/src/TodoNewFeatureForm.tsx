@@ -9,7 +9,7 @@ import { Field, Modal, Segmented, Spinner, Switch } from "./ui";
 import { useCreationHarness } from "./useCreationHarness";
 import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
 import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
-import { SuperVibeConfirm, modeHint } from "./SuperVibeWarning";
+import { SuperVibeConfirm, modeHint, useSuperVibeConfirm } from "./SuperVibeWarning";
 
 type PlanKind = "none" | "full" | "quick";
 
@@ -42,7 +42,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   const [discard, setDiscard] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
-  const [confirmSuperVibe, setConfirmSuperVibe] = useState(false);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useSuperVibeConfirm(mode);
   const modeSelect = useRef<HTMLSelectElement>(null);
   // A deleted destination must never silently fall back to another project.
   const project = projects.find((candidate) => candidate.id === projectId);
@@ -139,7 +139,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
             {modes.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>)}
           </select></Field>
         </div>
-        {confirmSuperVibe && mode === "supervibe" && <SuperVibeConfirm busy={busy}
+        {confirmSuperVibe && <SuperVibeConfirm busy={busy}
           onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }} onConfirm={() => void create(true)} />}
         <CreationHarnessNotices harness={harness} disabled={busy} />
         <div className="field"><span className="field-label">Planning</span><Segmented label="Planning" value={planKind} onChange={setPlanKind} options={[

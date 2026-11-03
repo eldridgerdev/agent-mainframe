@@ -1,5 +1,5 @@
 import { ReactNode, Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from "react";
-import { SuperVibeConfirm, modeHint } from "./SuperVibeWarning";
+import { SuperVibeConfirm, modeHint, useSuperVibeConfirm } from "./SuperVibeWarning";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -2980,7 +2980,7 @@ export function CreateFeatureForm({
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
   const selectedAgent = agent;
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
-  const [confirmSuperVibe, setConfirmSuperVibe] = useState(false);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useSuperVibeConfirm(mode);
   const modeSelect = useRef<HTMLSelectElement>(null);
 
   function create(confirmed: boolean) {
@@ -3071,7 +3071,7 @@ export function CreateFeatureForm({
             </select>
           </Field>
         </div>
-        {confirmSuperVibe && mode === "supervibe" && (
+        {confirmSuperVibe && (
           <SuperVibeConfirm
             busy={pending}
             onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }}

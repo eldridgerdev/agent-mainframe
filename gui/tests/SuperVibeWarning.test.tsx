@@ -98,6 +98,9 @@ it("drops a pending SuperVibe confirmation when the mode changes away from it", 
   expect(queryConfirm()).not.toBeNull();
   chooseMode("vibe");
   expect(queryConfirm()).toBeNull();
+  // Coming back is not a new create: the question waits for the next one.
+  chooseMode("supervibe");
+  expect(queryConfirm()).toBeNull();
 });
 
 it("asks the same question before a TODO starts a SuperVibe feature", async () => {

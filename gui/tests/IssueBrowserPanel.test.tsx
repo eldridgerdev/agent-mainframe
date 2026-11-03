@@ -42,11 +42,11 @@ function backend(handlers: Handlers) {
 }
 const calls = (command: string) => vi.mocked(invoke).mock.calls.filter(([name]) => name === command);
 
-function mount(onCreated = vi.fn(), onClose = vi.fn(), offered: unknown = agents) {
+function mount(onCreated = vi.fn(), onClose = vi.fn(), offered: unknown = agents, offeredModes: unknown = modes) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <IssueBrowserPanel projectId="p1" projectName="demo" agents={offered as never} modes={modes} isGit onClose={onClose} onCreated={onCreated} />
+      <IssueBrowserPanel projectId="p1" projectName="demo" agents={offered as never} modes={offeredModes as never} isGit onClose={onClose} onCreated={onCreated} />
     </QueryClientProvider>,
   );
   return { onCreated, onClose };
@@ -234,4 +234,27 @@ it("clears a label filter that the next page does not contain", async () => {
   await screen.findByText("Page 2");
   expect(await screen.findByRole("button", { name: /Open issue #8/ })).toBeTruthy();
   expect((screen.getByLabelText("Filter by label") as HTMLSelectElement).value).toBe("");
+});
+
+it("asks before creating an issue feature in SuperVibe, and creates nothing on a safer choice", async () => {
+  backend({ issue_browser_list: () => list, issue_fix_preview: () => preview(), issue_fix_create: () => created });
+  const { onCreated } = mount(vi.fn(), vi.fn(), agents, [
+    { slug: "vibeless", display_name: "Vibeless", description: "Ask first" },
+    { slug: "supervibe", display_name: "SuperVibe", description: "Skips permission prompts" },
+  ]);
+  await openIssue("7");
+  const mode = screen.getByRole("combobox", { name: /^Mode/ });
+  fireEvent.change(mode, { target: { value: "supervibe" } });
+  expect(document.querySelector("[data-supervibe-note]")?.textContent).toMatch(/run any command without asking/);
+  const create = screen.getByRole("button", { name: "Create feature" }) as HTMLButtonElement;
+  await waitFor(() => expect(create.disabled).toBe(false));
+  fireEvent.click(create);
+  fireEvent.click(screen.getByRole("button", { name: "Choose a safer mode" }));
+  expect(calls("issue_fix_create")).toHaveLength(0);
+  expect(document.activeElement).toBe(mode);
+
+  fireEvent.click(create);
+  fireEvent.click(screen.getByRole("button", { name: "Create in SuperVibe" }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created));
+  expect((calls("issue_fix_create")[0][1] as { request: IssueFixRequest }).request.request.mode).toBe("supervibe");
 });

@@ -81,7 +81,8 @@ with GuiFrames.from_argv() as frames:
     assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent")).querySelector("select").value')=='claude'
     frames.capture('006-explicit-preset.png','A deliberate Claude preset remains authoritative after refreshing project choices; the edited branch is retained.', ['Feature preset','New feature'],
         expression='document.querySelector(`[role=dialog] input.mono`).value === "preferred-new-feature" && document.querySelector(`[aria-label="Feature preset"]`).value === "0"')
-    select('Agent','opencode'); select('Mode','supervibe'); click('Create feature','[role=dialog]')
+    select('Agent','opencode'); action('select',selector='select:has(option[value="supervibe"])',value='supervibe',scope='[role=dialog]'); click('Create feature','[role=dialog]')
+    click('Create in SuperVibe','[role=dialog]')  # the SuperVibe confirmation
     wait('!document.querySelector(`[role=dialog]`)')
     wait_for(lambda: query("SELECT agent FROM features WHERE branch='preferred-new-feature'")==[('opencode',)], 'Ordinary feature did not save OpenCode')
     action('wait',text='Opencode 1',scope='main')
@@ -96,7 +97,8 @@ with GuiFrames.from_argv() as frames:
     wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent"))?.querySelector("select").value === "opencode"')
     click('Quick Plan','[role=dialog]')
     frames.capture('008-todo-default.png','TODO creation and planning initialize with the same project OpenCode default; selecting Quick Plan does not replace the chosen harness.', ['Plan in a new feature','Quick Plan','Prepare tax audit'])
-    click('Start directly','[role=dialog]'); select('Mode','supervibe'); click('Create and start','[role=dialog]')
+    click('Start directly','[role=dialog]'); action('select',selector='select:has(option[value="supervibe"])',value='supervibe',scope='[role=dialog]'); click('Create and start','[role=dialog]')
+    click('Create in SuperVibe','[role=dialog]')  # the SuperVibe confirmation
     wait('!document.querySelector(`[role=dialog]`)')
     wait('document.querySelector(`textarea[aria-label="Draft prompt"]`)?.value.includes("Prepare tax audit")')
     wait_for(lambda: query("SELECT agent FROM features WHERE branch='prepare-tax-audit'")==[('opencode',)], 'TODO feature did not use project default')

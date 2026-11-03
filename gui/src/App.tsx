@@ -1,4 +1,5 @@
 import { ReactNode, Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from "react";
+import { SuperVibeConfirm, modeHint, useSuperVibeConfirm } from "./SuperVibeWarning";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -2979,6 +2980,29 @@ export function CreateFeatureForm({
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
   const selectedAgent = agent;
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useSuperVibeConfirm(mode);
+  const modeSelect = useRef<HTMLSelectElement>(null);
+
+  function create(confirmed: boolean) {
+    if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
+    // As in the terminal app, SuperVibe asks once more before creating.
+    if (mode === "supervibe" && !confirmed) { setConfirmSuperVibe(true); return; }
+    setConfirmSuperVibe(false);
+    const request = {
+      branch: branch.trim(),
+      agent: selectedAgent,
+      mode,
+      review,
+      plan_mode: planKind !== "none",
+      create_terminal: false,
+      use_worktree: useWorktree,
+      enable_chrome: chrome,
+      hook_choice: hook.choice || null,
+      dry_run: false,
+    };
+    if (steering && planKind === "none") onSubmit(request, planKind, { steering: true });
+    else onSubmit(request, planKind);
+  }
 
   return (
     <Modal
@@ -2989,23 +3013,7 @@ export function CreateFeatureForm({
       onClose={onCancel}
       dismissable={!pending}
       hidden={hidden}
-      onSubmit={() => {
-        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
-        const request = {
-          branch: branch.trim(),
-          agent: selectedAgent,
-          mode,
-          review,
-          plan_mode: planKind !== "none",
-          create_terminal: false,
-          use_worktree: useWorktree,
-          enable_chrome: chrome,
-          hook_choice: hook.choice || null,
-          dry_run: false,
-        };
-        if (steering && planKind === "none") onSubmit(request, planKind, { steering: true });
-        else onSubmit(request, planKind);
-      }}
+      onSubmit={() => create(false)}
       footer={
         <>
           <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
@@ -3055,14 +3063,21 @@ export function CreateFeatureForm({
         </Field>
         <div className="form-row creation-agent-mode">
           <CreationHarnessSelect harness={harness} supported={agents} disabled={pending} />
-          <Field label="Mode" hint={modeInfo?.description}>
-            <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
+          <Field label="Mode" hint={modeHint(modeInfo?.description, mode)}>
+            <select ref={modeSelect} value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
               {modes.map((m) => (
                 <option key={m.slug} value={m.slug}>{m.display_name}</option>
               ))}
             </select>
           </Field>
         </div>
+        {confirmSuperVibe && (
+          <SuperVibeConfirm
+            busy={pending}
+            onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }}
+            onConfirm={() => create(true)}
+          />
+        )}
         <CreationHarnessNotices harness={harness} disabled={pending} onOpenAvailability={onOpenAvailability} />
         <Field label="Planning" hint={PLAN_HINTS[planKind]}>
           <Segmented

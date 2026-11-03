@@ -138,6 +138,8 @@
 .field-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .field-hint { display: block; font-size: var(--fs-sm); color: var(--text-muted); }
 .mode-hint { margin-top: -8px; }
+/* SuperVibe's inline risk note, under the mode's own description. */
+.supervibe-note { display: block; margin-top: 2px; color: var(--red); font-weight: 600; }
 
 .field input, .field select, .attach-row input, .plan-textarea {
   width: 100%;
@@ -241,6 +243,8 @@
 .callout-success { background: var(--green-soft); }
 .callout-success > .icon { color: var(--green); }
 .callout-danger { background: var(--red-soft); flex-direction: column; }
+.supervibe-confirm strong { color: var(--red); }
+.supervibe-confirm strong + p { color: var(--text); }
 
 .empty {
   flex: 1;

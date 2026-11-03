@@ -3,6 +3,7 @@ import { asGuiError, FeaturePreset, featurePresetsLoad, featurePresetsSave, Pres
 import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import { SHARED_WITH_TERMINAL } from "./terminalNote";
 import { CHROME_HINT, REVIEW_HINT } from "./creationCopy";
+import { modeHint } from "./SuperVibeWarning";
 
 const emptyPreset = (): FeaturePreset => ({ name: "", branch_prefix: null, mode: "vibe", agent: "claude",
   review: false, plan_mode: false, quick_plan: false, enable_chrome: false, remote_control: false });
@@ -86,7 +87,7 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
           <Field label="Agent"><select value={row.preset.agent} disabled={busy} onChange={(event) => edit({ agent: event.target.value as FeaturePreset["agent"] })}>
             <option value="claude">Claude Code</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="pi">Pi</option>
           </select></Field>
-          <Field label="Mode"><select value={row.preset.mode} disabled={busy} onChange={(event) => edit({ mode: event.target.value as FeaturePreset["mode"] })}>
+          <Field label="Mode" hint={modeHint(undefined, row.preset.mode)}><select value={row.preset.mode} disabled={busy} onChange={(event) => edit({ mode: event.target.value as FeaturePreset["mode"] })}>
             <option value="vibeless">Vibeless</option><option value="vibe">Vibe</option><option value="supervibe">SuperVibe</option>
           </select></Field>
         </div>

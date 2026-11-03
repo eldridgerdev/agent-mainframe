@@ -115,7 +115,8 @@ with GuiFrames.from_argv() as frames:
 
     open_picker(); select('Destination type','companion')
     action('fill',name='Companion branch',value='invoice-rounding-review-fixes',scope=dialog)
-    select('Mode','supervibe'); select('Companion setup','offline'); preview()
+    action('select',selector='select:has(option[value="supervibe"])',value='supervibe',scope=dialog)  # Mode: its name includes the SuperVibe note
+    select('Companion setup','offline'); preview()
     capture('006-companion-preview.png','After the global hook changes on disk, a fresh companion preview shows its current offline setup choice, exact branch HEAD and SuperVibe mode; uncommitted reviewed changes are explicitly excluded.', ['Branch basis: invoice-rounding at','Uncommitted reviewed changes are not copied','Creates a companion checkout and stopped feature'],
             expression='document.querySelector(`[aria-label="Feedback destination"] select`).value==="companion" && Array.from(document.querySelectorAll(`[aria-label="Feedback destination"] select`)).some(s=>s.value==="supervibe")')
     prepare(); wait('is being created, or its confirmed setup script is running, in the background.')

@@ -9,7 +9,7 @@ export function readCss(name: string): string {
 }
 
 /** The feature stylesheets in gui/src/styles, in the order main.tsx imports them. */
-export const FEATURE_STYLESHEETS = ["shell", "controls", "pages", "todos", "overlays", "plan", "review", "panels", "tools"]
+export const FEATURE_STYLESHEETS = ["shell", "controls", "pages", "todos", "overlays", "plan", "review", "panels", "pr-workspace", "tools"]
   .map((name) => `styles/${name}.css`);
 
 /** styles.css (tokens and base) followed by every feature stylesheet. */

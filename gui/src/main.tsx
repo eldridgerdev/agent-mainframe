@@ -11,6 +11,7 @@ import "./styles/overlays.css";
 import "./styles/plan.css";
 import "./styles/review.css";
 import "./styles/panels.css";
+import "./styles/pr-workspace.css";
 import "./styles/tools.css";
 import "./firstRun.css";
 

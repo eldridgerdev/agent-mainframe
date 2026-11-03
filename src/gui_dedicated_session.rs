@@ -226,7 +226,7 @@ fn bind(gui: &mut GuiHandle, workflow: &PrDestinationWorkflow) -> GuiResult<Boun
     }
     if app.feature_tmux_session_is_shared(pi, fi) {
         return Err(conflict(
-            "This feature shares a tmux session with another feature; a triage session cannot be added to it",
+            "This feature shares a background session with another feature; a triage session cannot be added to it",
         ));
     }
     Ok(Bound {
@@ -309,7 +309,7 @@ fn labelled_session<'a>(
                 )));
             }
             if agent_of(row).as_ref() != Some(agent) {
-                let existing = agent_of(row).map_or("another harness", |a| match a {
+                let existing = agent_of(row).map_or("another agent", |a| match a {
                     AgentKind::Claude => "Claude",
                     AgentKind::Opencode => "Opencode",
                     AgentKind::Codex => "Codex",
@@ -335,7 +335,7 @@ fn agent_unavailable(gui: &mut GuiHandle, bound: &Bound, agent: &AgentKind) -> O
         .allowed_agents_for_repo(&bound.project.repo)
         .contains(agent)
     {
-        return Some("This harness is not allowed or installed for the project".into());
+        return Some("This agent is not allowed or installed for the project".into());
     }
     app.tmux
         .check_harness_available(agent)
@@ -423,7 +423,7 @@ fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> 
                     .into(),
             );
             consequences.push(format!(
-                "After the session is saved, writes AMF's local notification-hook settings for {} in the feature checkout, as every new session does.",
+                "After the session is saved, writes AMF's local agent notification settings for {} in the feature checkout, as every new session does.",
                 agent.display_name()
             ));
             if feature.review {

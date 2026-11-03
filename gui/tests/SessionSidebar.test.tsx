@@ -213,7 +213,7 @@ describe("session sidebar", () => {
     fireEvent.click(within(prompt).getByRole("button", { name: "View" }));
     expect(within(prompt).getByLabelText("Full prompt").textContent).toBe(FULL_PROMPT);
     const reuse = within(prompt).getByRole("button", { name: "Reuse" });
-    expect(reuse.getAttribute("title")).toContain("TUI: leader l");
+    expect(reuse.getAttribute("title")).toContain("terminal app key: leader l");
     fireEvent.click(reuse);
     expect(onReusePrompt).toHaveBeenCalledWith(FULL_PROMPT);
   });
@@ -271,7 +271,7 @@ describe("session sidebar", () => {
     mount();
     const active = await waitFor(() => section("Active TODO"));
     const complete = within(active).getByRole("button", { name: "Complete" });
-    expect(complete.getAttribute("title")).toContain("TUI: leader z");
+    expect(complete.getAttribute("title")).toContain("terminal app key: leader z");
     fireEvent.click(complete);
     const confirm = within(active).getByRole("group", { name: "Confirm TODO completion" });
     fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));

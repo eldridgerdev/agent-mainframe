@@ -82,14 +82,14 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
         </button>
       </>}>
       <p className="muted small modal-lead">{planning
-        ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
-        : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}</p>
+        ? "Creates the separate checkout (worktree) and runs its setup before the interview. The agent starts after you accept the plan."
+        : "Creates a separate checkout (worktree) and starts its agent. The TODO prompt opens as an editable draft."}</p>
       {!project?.is_git && <p role="alert" className="callout callout-danger">Choose an available git project before creating a TODO feature.</p>}
       {modes.length === 0 && <p role="alert" className="callout callout-danger">No launch modes are available. Close and retry after refreshing the workspace.</p>}
       {presets.isError && <p role="alert" className="callout callout-danger">Could not load presets: {asGuiError(presets.error).message} <button type="button" disabled={busy || presets.isFetching} onClick={() => void presets.refetch()}>Retry presets</button></p>}
       {notice && <p role="alert" className="callout callout-warning">{notice}</p>}
-      {remoteControl && <p role="alert" className="callout callout-warning">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
-      {unsupported && <p role="alert" className="callout callout-warning">{selectedMode?.display_name} is unavailable with {offered.find((candidate) => candidate.slug === selectedAgent)?.display_name ?? selectedAgent}. Choose another mode or harness.</p>}
+      {remoteControl && <p role="alert" className="callout callout-warning">Remote Control presets can be created in AMF's terminal app. The desktop app does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
+      {unsupported && <p role="alert" className="callout callout-warning">{selectedMode?.display_name} is unavailable with {offered.find((candidate) => candidate.slug === selectedAgent)?.display_name ?? selectedAgent}. Choose another mode or agent.</p>}
       <fieldset disabled={busy} className="form-stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {(projects.length > 1 || !project) && <Field label="Project"><select value={projectId} disabled={busy || !projects.length} onChange={(event) => { setProjectId(event.target.value); setSelection(null); setNotice(null); }}>
           {!project && <option value={projectId} disabled>Choose a project…</option>}
@@ -106,7 +106,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
               // blocks until one is chosen; an unlisted mode is left unchanged.
               const skipped: string[] = [];
               setAgent(preset.agent);
-              if (!harness.offered.includes(preset.agent)) skipped.push(`uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
+              if (!harness.offered.includes(preset.agent)) skipped.push(`uses ${preset.agent}, which is not offered for this project. Choose an available agent.`);
               if (modes.some((candidate) => candidate.slug === preset.mode)) setMode(preset.mode);
               else skipped.push(`uses the ${preset.mode} mode, which is not available here. The mode was left unchanged.`);
               if (skipped.length) setNotice(`${preset.name} ${skipped.join(" It also ")}`);

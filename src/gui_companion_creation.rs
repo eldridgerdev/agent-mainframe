@@ -245,11 +245,11 @@ fn check_hook_choice(
     match (hook.and_then(|h| h.prompt()), choice) {
         (Some(prompt), Some(choice)) if !prompt.options.iter().any(|o| o == choice) => {
             Err(conflict(format!(
-                "'{choice}' is not one of the setup hook's options; choose again"
+                "'{choice}' is not one of the setup script's options; choose again"
             )))
         }
         (None, Some(_)) => Err(conflict(
-            "The setup hook no longer asks a question; reopen the form",
+            "The setup script no longer asks a question; reopen the form",
         )),
         _ => Ok(()),
     }
@@ -258,7 +258,7 @@ fn check_hook_choice(
 fn agent_unavailable(gui: &mut GuiHandle, repo: &Path, agent: &AgentKind) -> Option<String> {
     let app = gui.app_for_workflow();
     if !app.allowed_agents_for_repo(repo).contains(agent) {
-        return Some("This harness is not allowed or installed for the project".into());
+        return Some("This agent is not allowed or installed for the project".into());
     }
     app.tmux
         .check_harness_available(agent)
@@ -506,20 +506,22 @@ fn plan(
     if let Some(hook) = &hook_view {
         consequences.push(match (&hook.choice, &hook.prompt_title) {
             (Some(choice), Some(title)) => format!(
-                "Runs the project's on_worktree_created hook once in the new checkout, with {title}: {choice}. Script: {}",
+                "Runs the project's setup script (on_worktree_created) once in the new checkout, with {title}: {choice}. Script: {}",
                 hook.script
             ),
             _ => format!(
-                "Runs the project's on_worktree_created hook once in the new checkout. Script: {}",
+                "Runs the project's setup script (on_worktree_created) once in the new checkout. Script: {}",
                 hook.script
             ),
         });
         consequences.push(
-            "The hook executes files from the PR checkout, which is code the PR's author wrote (it may be a fork). Only continue if you trust this PR's contents."
+            "The setup script executes files from the PR checkout, which is code the PR's author wrote (it may be a fork). Only continue if you trust this PR's contents."
                 .into(),
         );
-        consequences
-            .push("If the hook fails, the companion is still kept and no agent is started.".into());
+        consequences.push(
+            "If the setup script fails, the companion is still kept and no agent is started."
+                .into(),
+        );
     }
     consequences.push(format!(
         "Registers a feature '{branch}' ({}, {}) linked to PR #{} and to {}. Plan mode is off.",
@@ -660,7 +662,7 @@ fn hook_ack_message(found: Option<bool>, head_ref: &str) -> String {
         _ => "AMF could not confirm the PR branch on the remote 'origin'".to_string(),
     };
     format!(
-        "The setup hook would run files from this PR's checkout, and {why}. That code is not from your repository. Run it anyway?"
+        "The setup script would run files from this PR's checkout, and {why}. That code is not from your repository. Run it anyway?"
     )
 }
 
@@ -1027,7 +1029,7 @@ pub(crate) fn start_with(
         )?;
         if planned.revision != request.preview_revision {
             return Err(conflict(
-                "The feature, PR, branch names or setup hook changed since the preview. Review the preview again before creating the companion.",
+                "The feature, PR, branch names or setup script changed since the preview. Review the preview again before creating the companion.",
             ));
         }
         if planned.resource_warning.is_some() && !request.approved {
@@ -1186,7 +1188,7 @@ impl Job {
             };
             if again.revision != self.request.preview_revision {
                 return self.fail(
-                    "The feature, PR, branch names or setup hook changed while the PR head was being fetched. Nothing was created. Review the preview again.",
+                    "The feature, PR, branch names or setup script changed while the PR head was being fetched. Nothing was created. Review the preview again.",
                 );
             }
             if !again.triage.base_commit_present {
@@ -1239,7 +1241,7 @@ impl Job {
         {
             state.phase(
                 OperationPhase::RunningHook,
-                "Running the setup hook in the new checkout…",
+                "Running the setup script in the new checkout…",
             );
             let (ok, detail) = App::run_worktree_hook_cancellable(
                 hook.script(),
@@ -1336,7 +1338,7 @@ impl Job {
         );
         if let Some(warning) = &hook_warning {
             message.push_str(&format!(
-                " Its on_worktree_created hook failed ({warning}); the companion was kept and no agent was started."
+                " Its setup script failed ({warning}); the companion was kept and no agent was started."
             ));
         }
         state.finish(OperationState::Created, message);

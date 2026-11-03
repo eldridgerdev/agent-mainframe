@@ -147,7 +147,7 @@ it("investigates only after the pre-call notice is continued, once", async () =>
   });
   render(<PrTriagePanel target={target} onClose={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Investigate…" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Investigating harness" }), { target: { value: "codex" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Investigate with" }), { target: { value: "codex" } });
   fireEvent.change(screen.getByRole("textbox", { name: "What do you suspect? (optional)" }), { target: { value: "Negative totals round up" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview AI call" }));
   const notice = await screen.findByRole("alertdialog", { name: "Investigation AI call" });

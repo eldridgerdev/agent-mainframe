@@ -1537,7 +1537,7 @@ export default function App() {
         otherWaiting={Object.entries(pendingEdits).reduce((total, [featureId, count]) =>
           total + (featureId === supervisedTarget.feature_id ? 0 : count), 0)}
         onAnswered={(message, hasWaiting) => {
-          pushToast({ tone: "info", title: "Edit answered", message: `${message}. The agent continues once its hook reads the answer.` });
+          pushToast({ tone: "info", title: "Edit answered", message: `${message}. The agent continues once it reads the answer.` });
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
@@ -1556,7 +1556,7 @@ export default function App() {
           setProjectPreference(null);
           void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
           void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
-          pushToast({ tone: "info", title: "Project preference saved", message: "New features use this default. Existing sessions keep their harness." });
+          pushToast({ tone: "info", title: "Project preference saved", message: "New features use this default. Existing sessions keep their agent." });
         }} />}
       {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
         onDeleteFeature={(row) => setDeleteFeatureDialog({
@@ -1998,8 +1998,8 @@ export default function App() {
           label="Close session"
           title={`Close ${closeSessionDialog.label}?`}
           message={closeSessionDialog.last
-            ? "This kills its tmux window and removes the session. It is the feature's last running session, so the feature stops too."
-            : "This kills its tmux window and removes the session."}
+            ? "Close ends this session and removes it from the list. It is the feature's last running session, so the feature stops too."
+            : "Close ends this session and removes it from the list."}
           confirmLabel="Close session"
           busy={removeSessionMutation.isPending}
           onConfirm={() => requestRemoveSession(closeSessionDialog.target)}
@@ -2017,7 +2017,7 @@ export default function App() {
         onClose={() => setHarnessTarget(null)}
         onChanged={() => {
           setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
-          pushToast({ tone: "info", title: "Harness changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
+          pushToast({ tone: "info", title: "Agent changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
         }}
         onResync={() => {
           setHarnessEpochs((previous) => ({ ...previous, [harnessTarget.feature_id]: (previous[harnessTarget.feature_id] ?? 0) + 1 }));
@@ -2254,7 +2254,7 @@ function ProjectView({
               title="Project settings"
               items={[
                 { label: "Agent availability", icon: "list", onSelect: onAgentAvailability },
-                { label: "Preferred harness", icon: "check", onSelect: onProjectPreference },
+                { label: "Preferred agent", icon: "check", onSelect: onProjectPreference },
               ]}
             />
             <span className="page-actions-sep" aria-hidden="true" />
@@ -2583,7 +2583,7 @@ function FeatureView({
                 { section: "Feature" },
                 // While edits wait, the header's counted button is the way in.
                 ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
-                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Rename, ready and summary…", icon: "check" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",
@@ -2843,7 +2843,7 @@ function CreateProjectForm({
             required
           />
         </Field>
-        <Field label="Preferred harness">
+        <Field label="Preferred agent" hint="The agent new features use by default. You can change it per feature.">
           <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
             <option value="">Default</option>
             {offered.map((a) => (
@@ -2938,14 +2938,14 @@ export function CreateFeatureForm({
       }
     >
       <div className="form-stack">
-        <Field label="Feature preset" hint="Project templates override global templates by name. Applying a template fills fields you can edit before creating.">
+        <Field label="Feature preset" hint="A preset fills in the fields below; you can still edit them. Project presets override global ones with the same name.">
           <select aria-label="Feature preset" value={presetIndex} disabled={pending || presets.isPending} onChange={(event) => {
             const value = event.target.value; setPresetIndex(value); setPresetNotice(null);
             if (!value) return;
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
             setAgent(preset.agent);
-            if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
+            if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available agent.`);
             setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full"); if (preset.plan_mode) setSteering(false);
             // Keep the name the user typed; only the preset's prefix changes.
@@ -2962,8 +2962,8 @@ export function CreateFeatureForm({
         </Field>
         {presets.error && <p className="callout callout-danger" role="alert">Could not load presets: {asGuiError(presets.error).message}</p>}
         {presetNotice && <p className="callout callout-warning" role="alert">{presetNotice}</p>}
-        {remoteControl && <p className="callout callout-warning" role="alert">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
-        {unsupportedMode && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.</p>}
+        {remoteControl && <p className="callout callout-warning" role="alert">Remote Control presets can be created in AMF's terminal app. The desktop app does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
+        {unsupportedMode && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another agent.</p>}
         <Field label="Branch / feature name">
           <input
             className="mono"
@@ -2979,7 +2979,7 @@ export function CreateFeatureForm({
           <Field label="Mode">
             <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
               {modes.map((m) => (
-                <option key={m.slug} value={m.slug} title={m.description}>{m.display_name}</option>
+                <option key={m.slug} value={m.slug}>{m.display_name}</option>
               ))}
             </select>
           </Field>
@@ -3013,22 +3013,22 @@ export function CreateFeatureForm({
           checked={steering && planKind === "none"}
           disabled={planKind !== "none"}
           onChange={setSteering}
-          label="Prompt coach (experimental)"
+          label="Steering coach (experimental)"
           hint={planKind !== "none"
             ? "Planning already shapes the startup prompt, so the coach is off while Quick or Full Plan is chosen."
-            : "After the agent starts, check your first prompt for scope, done-criteria, invariants, validation and risks. The draft stays unsent until you send it."}
+            : "After the agent starts, get feedback on your first message: is the goal clear, how will you know it is done, what could go wrong. Nothing is sent until you send it."}
         />
         {isGit && (
           <Switch
             checked={useWorktree}
             onChange={setUseWorktree}
-            label="Use a git worktree"
-            hint="Gives the feature its own checkout so agents don't collide."
+            label="Use a separate checkout (worktree)"
+            hint="Gives the feature its own folder and branch so agents don't collide."
           />
         )}
         <div className="form-row">
-          <Switch checked={review} onChange={setReview} label="Review" />
-          <Switch checked={chrome} onChange={setChrome} label="Chrome" />
+          <Switch checked={review} onChange={setReview} label="Review" hint="The agent keeps short notes on each file it changes, for you to read when you review." />
+          <Switch checked={chrome} onChange={setChrome} label="Chrome" hint="Lets the agent use a Chrome browser. Claude Code only." />
         </div>
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
         <WorktreeHookField hook={hook} disabled={pending} />

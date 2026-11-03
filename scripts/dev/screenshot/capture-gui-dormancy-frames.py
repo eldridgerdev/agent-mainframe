@@ -173,7 +173,7 @@ try:
     # tmux activity is real: refresh until every silent window has crossed the
     # one-minute threshold (the runner already waited for it).
     for _ in range(40):
-        wait(f"!!{panel} && !{panel}.innerText.includes('Checking tmux activity')")
+        wait(f"!!{panel} && !{panel}.innerText.includes('Checking which features are idle')")
         if evaluate(f"{panel}.querySelectorAll('.dormancy-row').length") == 3:
             break
         click("Refresh")

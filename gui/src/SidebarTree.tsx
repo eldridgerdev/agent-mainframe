@@ -33,7 +33,7 @@ export type GlyphKind =
   | "stopped";
 
 const GLYPH_LABEL: Record<GlyphKind, string> = {
-  worktree_script: "Running worktree script",
+  worktree_script: "Running setup script",
   deleting: "Deleting",
   waiting: "Waiting for input",
   thinking: "Agent working",
@@ -334,7 +334,7 @@ function FeatureNode({
 
   const chips: { key: string; text: ReactNode; className?: string; title?: string; onClick?: () => void }[] = [];
   // The TUI row's order: checkout, issue, PR, usage, badges, age, sessions.
-  if (!feature.is_worktree) chips.push({ key: "repo", text: "repo", className: "tree-chip-warning", title: "Runs in the repository checkout, not a worktree" });
+  if (!feature.is_worktree) chips.push({ key: "repo", text: "repo", className: "tree-chip-warning", title: "Runs in the repository folder itself, not a separate checkout (worktree)" });
   if (derived?.issue) chips.push({ key: "issue", text: derived.issue, className: "tree-chip-info", title: `Created from issue ${derived.issue}` });
   if (derived?.pr) chips.push({ key: "pr", text: prLabel(derived.pr), className: `tree-pr ${prTone(derived.pr)}` });
   if (derived?.usage) chips.push({ key: "usage", text: derived.usage, className: "tree-chip-detail", title: "Agent token usage" });
@@ -349,7 +349,7 @@ function FeatureNode({
   if (paused) chips.push({ key: "paused", text: "plan paused · Resume", className: "tree-chip-warning tree-chip-action", onClick: props.onResumePlan, title: "Resume the minimized plan interview" });
   if (feature.remote_control) chips.push({ key: "remote", text: "remote", className: "tree-chip-info" });
   if (deleting) chips.push({ key: "deleting", text: "deleting…", className: "tree-chip-danger" });
-  if (feature.pending_worktree_script) chips.push({ key: "script", text: "running worktree script…", className: "tree-chip-info" });
+  if (feature.pending_worktree_script) chips.push({ key: "script", text: "running setup script…", className: "tree-chip-info" });
   if (derived) chips.push({ key: "age", text: derived.created_age, className: "tree-chip-age", title: feature.created_at ? `Created ${feature.created_at}` : undefined });
   if (hasSessions) chips.push({ key: "sessions", text: `${feature.sessions.length} ${feature.sessions.length === 1 ? "session" : "sessions"}` });
   if (stopped > 0) chips.push({ key: "stopped", text: `${stopped} stopped`, className: "tree-chip-stopped", title: "Sessions stopped on their own" });

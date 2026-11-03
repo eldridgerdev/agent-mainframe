@@ -189,12 +189,12 @@ fn save_at(
     let current = snapshot(&mut gui, project_id, global_path)?;
     if current != probed || view(&current, &installed)?.revision != revision {
         return Err(GuiError::conflict(
-            "Project, preference or harness choices changed. Reload before saving.",
+            "Project, preference or agent choices changed. Reload before saving.",
         ));
     }
     if !installed.contains(&next) {
         return Err(GuiError::conflict(
-            "Choose an allowed, installed harness. Reload the choices.",
+            "Choose an allowed, installed agent. Reload the choices.",
         ));
     }
     // The shared setter re-checks the one chosen harness under the lock, so a

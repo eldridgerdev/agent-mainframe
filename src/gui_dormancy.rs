@@ -356,19 +356,19 @@ fn validate_observation(
     if !app.tmux.session_exists(&feature.tmux_session) {
         return Err(refused(
             DormancyRefusal::SessionGone,
-            "Its tmux session is gone (it may have crashed, or the tmux server restarted), so it is no longer running",
+            "Its background session is gone (it may have crashed, or the terminal server restarted), so it is no longer running",
         ));
     }
     if feature.tmux_session != observed.tmux_session {
         return Err(refused(
             DormancyRefusal::Restarted,
-            "Its tmux session changed after the list was loaded",
+            "Its background session changed after the list was loaded",
         ));
     }
     if app.feature_tmux_session_is_shared(pi, fi) {
         return Err(refused(
             DormancyRefusal::SharedSession,
-            "Other features share its live tmux session, so ending that session would end theirs too",
+            "Other features share its live background session, so ending that session would end theirs too",
         ));
     }
     if feature.last_accessed > observed.last_accessed {

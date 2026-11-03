@@ -14,7 +14,7 @@ export interface AttentionRow {
   dismissable: boolean; dismiss_note: string | null;
 }
 export interface NeedsAttentionView {
-  rows: AttentionRow[]; hidden_stopped: number; hidden_resumed: number; limits: string[];
+  rows: AttentionRow[]; hidden_stopped: number; hidden_resumed: number; explanation: string; limits: string[];
 }
 export const NEEDS_ATTENTION_KEY = ["needs-attention"];
 export const loadNeedsAttention = () => invoke<NeedsAttentionView>("needs_attention_load");
@@ -39,18 +39,22 @@ export default function NeedsAttentionPanel({ onJump, onClose }: {
   }
   const view = query.data;
   return <Modal label="Needs attention" title="Needs attention" size="lg" onClose={() => { if (!inFlight.current) onClose(); }}
-    subtitle="Requests that agents left waiting on disk. Jumping only opens the session; it never starts or answers anything."
+    subtitle="Agents that are paused and waiting for you: a question, an approval or finished work."
     footer={<button className="btn btn-secondary" disabled={busy} onClick={onClose}>Close</button>}>
     {(error || query.error) && <p role="alert">{error || asGuiError(query.error).message}{query.error && view && " Showing the previous load."}</p>}
     {view?.limits.map(limit => <p key={limit} className="muted small" role="note">{limit}</p>)}
-    {view && view.rows.length === 0 && <p>Nothing listed needs attention.</p>}
+    {view?.explanation && <details className="muted small">
+      <summary>Why might an agent be missing?</summary>
+      <p role="note">{view.explanation}</p>
+    </details>}
+    {view && view.rows.length === 0 && <p className="muted">Nothing is waiting for you right now.</p>}
     {!view && !query.error && <p role="status">Loading…</p>}
     {view && view.rows.length > 0 && <ol aria-label="Needs attention" className="attention-list">
       {view.rows.map(row => <li key={row.id} className="attention-row">
         <div className="attention-head">
           <strong>{row.project_name} / {row.feature_name}</strong>
           <span className="attention-reason">{row.reason}</span>
-          {row.age && <span className="muted small" title={row.stale ? "Older than your waiting-stale setting" : undefined}>{row.age}{row.stale ? " (stale)" : ""}</span>}
+          {row.age && <span className="muted small" title={row.stale ? "Waiting for a long time." : undefined}>{row.age}{row.stale ? " (stale)" : ""}</span>}
         </div>
         {row.message && <p className="attention-message">{row.message}</p>}
         {row.jump_note && <p className="muted small">{row.jump_note}</p>}
@@ -60,6 +64,7 @@ export default function NeedsAttentionPanel({ onJump, onClose }: {
             aria-label={`Open session for ${row.feature_name}`}
             onClick={() => row.session && void run(async () => { await onJump(row.session!); onClose(); })}>Open session</button>
           <button className="btn btn-ghost" disabled={busy || !row.dismissable}
+            title="Hides this request. The agent is not told."
             aria-label={`Dismiss ${row.feature_name}: ${row.reason}`}
             onClick={() => void run(async () => {
               const next = await invoke<NeedsAttentionView>("needs_attention_dismiss", { id: row.id, modifiedMs: row.modified_ms });

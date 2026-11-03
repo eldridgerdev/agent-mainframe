@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Todo, TodoEditOutcome, TodoFields, TodoPriority } from "./api";
 import { Field, Icon, Modal, Segmented } from "./ui";
+import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 const PRIORITIES: { value: TodoPriority; label: string }[] = [
   { value: "high", label: "High" },
@@ -218,7 +219,7 @@ export function ScratchpadDialog({
             </div>
           </div>
         )}
-        <Field label="Scratchpad" hint="A free-form note for where you left off. Shared with the TUI.">
+        <Field label="Scratchpad" hint={`A free-form note for where you left off. ${SHARED_WITH_TERMINAL}`}>
           <textarea
             className="plan-textarea todo-notes-input"
             rows={8}

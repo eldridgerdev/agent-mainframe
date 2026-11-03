@@ -102,7 +102,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
       {finish.handoff_error && <p role="alert">{finish.handoff_error}</p>}
       {view.preparation_error && view.preparation_error !== target?.warning && <p role="alert">{view.preparation_error}</p>}
       <button className="btn btn-secondary" disabled={blocked || generated} onClick={() => { if (!inFlight.current) destinationChanged(true); }}>Choose feedback destination…</button>
-      {view.preparation && <div role="status"><p>Preparing {view.preparation.label}. {view.preparation.cancelled ? "Launch cancelled; waiting for setup to settle. Any created resources are retained." : "Worktree creation or its confirmed hook is running in the background."}</p>
+      {view.preparation && <div role="status"><p>Preparing {view.preparation.label}. {view.preparation.cancelled ? "Launch cancelled; waiting for setup to settle. Any created resources are retained." : "The separate checkout (worktree) is being created, or its confirmed setup script is running, in the background."}</p>
         <button className="btn btn-secondary" disabled={busy || view.preparation.cancelled} onClick={() => void onAct({ kind: "cancel_preparation", operation_id: view.preparation!.operation_id })}>Cancel pending launch</button></div>}
       {destinationOpen && <ReviewFeedbackDestinationDialog view={view} error={error} onAct={onAct} onClose={() => destinationChanged(false)} />}
 
@@ -111,7 +111,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
           <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel completion</button></>
         : <button className="btn btn-primary" disabled={blocked || generated || confirm || checkConfirm !== null || completeConfirm} onClick={() => setCompleteConfirm(true)}>Complete review…</button>}
       {completeConfirm && !completing && <div className="review-confirm" role="alertdialog" aria-label="Complete Final Review">
-        <p>Record this round in .claude/final-review-feedback.md, clear the saved progress and close the review? The round is shared with the TUI's review history.</p>
+        <p>Record this round in .claude/final-review-feedback.md, clear the saved progress and close the review? The round is shared with the review history in AMF's terminal app.</p>
         <ul>
           {finish.skipped > 0 && <li>{finish.skipped} file(s) have no verdict and are recorded as skipped.</li>}
           {finish.apply_suggestions > 0 && <li>This review is set to apply suggestions on finish: {finish.apply_suggestions} saved replacement(s) are written to source before the check. Cancelling completion during the check leaves those source changes in place.</li>}

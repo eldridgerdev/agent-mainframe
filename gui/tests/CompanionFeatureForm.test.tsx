@@ -298,8 +298,8 @@ it("lists an unavailable harness and a mode the harness cannot run, and never se
   await create();
   expect((screen.getByRole("option", { name: /Pi \(unavailable\)/ }) as HTMLOptionElement).disabled).toBe(true);
   expect(screen.getByText(/pi is not installed/)).toBeTruthy();
-  fireEvent.change(screen.getByRole("combobox", { name: "Harness" }), { target: { value: "codex" } });
-  expect((screen.getByRole("option", { name: /Vibeless \(not supported by this harness\)/ }) as HTMLOptionElement).disabled).toBe(true);
+  fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), { target: { value: "codex" } });
+  expect((screen.getByRole("option", { name: /Vibeless \(not supported by this agent\)/ }) as HTMLOptionElement).disabled).toBe(true);
 });
 
 it("refuses to preview when the panel's PR is not the live one", async () => {
@@ -392,7 +392,7 @@ it("requires explicit approval to run the setup hook on code that is not confirm
   const onCreated = vi.fn();
   render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
   const button = await createButton();
-  const box = await screen.findByRole("checkbox", { name: /I understand and approve running the setup hook/ });
+  const box = await screen.findByRole("checkbox", { name: /I understand and approve running the setup script/ });
   expect(button.disabled).toBe(true);
   expect(screen.getByText(/is not on the remote \(for example a fork\)/)).toBeTruthy();
   fireEvent.click(box);

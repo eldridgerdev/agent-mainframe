@@ -55,7 +55,7 @@ pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<HarnessChan
         .any(|(feature, _)| feature == &target.feature_id)
     {
         return Err(GuiError::conflict(
-            "Wait for the configured session pre-check before changing harness",
+            "Wait for the configured session pre-check before changing the agent",
         ));
     }
     // Strictly validate configuration before using the shared extension resolver,
@@ -65,7 +65,7 @@ pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<HarnessChan
     let app = gui.app_for_workflow();
     if !matches!(app.mode, AppMode::Normal) {
         return Err(GuiError::conflict(
-            "Finish or close the active workflow before changing harness",
+            "Finish or close the active workflow before changing the agent",
         ));
     }
     let (pi, fi) = app
@@ -79,18 +79,18 @@ pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<HarnessChan
     let feature = &project.features[fi];
     if !feature.is_worktree {
         return Err(GuiError::conflict(
-            "Harness changes require a worktree feature",
+            "Changing the agent requires a feature with its own separate checkout (worktree)",
         ));
     }
     if feature.pending_worktree_script || app.paused_plan_interview_belongs_to_feature(&feature.id)
     {
         return Err(GuiError::conflict(
-            "Finish the feature's pending worktree script or parked plan before changing harness",
+            "Finish the feature's pending setup script or parked plan before changing the agent",
         ));
     }
     if app.feature_tmux_session_is_shared(pi, fi) {
         return Err(GuiError::conflict(
-            "The feature shares its tmux session name. Resolve the ambiguity before changing harness.",
+            "The feature shares its background session with another feature. Resolve that before changing the agent.",
         ));
     }
     let repo_identity = directory_identity(&project.repo)?;
@@ -134,7 +134,7 @@ pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<HarnessChan
     panes.sort();
     if exists && panes.is_empty() {
         return Err(GuiError::conflict(
-            "Cannot observe the running feature's panes. Refresh before changing harness.",
+            "Cannot observe the running feature's sessions. Refresh before changing the agent.",
         ));
     }
     let mut choices = Vec::new();
@@ -220,14 +220,14 @@ pub fn apply(gui: &mut GuiHandle, request: HarnessChangeRequest) -> GuiResult<()
     let current = load(gui, request.target.clone())?;
     if current.revision != request.revision {
         return Err(GuiError::conflict(
-            "The feature, checkout, processes or harness choices changed. Reload and confirm again; nothing was stopped.",
+            "The feature, checkout, processes or agent choices changed. Reload and confirm again; nothing was stopped.",
         ));
     }
     let choice = current
         .choices
         .iter()
         .find(|choice| choice.agent == request.agent)
-        .ok_or_else(|| GuiError::conflict("The replacement harness is no longer allowed"))?;
+        .ok_or_else(|| GuiError::conflict("The new agent is no longer allowed"))?;
     if let Some(reason) = &choice.unavailable {
         return Err(GuiError::conflict(reason));
     }

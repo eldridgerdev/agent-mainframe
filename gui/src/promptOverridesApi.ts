@@ -97,5 +97,5 @@ export const SCOPE_LABELS: Record<OverrideLayer, string> = {
 
 export function slotLabel(scope: OverrideLayer, harness: AgentSlug | null): string {
   if (scope === "built_in") return SCOPE_LABELS.built_in;
-  return `${SCOPE_LABELS[scope]} · ${harness ? HARNESS_LABELS[harness] : "all harnesses"}`;
+  return `${SCOPE_LABELS[scope]} · ${harness ? HARNESS_LABELS[harness] : "all agents"}`;
 }

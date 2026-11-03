@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { asGuiError } from "./api";
 import { Field, Modal, Spinner } from "./ui";
+import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 interface SettingsView {
   settings: { window_limit: string; warning_percent: string; critical_percent: string };
@@ -62,7 +63,7 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
   }
 
   return <Modal label="Context settings" title="Context settings" onClose={() => request("close")}
-    dismissable={!busy} subtitle="Global context display settings shared with the TUI. Existing sessions keep running."
+    dismissable={!busy} subtitle={`Global context display settings. ${SHARED_WITH_TERMINAL} Existing sessions keep running.`}
     footer={<>
       <button className="btn btn-ghost" disabled={busy} onClick={() => request("close")}>Cancel</button>
       <button className="btn btn-secondary" disabled={busy} onClick={() => request("reload")}>Reload settings</button>
@@ -71,7 +72,7 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
     {busy && <p role="status"><Spinner /> Loading or saving settings…</p>}
     {error && <p className="callout callout-danger" role="alert">{error}</p>}
     {view && <div className="form-stack">
-      <Field label="Context window (tokens)" hint="Leave blank to restore harness defaults. Used when telemetry does not report a limit.">
+      <Field label="Context window (tokens)" hint="Leave blank to restore each agent's default. Used when telemetry does not report a limit.">
         <input type="text" inputMode="numeric" aria-label="Context window (tokens)" value={windowLimit} disabled={busy}
           onChange={(event) => setWindowLimit(event.target.value)} />
       </Field>
@@ -84,7 +85,7 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
           onChange={(event) => setCritical(event.target.value)} />
       </Field>
       <p className="muted">Threshold changes update the desktop indicators immediately. A changed window limit marks estimated samples stale
-        until the next context update. External settings edits refresh automatically. Restart an already open TUI after saving: until then
+        until the next context update. External settings edits refresh automatically. Restart AMF's terminal app if it is open: until then
         it keeps its old values and writes them back when it next saves a setting.</p>
       {!valid && <p role="alert">Use a positive whole token limit or leave it blank. Percentages must be 1–100, with critical greater than warning.</p>}
     </div>}

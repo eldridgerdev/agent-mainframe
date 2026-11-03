@@ -11,18 +11,18 @@ const view = { target, feature_name: "Ship", current_agent: "claude", running: t
     { agent: "codex", name: "Codex", unavailable: "Unavailable in Vibeless mode" }] };
 const props = () => ({ target, hasDrafts: false, sending: false, onClose: vi.fn(), onResync: vi.fn(), onChanged: vi.fn() });
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
-const choose = () => fireEvent.change(screen.getByLabelText("Replacement harness"), { target: { value: "opencode" } });
-const confirm = () => fireEvent.click(screen.getByLabelText("I understand and confirm this harness change"));
+const choose = () => fireEvent.change(screen.getByLabelText("New agent"), { target: { value: "opencode" } });
+const confirm = () => fireEvent.click(screen.getByLabelText("I understand and confirm this agent change"));
 
 it("selection and Cancel never switch; explicit confirmation binds the loaded observation", async () => {
   const first = props(); vi.mocked(invoke).mockResolvedValue(view);
   const mounted = render(<FeatureHarnessDialog {...first} />);
-  await screen.findByLabelText("Replacement harness"); choose();
+  await screen.findByLabelText("New agent"); choose();
   expect(screen.getByText(/all its sessions will stop/)).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
   click("Cancel"); expect(first.onClose).toHaveBeenCalledOnce(); expect(invoke).toHaveBeenCalledTimes(1);
   mounted.unmount(); const next = props(); render(<FeatureHarnessDialog {...next} />);
-  await screen.findByLabelText("Replacement harness"); choose(); confirm(); click("Change harness");
+  await screen.findByLabelText("New agent"); choose(); confirm(); click("Change agent");
   await waitFor(() => expect(next.onChanged).toHaveBeenCalledOnce());
   expect(invoke).toHaveBeenLastCalledWith("feature_harness_apply", { request: { target, revision: "observed", agent: "opencode" } });
   expect(next.onResync).toHaveBeenCalledOnce();
@@ -30,35 +30,35 @@ it("selection and Cancel never switch; explicit confirmation binds the loaded ob
 it("blocks unsent drafts and sends, and selecting another harness clears consent", async () => {
   vi.mocked(invoke).mockResolvedValue(view); const base = props();
   const mounted = render(<FeatureHarnessDialog {...base} hasDrafts />);
-  await screen.findByLabelText("Replacement harness"); choose(); confirm();
+  await screen.findByLabelText("New agent"); choose(); confirm();
   expect(screen.getByRole("alert").textContent).toContain("unsent agent drafts");
-  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
   mounted.rerender(<FeatureHarnessDialog {...base} sending />);
-  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
   mounted.rerender(<FeatureHarnessDialog {...base} />);
-  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", false);
-  fireEvent.change(screen.getByLabelText("Replacement harness"), { target: { value: "claude" } });
-  choose(); expect(screen.getByLabelText("I understand and confirm this harness change")).toHaveProperty("checked", false);
+  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", false);
+  fireEvent.change(screen.getByLabelText("New agent"), { target: { value: "claude" } });
+  choose(); expect(screen.getByLabelText("I understand and confirm this agent change")).toHaveProperty("checked", false);
   expect(invoke).toHaveBeenCalledTimes(1);
 });
 it("single-flights a switch, disables dismissal, resyncs failures and requires fresh reload", async () => {
   let reject!: (error: unknown) => void;
   vi.mocked(invoke).mockResolvedValueOnce(view).mockImplementationOnce(() => new Promise((_, failure) => { reject = failure; })).mockResolvedValue(view);
   const callbacks = props(); render(<FeatureHarnessDialog {...callbacks} />);
-  await screen.findByLabelText("Replacement harness"); choose(); confirm(); click("Change harness"); click("Change harness");
+  await screen.findByLabelText("New agent"); choose(); confirm(); click("Change agent"); click("Change agent");
   fireEvent.keyDown(window, { key: "Escape" });
   expect(callbacks.onClose).not.toHaveBeenCalled(); expect(invoke).toHaveBeenCalledTimes(2);
   reject({ kind: "conflict", message: "Checkout changed; nothing stopped" });
   expect((await screen.findByRole("alert")).textContent).toContain("Checkout changed");
   expect(callbacks.onResync).toHaveBeenCalledOnce(); expect(callbacks.onChanged).not.toHaveBeenCalled();
-  expect(screen.queryByLabelText("Replacement harness")).toBeNull();
-  click("Reload"); await screen.findByLabelText("Replacement harness");
-  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(screen.queryByLabelText("New agent")).toBeNull();
+  click("Reload"); await screen.findByLabelText("New agent");
+  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
 });
 it("states that stopped changes do not launch and reports unavailable choices", async () => {
   vi.mocked(invoke).mockResolvedValue({ ...view, running: false, choices: [view.choices[0], view.choices[2]] });
-  render(<FeatureHarnessDialog {...props()} />); await screen.findByLabelText("Replacement harness");
+  render(<FeatureHarnessDialog {...props()} />); await screen.findByLabelText("New agent");
   expect(screen.getByText(/does not launch any sessions/)).toBeTruthy();
-  expect(screen.getByText(/No other installed harness/)).toBeTruthy();
+  expect(screen.getByText(/No other installed agent/)).toBeTruthy();
   expect(screen.getByRole("option", { name: /Codex/ })).toHaveProperty("disabled", true);
 });

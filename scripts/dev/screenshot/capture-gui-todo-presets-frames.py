@@ -252,7 +252,7 @@ try:
     names=evaluate('Array.from(document.querySelector(`[aria-label="Feature preset"]`).options).map(e=>e.textContent)')
     assert set(names) == {'Custom settings','Shared','Remote','Full'} and names.count('Shared') == 1, names
     choose('Shared')
-    assert evaluate('Array.from(document.querySelectorAll("label")).find(e=>e.querySelector(".field-label")?.textContent.trim()==="Harness").querySelector("select").value') == 'opencode'
+    assert evaluate('Array.from(document.querySelectorAll("label")).find(e=>e.querySelector(".field-label")?.textContent.trim()==="Agent").querySelector("select").value') == 'opencode'
     assert evaluate('Array.from(document.querySelectorAll("label")).find(e=>e.querySelector(".field-label")?.textContent.trim()==="Mode").querySelector("select").value') == 'supervibe'
     assert evaluate('Array.from(document.querySelectorAll("input[type=checkbox]")).filter(e=>["Review","Chrome"].some(label=>e.closest("label").textContent.trim().startsWith(label))).every(e=>e.checked)')
     capture('001-project-preset.png', 'TODO creation resolves the project Shared template over its global namesake, filters disallowed Pi, and fills OpenCode, SuperVibe, review, Chrome and Quick Plan without launching anything.',

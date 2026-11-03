@@ -68,7 +68,7 @@ it("lists every prompt with its source and shows the effective template, placeho
   fireEvent.click(screen.getByText("Built-in default"));
   expect(screen.getByLabelText("Built-in default").textContent).toBe("Summarize {{recent_lines}}");
   const slots = screen.getAllByRole("listitem").map((item) => item.textContent);
-  expect(slots[0]).toContain("Project (amf.json) · all harnesses");
+  expect(slots[0]).toContain("Project (amf.json) · all agents");
   expect(slots[1]).toContain("Global · Codex");
   expect(slots[1]).toContain("in effect");
   expect(calls("prompt_overrides_load")[0][1]).toEqual({ context, harness: null });
@@ -81,7 +81,7 @@ it("saves a new override at the chosen scope and harness with the revision it wa
   fireEvent.click(await screen.findByRole("button", { name: "New override…" }));
   expect(template().value).toBe(walkthrough.effective_template);
   fireEvent.change(screen.getByRole("combobox", { name: "Save to scope" }), { target: { value: "project" } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Harness" }), { target: { value: "pi" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), { target: { value: "pi" } });
   fireEvent.change(template(), { target: { value: "Mine" } });
   const button = screen.getByRole("button", { name: "Save override" });
   fireEvent.click(button); fireEvent.click(button);
@@ -117,7 +117,7 @@ it("requires a reload after an external change and keeps the draft through a ref
   expect((screen.getByRole("button", { name: "Save override" }) as HTMLButtonElement).disabled).toBe(false);
   expect(screen.queryByText(/This replaces the existing/)).toBeNull();
   fireEvent.change(screen.getByRole("combobox", { name: "Save to scope" }), { target: { value: "global" } });
-  expect(screen.getByText(/This replaces the existing Global · all harnesses override/)).toBeTruthy();
+  expect(screen.getByText(/This replaces the existing Global · all agents override/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Save override" }));
   await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
   expect(save.mock.calls[1][0]).toMatchObject({ revision: "r9", template: "draft text", scope: "global" });
@@ -141,7 +141,7 @@ it("protects unsaved edits on Escape, prompt switches and context changes, and o
   fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(screen.getByLabelText("Effective template").textContent).toBe("GLOBAL codex {{recent_lines}}");
 
-  fireEvent.click(screen.getByRole("button", { name: "Edit Project (amf.json) · all harnesses" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit Project (amf.json) · all agents" }));
   expect(template().value).toBe("PROJECT {{recent_lines}}");
   fireEvent.change(template(), { target: { value: "edited" } });
   fireEvent.change(screen.getByRole("combobox", { name: "Override context" }), { target: { value: JSON.stringify({ kind: "global" }) } });

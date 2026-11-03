@@ -213,7 +213,7 @@ try:
     capture(
         "001-session-picker.png",
         "New session lists the TUI picker's choices: the allowed agents, Terminal, Neovim, VS Code (enabled: a `code` stand-in is on PATH) and TODOs, then the two custom sessions configured in the project's amf.json, each with its icon, description, command, working directory, pre-check, on-stop command and autolaunch.",
-        ["Configured sessions", "Dev server", "Vite with hot reload for the storefront", "npm run dev", "test -f package.json",
+        ["Custom sessions from your project settings", "Dev server", "Vite with hot reload for the storefront", "npm run dev", "test -f package.json",
          "rm -f .vite-dev.pid", "opens on create", "Database", "docker info --format", "VS Code", "TODOs"],
         f"!{dialog}.querySelector('input[value=vscode]').disabled",
     )

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { asGuiError, FeaturePreset, featurePresetsLoad, featurePresetsSave, PresetRow, PresetsView } from "./api";
 import { Field, Modal, Spinner } from "./ui";
+import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 const emptyPreset = (): FeaturePreset => ({ name: "", branch_prefix: null, mode: "vibe", agent: "claude",
   review: false, plan_mode: false, quick_plan: false, enable_chrome: false, remote_control: false });
@@ -54,7 +55,7 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
   }
 
   return <Modal size="lg" label="Feature presets" title="Feature presets" onClose={() => request("close")}
-    dismissable={!busy} subtitle="Global templates shared with the TUI. Saving changes only the templates for future features."
+    dismissable={!busy} subtitle={`A preset fills in the New feature form for you. ${SHARED_WITH_TERMINAL} Saving changes only presets for future features.`}
     footer={<>
       <button className="btn btn-ghost" disabled={busy} onClick={() => request("close")}>Cancel</button>
       <button className="btn btn-secondary" disabled={busy} onClick={() => request("reload")}>Reload presets</button>
@@ -81,14 +82,14 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
         <Field label="Branch prefix"><input value={row.preset.branch_prefix ?? ""} disabled={busy}
           placeholder="feat" onChange={(event) => edit({ branch_prefix: event.target.value || null })} /></Field>
         <div className="form-row">
-          <Field label="Harness"><select value={row.preset.agent} disabled={busy} onChange={(event) => edit({ agent: event.target.value as FeaturePreset["agent"] })}>
+          <Field label="Agent"><select value={row.preset.agent} disabled={busy} onChange={(event) => edit({ agent: event.target.value as FeaturePreset["agent"] })}>
             <option value="claude">Claude Code</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="pi">Pi</option>
           </select></Field>
           <Field label="Mode"><select value={row.preset.mode} disabled={busy} onChange={(event) => edit({ mode: event.target.value as FeaturePreset["mode"] })}>
             <option value="vibeless">Vibeless</option><option value="vibe">Vibe</option><option value="supervibe">SuperVibe</option>
           </select></Field>
         </div>
-        {unsupported(row) && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.{
+        {unsupported(row) && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another agent.{
           storedUnchanged(row) ? " Features cannot be created from this stored preset until it is fixed." : " Save is blocked until this is fixed."}</p>}
         <Field label="Planning"><select value={!row.preset.plan_mode ? "none" : row.preset.quick_plan ? "quick" : "full"} disabled={busy}
           onChange={(event) => edit({ plan_mode: event.target.value !== "none", quick_plan: event.target.value === "quick" })}>
@@ -96,8 +97,8 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
         </select></Field>
         {([ ["review", "Review"], ["enable_chrome", "Chrome"], ["remote_control", "Remote Control"] ] as const).map(([key, label]) =>
           <label className="switch-row" key={key}><input className="switch" type="checkbox" checked={row.preset[key]} disabled={busy} onChange={(event) => edit({ [key]: event.target.checked })} /><span className="switch-label">{label}</span></label>)}
-        <p className="muted">Project presets with the same name override these templates. Creation offers presets whose harness is allowed and installed.
-          Remote Control templates can be used in the TUI; desktop creation requires explicitly clearing that option.</p>
+        <p className="muted">Project presets with the same name override these. New feature offers presets whose agent is allowed and installed.
+          Remote Control presets can be used in AMF's terminal app; the desktop app requires clearing that option first.</p>
       </>}
       {!namesValid && <p role="alert">Use a nonempty, unique name for every preset.</p>}
       {blocking.some((item) => item !== row) && <p role="alert">Fix the Codex + Vibeless combination in: {

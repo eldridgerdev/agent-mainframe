@@ -8,10 +8,10 @@ import { Field, Icon, Modal, Spinner, Switch } from "./ui";
 
 const PHASE_LABEL: Record<ForkPhase, string> = {
   checking: "Checking the source is unchanged…",
-  creating_checkout: "Creating the worktree at the source HEAD…",
+  creating_checkout: "Creating a copy of the branch…",
   transferring: "Copying working changes…",
-  registering: "Registering the stopped feature…",
-  hook: "Running the worktree hook…",
+  registering: "Adding the new feature…",
+  hook: "Running your project's setup script…",
   starting: "Starting the agent…",
 };
 
@@ -225,14 +225,14 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
           <Field label="New branch / feature name">
             <input value={branch} onChange={(event) => setBranch(event.target.value)} spellCheck={false} />
           </Field>
-          <Field label="Harness" hint={choices.isError ? `Could not load project harnesses: ${asGuiError(choices.error).message}` : `Mode ${preview.mode} is inherited from the source.`}>
+          <Field label="Agent" hint={choices.isError ? `Could not load the project's agents: ${asGuiError(choices.error).message}` : `Mode ${preview.mode} is inherited from the source.`}>
             <select value={agent ?? ""} disabled={!choices.isSuccess} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
               {agent && !offered.includes(agent) && <option value={agent} disabled>{harnessName(agent)} — unavailable</option>}
               {offered.map((slug) => <option key={slug} value={slug}>{harnessName(slug)}</option>)}
             </select>
           </Field>
           {agentUnavailable && (
-            <p role="alert" className="callout callout-warning">{harnessName(agent!)} is not available for this project. Choose another harness.</p>
+            <p role="alert" className="callout callout-warning">{harnessName(agent!)} is not available for this project. Choose another agent.</p>
           )}
           <Switch
             checked={includeContext}
@@ -242,7 +242,7 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
             hint={preview.context.message}
           />
           {preview.hook && (
-            <Field label={preview.hook.title} hint="The project's worktree hook runs in the new checkout after it is registered.">
+            <Field label={preview.hook.title} hint="The project's setup script runs in the new checkout after it is added.">
               <select value={hookChoice} onChange={(event) => setHookChoice(event.target.value)}>
                 <option value="" disabled>Choose…</option>
                 {preview.hook.options.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -279,17 +279,17 @@ function ForkResult({ outcome }: { outcome: ForkOutcome }) {
           <Icon name="check" /><p>{outcome.message}</p>
         </div>
         <dl className="fork-facts">
-          <dt>Worktree</dt><dd><code>{outcome.workdir}</code></dd>
+          <dt>Folder</dt><dd><code>{outcome.workdir}</code></dd>
           <dt>Copied</dt><dd>{outcome.transferred} working {outcome.transferred === 1 ? "change" : "changes"}{outcome.context_written ? " and the conversation" : ""}</dd>
           <dt>Agent</dt><dd>{outcome.started ? "Started" : "Not started (the feature is stopped)"}</dd>
-          {outcome.hook && <><dt>Hook</dt><dd>{outcome.hook.cancelled ? "Cancelled" : outcome.hook.succeeded ? "Succeeded" : `Failed${outcome.hook.detail ? `: ${outcome.hook.detail}` : ""}`}</dd></>}
+          {outcome.hook && <><dt>Setup script</dt><dd>{outcome.hook.cancelled ? "Cancelled" : outcome.hook.succeeded ? "Succeeded" : `Failed${outcome.hook.detail ? `: ${outcome.hook.detail}` : ""}`}</dd></>}
         </dl>
         {outcome.notes.map((note) => <p key={note} className="muted">{note}</p>)}
       </div>
     );
   }
   if (outcome.status === "cancelled") {
-    return <div role="status" className="callout callout-info"><Icon name="check" /><p>{outcome.message}. No worktree was created.</p></div>;
+    return <div role="status" className="callout callout-info"><Icon name="check" /><p>{outcome.message}. Nothing was created.</p></div>;
   }
   return (
     <div role="alert" className="fork-result">

@@ -228,7 +228,7 @@ try:
     wait('!!document.querySelector(`[role=dialog][aria-label="New feature"] select`)')
     feature_choices = evaluate('Array.from(document.querySelector(`[role=dialog][aria-label="New feature"] select`).options).map(e=>e.value)')
     assert feature_choices == ['codex','pi'], feature_choices
-    capture('005-project-agent-new-feature.png','New feature loads project choices before accepting input: Codex is selected and available values are asserted as Codex/Pi.', ['New feature','Harness','Mode','Create feature'])
+    capture('005-project-agent-new-feature.png','New feature loads project choices before accepting input: Codex is selected and available values are asserted as Codex/Pi.', ['New feature','Agent','Mode','Create feature'])
     click('Cancel'); wait('!document.querySelector(`[role=dialog]`)'); click('Round invoice totals')
     wait('!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
     assert evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).value') == draft

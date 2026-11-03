@@ -217,7 +217,7 @@ def close_reader():
 def open_reader():
     header_menu("Feature tools", "Learning")
     wait('!!document.querySelector(`[role=dialog][aria-label="Learning"]`)')
-    field('Answering harness', 'codex')
+    field('Answer with', 'codex')
     wait('document.querySelector(".learning-question button.btn-primary").textContent.trim()==="Ask codex"')
 
 

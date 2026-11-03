@@ -89,13 +89,13 @@ it("shows every feature badge and keeps the name as the row's accessible name", 
   const chips = Array.from(meta.querySelectorAll(".tree-chip")).map((chip) => chip.textContent);
   expect(chips).toEqual([
     "repo", "github.com/acme/invoice#42", "PR #321 · 4 open", "usage 21.8k eff · $0.07", "supervibe", "review",
-    "plan", "plan paused · Resume", "remote", "deleting…", "running worktree script…", "5m ago", "2 sessions", "1 stopped",
+    "plan", "plan paused · Resume", "remote", "deleting…", "running setup script…", "5m ago", "2 sessions", "1 stopped",
   ]);
   expect(meta.querySelector(".mode-supervibe")).toBeTruthy();
   expect(meta.querySelector(".tree-pr.pr-open")).toBeTruthy();
   expect(within(row).getByRole("img", { name: "Input requested" })).toBeTruthy();
   // The worktree script outranks deletion and the waiting request.
-  expect(within(row).getByRole("img", { name: "Running worktree script" })).toBeTruthy();
+  expect(within(row).getByRole("img", { name: "Running setup script" })).toBeTruthy();
   expect(within(row).getByText("— Rounds invoice totals to cents")).toBeTruthy();
   expect(name.className).toContain("tree-name-deleting");
 });

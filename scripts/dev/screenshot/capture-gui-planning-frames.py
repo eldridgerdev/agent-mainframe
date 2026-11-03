@@ -186,7 +186,7 @@ def feature_form(branch, planning='Start directly', choice='node'):
     click('New feature')
     wait('!!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
     field('Branch / feature name', branch)
-    field('Harness', 'codex')
+    field('Agent', 'codex')
     field('Mode', 'vibe')
     # Direct creation may default to the ordinary checkout. Capture uses a
     # private worktree so its hook and retained files have explicit ownership.
@@ -243,7 +243,7 @@ def todo_form(title, branch, *, planning=False, choice='rust & tools'):
     label = 'Plan TODO in a new feature' if planning else 'Start TODO in a new feature'
     wait(f'!!document.querySelector(`[role=dialog][aria-label="{label}"]`)')
     field('Branch', branch)
-    field('Harness', 'codex')
+    field('Agent', 'codex')
     field('Mode', 'vibe')
     wait('!!document.querySelector(`select[aria-label="Choose fixture stack"]`)')
     select_text('select[aria-label="Choose fixture stack"]', choice)

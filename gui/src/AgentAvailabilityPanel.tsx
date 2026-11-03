@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AgentSlug } from "./api";
 import RevisionedSettingsModal, { RevisionedView } from "./RevisionedSettingsModal";
+import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 /** `null` is a project inheriting the global choices; the global setting
  * itself is always a list. */
@@ -26,8 +27,8 @@ export default function AgentAvailabilityPanel({ projectId, onClose, onSaved }: 
 
   return <RevisionedSettingsModal<Settings, View> label={projectId ? "Project agent availability" : "Agent availability"}
     subtitle={(view) => projectId
-      ? `${view?.project_name ?? "Project"} · Choices shared with the TUI. Existing sessions keep running.`
-      : "Global choices shared with the TUI. Existing sessions keep running."}
+      ? `${view?.project_name ?? "Project"} · ${SHARED_WITH_TERMINAL} Existing sessions keep running.`
+      : `Global choices. ${SHARED_WITH_TERMINAL} Existing sessions keep running.`}
     loadCommand={projectId ? "project_agent_availability_load" : "agent_availability_load"}
     saveCommand={projectId ? "project_agent_availability_save" : "agent_availability_save"}
     args={projectId ? { projectId } : undefined}
@@ -61,11 +62,11 @@ export default function AgentAvailabilityPanel({ projectId, onClose, onSaved }: 
         <p className="muted">{projectId
           ? "Project choices apply to new features and sessions in this repository. Save with Use global setting to remove this project's override."
           : "Choose the globally allowed agents for new features and sessions. Project allowed-agent settings take precedence."}
-          {" "}Installed harness availability also applies. This does not install or sign in to an agent.</p>
+          {" "}Only agents installed on this computer are offered. This does not install or sign in to an agent.</p>
         {projectId
           ? <p className="muted">Saves to <span className="mono">{view.config_path}</span>.
             {view.source_path && view.source_path !== view.config_path && " The effective legacy config is copied to this file; the legacy file is kept unchanged."}</p>
-          : <p className="muted">Saved changes apply here immediately. Restart an already open TUI: it keeps the choices it started with,
+          : <p className="muted">Saved changes apply here immediately. Restart AMF's terminal app if it is open: it keeps the choices it started with,
             and saving settings from it puts them back.</p>}
         {!valid && <p role="alert">Select at least one agent.</p>}
       </>;

@@ -88,7 +88,7 @@ with GuiFrames.from_argv() as frames:
     current['extension']['lifecycle_hooks']['on_worktree_created']['prompt']={'title':'Companion setup','options':['offline','full']}
     config.write_text(json.dumps(current))
     settings(low_memory_warn_mb=18446744073709551615)
-    open_picker(); select('Destination type','dedicated'); select('Agent harness','opencode')
+    open_picker(); select('Destination type','dedicated'); select('Agent','opencode')
     click('Preview destination',dialog); wait('Proceed despite this resource warning')
     capture('002-resource-confirmation.png','A fresh dedicated OpenCode session requires explicit approval of the private fixture memory warning before any launch.', ['Invoice rounding / Final Review (Opencode)','resource warning','Proceed despite this resource warning','Creates and starts a dedicated Final Review session.'],allow_alert=True,
             expression='Array.from(document.querySelectorAll(`[aria-label="Feedback destination"] button`)).find(b=>b.textContent==="Prepare destination").disabled')
@@ -118,13 +118,13 @@ with GuiFrames.from_argv() as frames:
     select('Mode','supervibe'); select('Companion setup','offline'); preview()
     capture('006-companion-preview.png','After the global hook changes on disk, a fresh companion preview shows its current offline setup choice, exact branch HEAD and SuperVibe mode; uncommitted reviewed changes are explicitly excluded.', ['Branch basis: invoice-rounding at','Uncommitted reviewed changes are not copied','Creates a companion checkout and stopped feature'],
             expression='document.querySelector(`[aria-label="Feedback destination"] select`).value==="companion" && Array.from(document.querySelectorAll(`[aria-label="Feedback destination"] select`)).some(s=>s.value==="supervibe")')
-    prepare(); wait('Worktree creation or its confirmed hook is running in the background.')
+    prepare(); wait('is being created, or its confirmed setup script is running, in the background.')
     wait_for(lambda:(scratch/'hook-choice').exists(),'Confirmed hook did not start')
     assert (scratch/'hook-choice').read_text()=='offline'
     companions=query("SELECT id,status,workdir FROM features WHERE branch='invoice-rounding-review-fixes'")
     assert len(companions)==1 and companions[0][1]=='stopped'
     before=launch_count()
-    capture('007-background-hook.png','The confirmed worktree hook runs off the coordinator; its created companion is retained by stable identity and its pending launch can be cancelled.', ['Preparing New companion','running in the background','Cancel pending launch'])
+    capture('007-background-hook.png','The confirmed worktree hook runs off the coordinator; its created companion is retained by stable identity and its pending launch can be cancelled.', ['Preparing New companion','running, in the background','Cancel pending launch'])
     click('Cancel pending launch'); wait('Launch cancelled; waiting for setup to settle.')
     (scratch/'hook-release').touch()
     wait('launch was not completed')

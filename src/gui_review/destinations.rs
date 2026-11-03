@@ -145,7 +145,7 @@ fn bind_in(
     }
     if app.feature_tmux_session_is_shared(pi, fi) {
         return Err(GuiError::conflict(
-            "The target shares a tmux session identity with another feature",
+            "The target shares a background session with another feature",
         ));
     }
     let git_identity = if project.is_git {
@@ -251,7 +251,7 @@ fn validate_agent(
         .contains(agent)
     {
         return Err(GuiError::conflict(
-            "This harness is no longer allowed or installed for the project",
+            "This agent is no longer allowed or installed for the project",
         ));
     }
     if !(if primary {
@@ -260,7 +260,7 @@ fn validate_agent(
         bound.feature.mode.supports_agent(&bound.feature.agent)
     }) {
         return Err(GuiError::conflict(
-            "The selected harness does not support this mode",
+            "The selected agent does not support this mode",
         ));
     }
     app.tmux.check_harness_available(agent)?;
@@ -458,7 +458,7 @@ fn plan(
                     != Some(agent)
                 {
                     return Err(GuiError::conflict(
-                        "Final Review already uses another harness. Choose that harness or an explicit existing session.",
+                        "Final Review already uses another agent. Choose that agent or an explicit existing session.",
                     ));
                 }
                 let chosen = SessionTarget {
@@ -1157,7 +1157,7 @@ pub(super) fn poll_preparation(gui: &mut GuiHandle) -> GuiResult<bool> {
                         );
                         ensure!(
                             ok,
-                            "Worktree hook failed: {}",
+                            "Setup script failed: {}",
                             detail.unwrap_or_else(|| "unknown error".into())
                         );
                         Ok(WorkerResult::Hook)
@@ -1390,7 +1390,7 @@ mod tests {
             )
             .unwrap_err()
             .message
-            .contains("another harness")
+            .contains("another agent")
         );
         assert_eq!(
             gui.app_for_workflow().store.projects[0].features[0]

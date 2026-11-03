@@ -93,7 +93,7 @@ export default function FeatureActionsPanel({ target, focusSessionId, onClose, o
           onChange={e => setNickname(e.target.value)} /></label>
         <button className="btn btn-primary" disabled={busy || nickname === (seen.nickname ?? "")}
           onClick={() => void run("feature_rename", { target, expected: seen.nickname, nickname })}>Save nickname</button>
-        <p className="muted">Changes only the display name; the branch, worktree and tmux session keep their names.</p>
+        <p className="muted">Changes only the display name; the branch, folder and sessions keep their names.</p>
       </section>
       <section aria-label="Sessions">
         {seen.sessions.map(session => <div key={session.id} className="row">

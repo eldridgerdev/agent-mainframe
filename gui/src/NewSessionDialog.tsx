@@ -121,7 +121,7 @@ export default function NewSessionDialog({
 
       {(options.custom.length > 0 || options.config_warning) && (
         <fieldset className="custom-session-options">
-          <legend>Configured sessions <span className="muted">(amf.json)</span></legend>
+          <legend>Custom sessions from your project settings <span className="muted">(amf.json)</span></legend>
           {options.config_warning && (
             <div className="callout callout-warning" role="status">
               <Icon name="alert" size={14} />
@@ -138,7 +138,7 @@ export default function NewSessionDialog({
                 <span className="custom-session-title">
                   <strong>{option.name}</strong>
                   {option.source === "global" && <span className="badge">global</span>}
-                  {option.autolaunch && <span className="badge" title="autolaunch: opens as soon as it is created">opens on create</span>}
+                  {option.autolaunch && <span className="badge" title="Opens as soon as it is created">opens on create</span>}
                 </span>
                 {option.description && <span className="muted">{option.description}</span>}
                 <CustomDetails option={option} />
@@ -158,13 +158,13 @@ export default function NewSessionDialog({
 
       {builtin?.kind === "vscode" && (
         <p className="muted new-session-note">
-          Opens this worktree in a new VS Code window. AMF tracks the window and closes it when the
+          Opens this feature's folder in a new VS Code window. AMF tracks the window and closes it when the
           feature stops when editor cleanup is enabled and the window can still be safely identified.
         </p>
       )}
       {builtin?.kind === "todos" && (
         <p className="muted new-session-note">
-          Adds the feature's TODOs session (the TUI tree shows it). The list is also always on the TODOs tab.
+          Adds a TODOs session to this feature. The list is also always on the TODOs tab.
         </p>
       )}
       {startsFeature && choice && (

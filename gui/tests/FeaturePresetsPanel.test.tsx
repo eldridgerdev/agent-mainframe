@@ -90,7 +90,7 @@ it("prefills presets but preserves subsequent edits and quick-plan selection at 
   const onSubmit = creation({ ...preset, review: true, enable_chrome: true, plan_mode: true, quick_plan: true });
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
   expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "feat/");
-  change("Branch / feature name", "custom/edited"); fireEvent.click(screen.getByRole("checkbox", { name: /^Chrome/ }));
+  change("Branch / feature name", "custom/edited"); fireEvent.click(screen.getByRole("switch", { name: /^Chrome/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Create and plan" })).toHaveProperty("disabled", false));
   click("Create and plan");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "custom/edited", review: true, enable_chrome: false, plan_mode: true }), "quick");
@@ -102,7 +102,7 @@ it("never silently drops remote intent after field edits or switching to custom 
   expect(screen.getByRole("alert").textContent).toContain("does not support Remote Control");
   expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", true);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("checkbox", { name: /^Remote Control/ }));
+  fireEvent.click(screen.getByRole("switch", { name: /^Remote Control/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   click("Create feature"); expect(onSubmit).toHaveBeenCalledOnce();
 });

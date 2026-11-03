@@ -1,4 +1,4 @@
-import { ReactNode, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -138,6 +138,8 @@ import {
   Switch,
   Toast,
   Toasts,
+  addToast,
+  onTablistKeyDown,
 } from "./ui";
 
 const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
@@ -162,7 +164,7 @@ type View =
 
 const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
-  conflict: "Out of date",
+  conflict: "Changed elsewhere. Reload.",
   needs_approval: "Approval needed",
   invalid_input: "Check your input",
   internal: "Something went wrong",
@@ -499,23 +501,36 @@ export default function App() {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
+  // Each toast owns its dismiss timer (paused on hover and focus; see Toasts).
   const pushToast = useCallback((toast: Omit<Toast, "id">) => {
     const id = ++toastId.current;
-    setToasts((current) => [...current.slice(-3), { ...toast, id }]);
-    window.setTimeout(() => dismissToast(id), toast.tone === "error" ? 12_000 : 6_000);
-  }, [dismissToast]);
+    setToasts((current) => addToast(current, { ...toast, id }));
+  }, []);
 
-  const reportError = useCallback((err: unknown) => {
+  /** Clears the toast an action left behind, once that action succeeds. */
+  const clearToastKey = useCallback((key: string) => {
+    setToasts((current) => current.some((toast) => toast.key === key)
+      ? current.filter((toast) => toast.key !== key)
+      : current);
+  }, []);
+
+  /** Reports a failed command. With `action`, the toast is titled by what
+   *  failed and keyed so a retry replaces it and a later success clears it. */
+  const reportActionError = useCallback((err: unknown, action?: { key: string; title: string }) => {
     const error = asGuiError(err);
     pushToast({
       tone: "error",
-      title: ERROR_TITLE[error.kind] ?? "Error",
+      title: action && error.kind !== "conflict" ? action.title : ERROR_TITLE[error.kind] ?? "Error",
       message: error.message,
+      key: action?.key,
       action: error.kind === "conflict"
-        ? { label: "Refresh", onClick: () => void workspace.refetch() }
+        ? { label: "Reload", onClick: () => void workspace.refetch() }
         : undefined,
     });
   }, [pushToast, workspace]);
+  // One-argument form, safe to pass where callers add their own arguments
+  // (react-query's onError passes the mutation variables second).
+  const reportError = useCallback((err: unknown) => reportActionError(err), [reportActionError]);
 
   /** Collapse or expand a tree row in the store shared with the TUI, showing
    *  the change at once and reloading the store's truth if the write is
@@ -948,18 +963,20 @@ export default function App() {
     }
   }
 
+  // Add project reports its errors inline under the path field (the dialog
+  // stays open), so there is no corner toast to go stale after a retry.
   const createProjectMutation = useMutation({
     mutationFn: createProject,
     onSuccess: (response) => {
       setShowCreateProject(false);
       if (response.project_id) setView({ kind: "project", projectId: response.project_id });
     },
-    onError: reportError,
   });
 
   const createFeatureMutation = useMutation({
     mutationFn: createFeature,
     onSuccess: (response) => {
+      clearToastKey("create-feature");
       setCreateFeatureFor(null);
       const wantsCoach = steeringOnCreate.current;
       steeringOnCreate.current = false;
@@ -970,7 +987,7 @@ export default function App() {
     },
     onError: (err) => {
       steeringOnCreate.current = false;
-      reportError(err);
+      reportActionError(err, { key: "create-feature", title: "Could not create feature" });
     },
   });
 
@@ -999,14 +1016,17 @@ export default function App() {
   const startFeatureMutation = useMutation({
     mutationFn: ({ target, approved }: { target: FeatureTarget; approved: boolean }) =>
       startFeature(target, approved),
-    onSuccess: () => setPendingStart(null),
+    onSuccess: (_response, variables) => {
+      setPendingStart(null);
+      clearToastKey(`start-feature:${variables.target.feature_id}`);
+    },
     onError: (err, variables) => {
       const error = asGuiError(err);
       if (error.kind === "needs_approval" && !variables.approved) {
         setPendingStart({ target: variables.target, message: error.message });
       } else {
         setPendingStart(null);
-        reportError(error);
+        reportActionError(error, { key: `start-feature:${variables.target.feature_id}`, title: "Could not start feature" });
       }
     },
   });
@@ -1805,7 +1825,11 @@ export default function App() {
         <CreateProjectForm
           agents={harnesses.data ?? []}
           pending={createProjectMutation.isPending}
-          onCancel={() => setShowCreateProject(false)}
+          error={createProjectMutation.error ? asGuiError(createProjectMutation.error) : null}
+          onCancel={() => {
+            setShowCreateProject(false);
+            createProjectMutation.reset();
+          }}
           onSubmit={(request) => createProjectMutation.mutate(request)}
         />
       )}
@@ -1856,6 +1880,7 @@ export default function App() {
       {activePlan && (
         <div hidden={planMinimized}>
           <Modal
+            hidden={planMinimized}
             label="Plan interview"
             title={activePlan.kind === "quick" ? "Quick Plan" : "Plan interview"}
             subtitle={activePlan.feature_name}
@@ -2400,6 +2425,7 @@ function FeatureView({
   todoPanel: ReactNode;
 }) {
   const [integrateCompanion, setIntegrateCompanion] = useState(false);
+  const tabPanelId = useId();
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
   const known = (id: string | undefined) =>
     id === TODOS_TAB || id === VSCODE_TAB || sessions.some((session) => session.id === id);
@@ -2552,12 +2578,14 @@ function FeatureView({
         }
       />
 
-      <div className="tabs" role="tablist" aria-label="Feature sessions">
+      <div className="tabs" role="tablist" aria-label="Feature sessions" onKeyDown={onTablistKeyDown}>
         {sessions.map((session) => (
           <span key={session.id} className="tab-group">
             <button
               role="tab"
               aria-selected={activeTab === session.id}
+              aria-controls={tabPanelId}
+              tabIndex={activeTab === session.id ? 0 : -1}
               className={[
                 "tab",
                 activeTab === session.id && "tab-active",
@@ -2591,7 +2619,7 @@ function FeatureView({
           </span>
         ))}
         {pendingSession && (
-          <button role="tab" aria-selected className="tab tab-active">
+          <button role="tab" aria-selected aria-controls={tabPanelId} className="tab tab-active">
             <Icon name="terminal" size={14} /> Agent
           </button>
         )}
@@ -2600,6 +2628,8 @@ function FeatureView({
           <button
             role="tab"
             aria-selected={activeTab === VSCODE_TAB}
+            aria-controls={tabPanelId}
+            tabIndex={activeTab === VSCODE_TAB ? 0 : -1}
             className={activeTab === VSCODE_TAB ? "tab tab-active" : "tab"}
             onClick={() => onTab(VSCODE_TAB)}
             title="VS Code windows AMF opened for this feature"
@@ -2611,6 +2641,8 @@ function FeatureView({
         <button
           role="tab"
           aria-selected={activeTab === TODOS_TAB}
+          aria-controls={tabPanelId}
+          tabIndex={activeTab === TODOS_TAB ? 0 : -1}
           className={activeTab === TODOS_TAB ? "tab tab-active" : "tab"}
           onClick={() => onTab(TODOS_TAB)}
         >
@@ -2618,7 +2650,7 @@ function FeatureView({
         </button>
       </div>
 
-      <div className="tab-body">
+      <div className="tab-body" role="tabpanel" id={tabPanelId} aria-label="Selected session">
         {activeTab === TODOS_TAB && (
           <div className="page-narrow scroll">{todoPanel}</div>
         )}
@@ -2709,11 +2741,14 @@ function useOfferedAgents(projectId: string | null, supported: HarnessInfo[]): H
 function CreateProjectForm({
   agents,
   pending,
+  error = null,
   onCancel,
   onSubmit,
 }: {
   agents: HarnessInfo[];
   pending: boolean;
+  /** The last attempt's failure, shown under the path field it is about. */
+  error?: GuiError | null;
   onCancel: () => void;
   onSubmit: (request: {
     path: string;
@@ -2728,6 +2763,7 @@ function CreateProjectForm({
   const [agent, setAgent] = useState<AgentSlug | "">("");
   const offered = useOfferedAgents(null, agents);
   const selectedAgent = offered.some((candidate) => candidate.slug === agent) ? agent : "";
+  const errorId = useId();
 
   return (
     <Modal
@@ -2765,8 +2801,15 @@ function CreateProjectForm({
             placeholder="/home/you/code/my-repo"
             required
             autoFocus
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? errorId : undefined}
           />
         </Field>
+        {error && (
+          <p id={errorId} className="field-error" role="alert">
+            <strong>Could not add project.</strong> {error.message}
+          </p>
+        )}
         <Field label="Project name">
           <input
             value={name}

@@ -75,7 +75,7 @@ it.each(["none", "full", "quick"] as const)("honors a preset's %s route and subs
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
   expect(screen.getByLabelText("Branch")).toHaveProperty("value", "feat/improve-the-api");
   expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
-  change("Branch", "edited/meaningful-name"); fireEvent.click(screen.getByRole("checkbox", { name: /^Chrome/ }));
+  change("Branch", "edited/meaningful-name"); fireEvent.click(screen.getByRole("switch", { name: /^Chrome/ }));
   const button = kind === "none" ? "Create and start" : kind === "full" ? "Start plan" : "Start Quick Plan";
   await ready(button); click(button);
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "edited/meaningful-name", agent: "codex", mode: "supervibe", review: true, enable_chrome: false, plan_mode: kind !== "none" }), kind);
@@ -100,7 +100,7 @@ it("retains Remote Control intent through edits, custom settings and project swi
   expect(screen.getByText(/does not support Remote Control yet/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("checkbox", { name: /^Remote Control/ })); await ready(); click("Create and start");
+  fireEvent.click(screen.getByRole("switch", { name: /^Remote Control/ })); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "second", branch: "edited" }), "none");
 });
 it("never submits an unavailable preset harness or an unsupported mode", async () => {

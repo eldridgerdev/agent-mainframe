@@ -161,6 +161,25 @@
   outline-offset: 1px;
 }
 .field input[aria-invalid="true"] { border-color: var(--red); }
+/* Multi-line fields match the single-line controls. :where() keeps the rule at zero specificity so a
+   textarea with its own class (.plan-textarea, .overrides-textarea) still sets its own size. */
+:where(.field textarea, textarea.input) {
+  width: 100%;
+  min-height: calc(var(--h-md) * 3);
+  padding: 8px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+:where(.field textarea, textarea.input):focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+:where(.field textarea, textarea.input):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .field-error { margin-top: -8px; font-size: var(--fs-sm); color: var(--red); overflow-wrap: anywhere; }
 /* A path input with its Browse… button (BrowseButton.tsx); a picker failure wraps under the row. */
 .path-input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

@@ -80,7 +80,8 @@
 .pr-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 12px; }
 .pr-toolbar .field { margin: 0; }
 .pr-heading { flex: 1; min-width: 200px; overflow-wrap: anywhere; }
-.pr-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 60vh; overflow: auto; }
+/* minmax(0, 1fr): without it the longest title sets every card's width and the list overflows its pane. */
+.pr-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-height: 60vh; overflow: auto; }
 .pr-entry {
   display: flex;
   flex-direction: column;
@@ -95,11 +96,16 @@
   cursor: pointer;
 }
 .pr-entry:hover { background: var(--surface-2); }
+/* Long titles wrap to two lines beside the number, then ellipsize; the full title is the tooltip. */
+.pr-entry-title { flex-wrap: nowrap; align-items: baseline; }
+.pr-entry-title .truncate { flex: 1; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .pr-entry-feature { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .tag-success { background: var(--green-soft); color: var(--green); }
 .pr-workspace-host { display: flex; flex: 1; min-height: 0; }
 .pr-workspace-loading { display: flex; align-items: center; gap: 10px; padding: 24px; color: var(--text-muted); }
-.pr-workspace-page { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; padding: 24px clamp(18px, 3vw, 42px) 14px; }
+/* A size container: the workspace's breakpoints follow its own width, not the window's, because the app
+   sidebar takes a different share of the window at every size. Wide >=860, medium 640-859, narrow <640. */
+.pr-workspace-page { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; padding: 24px clamp(18px, 3vw, 42px) 14px; container: prws / inline-size; }
 .pr-workspace-page-header { flex: 0 0 auto; padding-bottom: 18px; }
 .pr-workspace-page-kicker {
   display: flex;
@@ -122,6 +128,7 @@
   flex: 1;
   min-height: 0;
   grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   transition: grid-template-columns 0.16s ease;
 }
@@ -149,7 +156,6 @@
   color: var(--text-muted);
 }
 .pr-workspace-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-.pr-workspace-main { overflow: hidden; }
 .pr-workspace-footer {
   display: flex;
   align-items: center;
@@ -234,6 +240,7 @@
 .pr-ai-publish-confirm li { padding: 3px 0; }
 .pr-ai-batch-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
   justify-content: space-between;
   gap: 12px;
@@ -244,7 +251,15 @@
   background: var(--surface-2);
 }
 .pr-ai-batch-toolbar label { display: grid; gap: 5px; color: var(--text-muted); font-size: var(--fs-sm); }
-.pr-ai-batch-actions { display: flex; align-items: center; gap: 8px; }
+.pr-ai-batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+/* The destinations catalog takes its own row so its blurb is not squeezed into a column. */
+.pr-ai-batch-toolbar > .destination-catalog { flex-basis: 100%; min-width: 0; }
+/* The AI pre-call notice: a column, with the prompt scrolling inside it and Run on the right. */
+.pr-ai-precall { flex-direction: column; align-items: stretch; gap: 8px; margin: 10px 0 16px; border: 1px solid var(--accent); }
+.pr-ai-precall details { min-width: 0; }
+.pr-ai-precall summary { cursor: pointer; color: var(--text-muted); }
+.pr-ai-precall pre { max-height: 40vh; overflow: auto; margin-top: 8px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pr-ai-precall-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .pr-ai-finding-tools { display: flex; align-items: center; gap: 8px; }
 .pr-ai-select-finding { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: var(--fs-sm); }
 .pr-ai-select-finding input { accent-color: var(--accent); }
@@ -316,25 +331,60 @@
   color: inherit;
 }
 .pr-comments .pr-comment-selected { background: var(--surface-2); }
-@media (max-width: 760px) {
-  .pr-workspace-layout { grid-template-columns: 1fr; }
-  .pr-workspace-context { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 10px; max-height: 24vh; }
+/* Medium and narrow (<860): the PR rail becomes a one-row strip above the tabs, so the tab body keeps the
+   whole width. A stopgap until the rail is removed. */
+@container prws (width < 860px) {
+  .pr-workspace-layout, .pr-workspace-layout-collapsed { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+  .pr-workspace-context, .pr-workspace-context-collapsed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 0 0 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+  .pr-workspace-context > p { margin: 0; }
+  .pr-workspace-context-heading { order: -1; min-height: 0; }
+  .pr-workspace-context-heading .btn { display: none; }
+  .pr-workspace-context-badge { margin-top: 0; writing-mode: horizontal-tb; transform: none; }
 }
-@media (max-width: 760px) {
+/* Narrow (<640): one column everywhere. */
+@container prws (width < 640px) {
   .pr-ai-progress { margin: 0; padding: 16px; }
   .pr-ai-steps { grid-template-columns: 1fr; }
   .pr-ai-progress-actions { align-items: stretch; flex-direction: column; }
-}
-@media (max-width: 760px) {
-  .pr-workspace-page { padding: 16px 12px 10px; }
   .pr-workspace-page-title-row, .pr-ai-results-header, .pr-ai-publish-confirm { align-items: flex-start; flex-direction: column; }
   .pr-workspace-page-actions { width: 100%; justify-content: space-between; }
   .pr-ai-results-actions { justify-content: flex-start; }
   .pr-ai-summary > .md { padding-left: 0; }
+  .pr-ai-batch-toolbar { align-items: stretch; flex-direction: column; }
+  .pr-ai-batch-actions { justify-content: space-between; margin-left: 0; }
+  .pr-reader { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .pr-comments { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--border); }
+}
+/* The page itself cannot query its own container, so its padding follows the window. */
+@media (max-width: 760px) {
+  .pr-workspace-page { padding: 16px 12px 10px; }
   .pr-workspace-background-banner { align-items: flex-start; flex-wrap: wrap; margin: 10px 12px 0; }
   .pr-workspace-background-banner button { margin-left: 32px; }
-  .pr-ai-batch-toolbar { align-items: stretch; flex-direction: column; }
-  .pr-ai-batch-actions { justify-content: space-between; }
+}
+/* Without container queries (WebKit before Safari 16), keep the old window-width rules. */
+@supports not (container-type: inline-size) {
+  @media (max-width: 760px) {
+    .pr-workspace-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .pr-workspace-context { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 10px; max-height: 24vh; }
+    .pr-ai-progress { margin: 0; padding: 16px; }
+    .pr-ai-steps { grid-template-columns: 1fr; }
+    .pr-ai-progress-actions { align-items: stretch; flex-direction: column; }
+    .pr-workspace-page-title-row, .pr-ai-results-header, .pr-ai-publish-confirm { align-items: flex-start; flex-direction: column; }
+    .pr-workspace-page-actions { width: 100%; justify-content: space-between; }
+    .pr-ai-results-actions { justify-content: flex-start; }
+    .pr-ai-summary > .md { padding-left: 0; }
+    .pr-ai-batch-toolbar { align-items: stretch; flex-direction: column; }
+    .pr-ai-batch-actions { justify-content: space-between; margin-left: 0; }
+  }
 }
 .pr-loading { display: grid; gap: 12px; justify-items: start; }
 .pr-reader {

@@ -105,8 +105,10 @@ export default function PrMarkdown({ source, workflowId, identity, onOpenImage }
   </div>;
 }
 
-export function PrDescription({ workflowId, identity, onOpenImage }: {
+export function PrDescription({ workflowId, identity, onOpenImage, defaultOpen = true }: {
   workflowId: string; identity: string; onOpenImage: OpenPrImage;
+  /** Starts expanded; the PR workspace starts it collapsed so the threads stay in view. */
+  defaultOpen?: boolean;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +122,7 @@ export function PrDescription({ workflowId, identity, onOpenImage }: {
       .catch((err) => { if (live) setError(asGuiError(err).message); });
     return () => { live = false; };
   }, [workflowId, identity, retry]);
-  return <details className="pr-description" open>
+  return <details className="pr-description" open={defaultOpen}>
     <summary>PR description</summary>
     {error ? <p role="alert">{error}{" "}<button className="btn btn-secondary btn-sm"
       onClick={() => setRetry((value) => value + 1)}>Retry description</button></p>

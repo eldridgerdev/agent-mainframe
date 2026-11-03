@@ -245,7 +245,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
 
   return (
     <>
-    <Modal inline={embedded} label="Review comments" size="xl" dismissable={!busy && !currentImage} onClose={close}
+    <Modal inline={embedded} label="Review comments" size="xl" dismissable={!embedded && !busy && !currentImage} onClose={close}
       title={view ? `Review comments · ${view.feature_name}` : "Review comments"}
       subtitle="Read and reply to feedback on your pull request: investigate a comment, have an agent prepare a fix, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <ConfirmCallout label="Discard and close Review comments" className="callout callout-warning">
@@ -293,7 +293,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             <button className={`pr-entry ${entry.selected_for_feature ? "pr-entry-feature" : ""}`} disabled={busy} onClick={() => void act({ kind: "open", number: entry.number })}
               aria-current={entry.selected_for_feature ? "true" : undefined}
               aria-label={`Open PR #${entry.number} ${entry.title}`}>
-              <span className="row"><strong>#{entry.number}</strong> <span className="truncate">{entry.title}</span></span>
+              <span className="row pr-entry-title"><strong>#{entry.number}</strong> <span className="truncate" title={entry.title}>{entry.title}</span></span>
               <span className="row small muted">
                 <span className="mono">{entry.head_ref}</span> · {entry.author}
                 {entry.selected_for_feature && <span className="tag tag-accent">Selected for this feature</span>}
@@ -330,7 +330,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
           <button className="btn btn-secondary btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "refresh" })}>Refresh comments</button>
           <button className="btn btn-ghost btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "back_to_list" })}>Pull requests</button>
         </div>
-        {view && <PrDescription key={imageIdentity} workflowId={view.workflow_id} identity={imageIdentity} onOpenImage={showImage} />}
+        {view && <PrDescription key={imageIdentity} workflowId={view.workflow_id} identity={imageIdentity} onOpenImage={showImage} defaultOpen={!embedded} />}
         {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
 
         {view?.precall && <ConfirmCallout label="Investigation AI call" className="review-confirm" as="section">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { asGuiError, type FeatureTarget } from "./api";
+import { agentName, asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
 import PrReviewPanel from "./PrReviewPanel";
 import Markdown from "./Markdown";
@@ -348,7 +348,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
           <PrTriagePanel target={target} embedded embeddedActive={tab === "threads"} embeddedView={triage} onEmbeddedViewChange={setTriage} onEmbeddedBusyChange={setTriageBusy} onRequestClose={(close) => { triageClose.current = close; }} onClose={() => void closeWorkspace(true)} onHandoff={onHandoff} />
         </div>}
         {review && tab === "ai" && <section className="pr-workspace-ai" aria-label="AI PR review">
-          {ai?.precall ? <div className="callout"><h3>{ai.precall.title}</h3><p>{ai.precall.harness}</p><details><summary>Review prompt</summary><pre>{ai.precall.preview}</pre></details><button className="btn btn-secondary" disabled={busy} onClick={() => void aiAct("cancel_precall")}>Cancel AI review</button><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("confirm_precall")}>Continue</button></div>
+          {ai?.precall ? <div className="callout"><h3>{ai.precall.title}</h3><p>{agentName(ai.precall.harness)}</p><details><summary>Review prompt</summary><pre>{ai.precall.preview}</pre></details><button className="btn btn-secondary" disabled={busy} onClick={() => void aiAct("cancel_precall")}>Cancel AI review</button><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("confirm_precall")}>Continue</button></div>
             : ai?.running ? <section className="pr-ai-progress" aria-label={`AI review running on PR #${ai.pr_number}`}>
               <header className="pr-ai-progress-heading"><Spinner /><div><span className="tag tag-accent">In progress</span><h3>Reviewing PR #{ai.pr_number}</h3><p className="muted">The review runs in the background. You can switch tabs while it works.</p></div></header>
               <ol className="pr-ai-steps" aria-label="Review progress">

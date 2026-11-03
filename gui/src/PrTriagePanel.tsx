@@ -305,7 +305,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
 
         {view?.precall && <section className="review-confirm" role="alertdialog" aria-label="Investigation AI call">
-          <p>Background AI call: {view.precall.title} · {view.precall.harness}. It only reads your files but uses your agent account's usage.</p>
+          <p>Background AI call: {view.precall.title} · {agentName(view.precall.harness)}. It only reads your files but uses your agent account's usage.</p>
           {view.precall.viewing && <pre className="doc doc-mono">{view.precall.preview}</pre>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_toggle_view" })}>{view.precall.viewing ? "Hide prompt" : "View prompt"}</button>
           <button className="btn btn-primary" disabled={busy} onClick={() => void confirmInvestigation()}>Continue AI call</button>
@@ -511,7 +511,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
 
             {selected.investigation && <section className="review-note" aria-label="Investigation">
               <p className="row small"><strong>Investigation (read-only)</strong>
-                <span className="tag">{selected.investigation.status}</span><span className="tag">{selected.investigation.harness}</span>
+                <span className="tag">{selected.investigation.status}</span><span className="tag">{agentName(selected.investigation.harness)}</span>
                 {selected.investigation.stale_head && <span className="tag tag-red">older PR head</span>}</p>
               {selected.investigation.error && <p className="error-text">{selected.investigation.error}</p>}
               {selected.investigation.answer && <Markdown source={selected.investigation.answer} />}

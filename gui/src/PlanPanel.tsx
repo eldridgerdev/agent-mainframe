@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
-import { PlanAction, PlanInput, PlanView, PrecallView } from "./api";
+import { agentName, PlanAction, PlanInput, PlanView, PrecallView } from "./api";
 import Markdown from "./Markdown";
 import { Icon, IconName, Spinner } from "./ui";
 
@@ -92,7 +92,7 @@ export default function PlanPanel({
             <Icon name="sparkles" />
             <div>
               <strong>{precall.title}</strong>
-              <p>This step calls {precall.harness}. Review the prompt if you like, then continue.</p>
+              <p>This step calls {agentName(precall.harness)}. Review the prompt if you like, then continue.</p>
             </div>
           </div>
           {precall.viewing && <pre className="doc doc-mono">{precall.preview}</pre>}

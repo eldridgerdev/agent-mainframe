@@ -207,7 +207,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
     {ai.precall && <section className="review-confirm" role="alertdialog" aria-label="Review AI call">
-      <p>Background AI call: {ai.precall.title} · {ai.precall.harness}. This reads your files and uses your agent account's usage.</p>
+      <p>Background AI call: {ai.precall.title} · {agentName(ai.precall.harness)}. This reads your files and uses your agent account's usage.</p>
       {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
       {onEditPrompt && <button className="btn btn-secondary" disabled={commandBusy} onClick={onEditPrompt}>Edit prompt</button>}

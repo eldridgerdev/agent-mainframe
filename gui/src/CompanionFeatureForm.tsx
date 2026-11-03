@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AgentSlug, ModeSlug, asGuiError } from "./api";
+import { AgentSlug, ModeSlug, agentName, asGuiError } from "./api";
 import {
   CompanionCatalog, PrDestinationChoice, PrDestinationOperation, PrDestinationPrepared, PrDestinationPreview, PrDestinationWorkflow,
   companionCatalog, destinationCancel, destinationPrepare, destinationPreview, destinationStatus,
@@ -242,7 +242,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
           <dt>Checkout</dt><dd><code>{companion.destination_path}</code></dd>
           <dt>Started from</dt><dd>PR head <code>{companion.base_short}</code>{companion.will_fetch ? " (fetched from the remote first)" : ""}</dd>
           <dt>PR branch (on the remote)</dt><dd>{companion.pr_branch || "unknown"}{companion.pr_branch_on_origin === true ? " · found" : companion.pr_branch_on_origin === false ? " · not found" : " · not checked"}</dd>
-          <dt>Agent and mode</dt><dd>{companion.agent} · {companion.mode}{companion.review ? " · review" : ""}{companion.enable_chrome ? " · Chrome" : ""}</dd>
+          <dt>Agent and mode</dt><dd>{agentName(companion.agent)} · {companion.mode}{companion.review ? " · review" : ""}{companion.enable_chrome ? " · Chrome" : ""}</dd>
           {companion.hook && <><dt>Setup script</dt><dd><code>{companion.hook.script}</code>{companion.hook.choice ? ` · ${companion.hook.prompt_title ?? "choice"}: ${companion.hook.choice}` : ""}</dd></>}
         </dl>
         {companion.pr_branch_note && <p className={companion.pr_branch_on_origin === false ? "callout callout-danger" : "small muted"} role={companion.pr_branch_on_origin === false ? "alert" : undefined}>{companion.pr_branch_note}</p>}

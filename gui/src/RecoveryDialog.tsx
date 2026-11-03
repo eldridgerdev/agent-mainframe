@@ -1,4 +1,5 @@
 import type { SavedAgentSession, SessionRecoveryChoice, SessionRecoveryOption } from "./api";
+import { agentName } from "./api";
 import { Modal, Spinner } from "./ui";
 
 export default function RecoveryDialog({
@@ -27,7 +28,7 @@ export default function RecoveryDialog({
   return (
     <Modal
       label="Recover agent session"
-      title={`Recover ${option.harness} session`}
+      title={`Recover ${agentName(option.harness)} session`}
       subtitle="This agent is not running, but AMF still has its saved session."
       onClose={onClose}
       dismissable={!busy}

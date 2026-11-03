@@ -98,7 +98,7 @@ it("labels a PR Triage companion, names the PR branch and warns when the source 
   expect(screen.getByRole("option", { name: "Push to PR #42 branch on origin" })).toBeTruthy();
   fireEvent.change(screen.getByRole("combobox", { name: "Integration method" }), { target: { value: "push" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
-  expect(await screen.findByText(/PR Triage companion for/)).toBeTruthy();
+  expect(await screen.findByText(/Triage companion for/)).toBeTruthy();
   expect(screen.getByText(/not the PR branch/)).toBeTruthy();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "companion_integration_confirm")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Confirm push" }));
@@ -112,5 +112,5 @@ it("does not claim PR wording for a Final Review companion", async () => {
   });
   render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
   expect(screen.getByRole("option", { name: "Push to source branch on origin" })).toBeTruthy();
-  expect(screen.queryByText(/PR Triage companion/)).toBeNull();
+  expect(screen.queryByText(/Triage companion/)).toBeNull();
 });

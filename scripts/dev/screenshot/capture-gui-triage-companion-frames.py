@@ -26,7 +26,7 @@ with GuiFrames.from_argv() as frames:
     action('wait',text='Invoice fixes',scope='nav[aria-label=Workspace]');click('Invoice fixes','nav[aria-label=Workspace]')
     wait('Integrate fixes…');click('Integrate fixes…');click('Preview integration')
     wait('companion checkout has uncommitted changes')
-    capture('001-preview.png','The PR Triage companion preview names PR 42, the PR branch, the differing source branch, the exact commit and excluded uncommitted companion changes before any integration.', ['PR Triage companion for','not the PR branch',companion_head,'uncommitted changes'],expression='!!document.querySelector(`[aria-label="Integration preview"]`)')
+    capture('001-preview.png','The triage companion preview names PR 42, the PR branch, the differing source branch, the exact commit and excluded uncommitted companion changes before any integration.', ['Triage companion for','not the PR branch',companion_head,'uncommitted changes'],expression='!!document.querySelector(`[aria-label="Integration preview"]`)')
     action('click',selector='[role=dialog] .modal-footer button:first-child');assert git(source,'rev-parse','HEAD')==original
     click('Integrate fixes…');click('Preview integration');wait('companion checkout has uncommitted changes')
     (source/'new-untracked.txt').write_text('Preserve this change\n')

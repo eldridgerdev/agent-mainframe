@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
@@ -197,8 +208,7 @@ def git(*args):
 def open_workspace():
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.includes("Round invoice totals"))')
     evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.includes("Round invoice totals")).click()')
-    wait(has_button("PR Workspace (experimental)"))
-    click("PR Workspace (experimental)")
+    header_menu("Feature tools", "PR Workspace")
     wait('Array.from(document.querySelectorAll(".pr-entry")).some(b=>b.textContent.includes("#12"))')
     evaluate('Array.from(document.querySelectorAll(".pr-entry")).find(b=>b.textContent.includes("#12")).click()')
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Files" && !b.disabled)')

@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 def select(label, value):
     evaluate(
@@ -213,7 +224,7 @@ try:
     x.sync()
     wait(has_button("Round invoice totals"))
     click("Round invoice totals")
-    click("PR Triage")
+    header_menu("Feature tools", "PR Triage")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')

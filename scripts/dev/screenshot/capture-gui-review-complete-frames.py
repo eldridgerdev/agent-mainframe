@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 def select(label, value):
     evaluate(
@@ -246,8 +257,8 @@ try:
     x.sync()
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Round invoice totals")')
     click("Round invoice totals")
-    wait('document.body.innerText.includes("Stopped") && document.body.innerText.includes("Final Review") && document.body.innerText.includes("Claude 1")')
-    click("Final Review")
+    wait('document.body.innerText.includes("Stopped") && !!document.querySelector(`[aria-label="Feature tools"]`) && document.body.innerText.includes("Claude 1")')
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")')
     click("Pre-finish summary")
     summary_ready()

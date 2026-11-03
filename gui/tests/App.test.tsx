@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { creationChoices } from "./creationChoices";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,6 +34,18 @@ async function toolButton(name: string) {
   if (toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
   return screen.getByRole("button", { name, exact: true });
 }
+
+/** Open a header menu by its trigger's name and return the item whose
+ *  label (not counting any hint) is `item`. */
+function menuItem(menu: string, item: string) {
+  const trigger = screen.getByRole("button", { name: menu, exact: true });
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  const found = screen.getAllByRole("menuitem")
+    .find((entry) => entry.querySelector(".menu-item-label")?.textContent === item);
+  if (!found) throw new Error(`No "${item}" in ${menu}`);
+  return found;
+}
+const featureTool = (item: string) => menuItem("Feature tools", item);
 
 function session(id: string, kind = "terminal"): FeatureSession {
   return { id, kind, label: id, tmux_window: id };
@@ -305,11 +317,81 @@ it("opens current changes from a stopped Git feature without launching a session
   client.clear();
 });
 
+describe("feature header", () => {
+  const header = () => document.querySelector(".page-header") as HTMLElement;
+  const headerButtons = () => Array.from(header().querySelectorAll("button")).map((button) =>
+    button.getAttribute("aria-label") ?? button.textContent?.trim());
+
+  it("keeps one primary, a short ghost row and the moved actions in Tools", async () => {
+    const client = await openFeature([session("Shell")], [], "stopped", true, true);
+    expect(header().querySelector("h1")?.getAttribute("title")).toBe("my-feat");
+    expect(Array.from(header().querySelectorAll(".btn-primary")).map((b) => b.textContent?.trim())).toEqual(["Start"]);
+    expect(headerButtons()).toEqual(["demo", "Quick TODO", "Changes", "Feature tools", "Start", "More feature actions"]);
+    for (const moved of ["New session", "Learning", "Final Review", "Screenshots", "Session screenshots", "PR Triage", "Stop session", "Plan"]) {
+      expect(within(header()).queryByRole("button", { name: moved, exact: true })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
+    const tools = screen.getByRole("menu", { name: "Feature tools" });
+    const labels = (group: string) => within(within(tools).getByRole("group", { name: group }))
+      .getAllByRole("menuitem").map((item) => item.querySelector(".menu-item-label")?.textContent);
+    expect(labels("Plan")).toEqual(["Plan interview", "Quick Plan"]);
+    expect(labels("Review")).toEqual(["Learning", "Final Review", "Screenshots"]);
+    expect(labels("Pull request")).toEqual(["PR Triage", "PR Workspace"]);
+    // The hint describes the item without becoming part of its name.
+    const workspace = within(tools).getByRole("menuitem", { name: "PR Workspace" });
+    expect(document.getElementById(workspace.getAttribute("aria-describedby")!)?.textContent).toBe("Experimental");
+    fireEvent.keyDown(tools, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+    const more = screen.getByRole("menu", { name: "More feature actions" });
+    expect(within(more).getByRole("group", { name: "Mode" })).toBeTruthy();
+    expect(within(within(more).getByRole("group", { name: "Feature" })).getByRole("menuitem", { name: "Supervised edits" })).toBeTruthy();
+    expect(within(more).getByRole("separator")).toBeTruthy();
+    client.clear();
+  });
+
+  it("puts New session after the tabs and session screenshots in the tab menu", async () => {
+    const client = await openFeature([session("Shell"), session("Logs")], [], "idle", true);
+    expect(Array.from(header().querySelectorAll(".btn-primary"))).toHaveLength(0);
+    expect(within(header()).getByRole("button", { name: "Stop" }).className).toContain("btn-secondary");
+    const tablist = screen.getByRole("tablist", { name: "Feature sessions" });
+    const add = within(tablist).getByRole("button", { name: "New session", exact: true });
+    const logsTab = within(tablist).getByRole("tab", { name: /Logs/ });
+    expect(logsTab.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(add.getAttribute("title")).toBe("New session");
+    fireEvent.click(within(tablist).getByRole("button", { name: "Shell actions" }));
+    expect(screen.getByRole("menuitem", { name: "Screenshots for this session" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Stop session" })).toBeTruthy();
+    client.clear();
+  });
+});
+
+describe("project header", () => {
+  it("ends on the one primary New feature, with PR tools and settings in menus", async () => {
+    const client = await openFeature([], [], "stopped", true);
+    fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+    const header = document.querySelector(".page-header") as HTMLElement;
+    const actions = Array.from(header.querySelectorAll(".page-actions > button"));
+    expect(actions.map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim()))
+      .toEqual(["Issues", "Pull request tools", "Project settings", "New feature"]);
+    expect(Array.from(header.querySelectorAll(".btn-primary")).map((b) => b.textContent?.trim())).toEqual(["New feature"]);
+    fireEvent.click(screen.getByRole("button", { name: "Pull request tools" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["PR Triage", "PR Review"]);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Agent availability", "Preferred agent"]);
+    client.clear();
+  });
+});
+
 it("offers Changes only for Git projects", async () => {
   const client = await openFeature([], [], "stopped");
   expect(screen.queryByRole("button", { name: "Changes", exact: true })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Final Review", exact: true })).toBeNull();
-  expect(screen.queryByRole("button", { name: "PR Triage", exact: true })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
+  const tools = screen.getByRole("menu", { name: "Feature tools" });
+  expect(within(tools).queryByRole("menuitem", { name: "Final Review" })).toBeNull();
+  expect(within(tools).queryByRole("menuitem", { name: "PR Triage" })).toBeNull();
+  expect(within(tools).queryByRole("group", { name: "Pull request" })).toBeNull();
+  expect(within(tools).getByRole("menuitem", { name: "Learning" })).toBeTruthy();
   client.clear();
 });
 
@@ -327,7 +409,7 @@ it("opens Final Review on a stopped feature and pauses with its workflow identit
     if (command === "review_act") return new Promise((resolve) => { finishPause = () => resolve(null); });
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  fireEvent.click(featureTool("Final Review"));
   await screen.findByText("No changes to review.");
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_begin", { target: { project_id: "project", feature_id: "feature" } });
   const pause = screen.getByRole("button", { name: "Pause review" });
@@ -360,7 +442,8 @@ it("polls review completions by workflow/revision and cannot resurrect a paused 
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(screen.getByText("Completed overview")).toBeTruthy();
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_snapshot", { workflowId: "review-poll" });
@@ -396,7 +479,8 @@ it("does not poll a review with no AI work in flight", async () => {
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     await act(async () => vi.advanceTimersByTimeAsync(5000));
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot")).toHaveLength(0);
   } finally { vi.useRealTimers(); client.clear(); }
@@ -491,7 +575,8 @@ it("polls a running project check without AI work and stops when its result arri
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     expect(screen.getByText("Check running: cargo test")).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(screen.getByText("Check passed: cargo test")).toBeTruthy();
@@ -525,7 +610,8 @@ it("polls destination setup without AI or a check and stops after its terminal r
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     expect(screen.getByRole("button", { name: "Cancel pending launch" })).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(screen.getByText(/Pending launch was cancelled; companion retained for recovery/)).toBeTruthy();
@@ -551,7 +637,7 @@ it("completes once and appends the unsent feedback prompt to the agent's compose
     });
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  fireEvent.click(featureTool("Final Review"));
   fireEvent.click(await screen.findByRole("button", { name: "Complete review…" }));
   const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
   expect(within(confirm).getByText(/opens the "address the feedback" prompt as an unsent draft in Agent/)).toBeTruthy();
@@ -587,7 +673,8 @@ it("finishes a completion whose check ends while polling and stops polling", asy
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     expect(screen.getByText(/Completing: the configured check is running/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Return to review" }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => vi.advanceTimersByTimeAsync(1000));
@@ -619,7 +706,8 @@ it("collects a completed poll result when cancellation starts while the poll is 
   });
   vi.useFakeTimers();
   try {
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    const finalReview = featureTool("Final Review");
+    await act(async () => fireEvent.click(finalReview));
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     fireEvent.click(screen.getByRole("button", { name: "Cancel completion" }));
     await act(async () => resolvePoll(null));
@@ -745,7 +833,7 @@ it("opens prompt overrides from navigation and from a pending review AI call wit
   fireEvent.click(screen.getByRole("button", { name: "Done" }));
   expect(screen.queryByRole("dialog", { name: "Prompt overrides" })).toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  fireEvent.click(featureTool("Final Review"));
   fireEvent.click(await screen.findByRole("button", { name: "Edit prompt" }));
   const manager = await screen.findByRole("dialog", { name: "Prompt overrides" });
   expect(within(manager).getByText(/Opened from a pending AI call/)).toBeTruthy();
@@ -813,7 +901,7 @@ it("opens PR Triage from a Git feature without starting it and closes through it
     if (command === "pr_triage_act") return Promise.resolve(null);
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "PR Triage", exact: true }));
+  fireEvent.click(featureTool("PR Triage"));
   // The PR reader loads its Markdown dependencies on first use.
   await screen.findByText(/No open pull requests/, {}, { timeout: 5000 });
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_begin", { target: { project_id: "project", feature_id: "feature" } });
@@ -976,7 +1064,7 @@ it("hands a PR fix to the chosen agent composer once while preserving both sessi
     if (command === "pr_triage_act") return Promise.resolve({ ...view, handoff: { target, draft_prompt: "Fix rounding" } });
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "PR Triage", exact: true }));
+  fireEvent.click(featureTool("PR Triage"));
   fireEvent.click(await screen.findByRole("button", { name: "Open in agent composer" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
   expect(draftInput().value).toBe("Codex reminder\n\nFix rounding");
@@ -1023,7 +1111,7 @@ it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a 
   const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
   await act(async () => { client.setQueryData(["workspace-snapshot"], { ...snapshot, projects: [{ ...snapshot.projects[0], features: [] }] }); });
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
-  fireEvent.click(screen.getByRole("button", { name: label, exact: true }));
+  fireEvent.click(menuItem("Pull request tools", label));
   expect(await screen.findByRole("dialog", { name: label })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Choose a pull request" })).toBeTruthy();
   expect(vi.mocked(invoke)).toHaveBeenCalledWith(label === "PR Triage" ? "pr_triage_begin" : "pr_review_begin",
@@ -1037,6 +1125,7 @@ it("hides project PR actions for ordinary directories", async () => {
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   expect(screen.queryByRole("button", { name: "PR Triage" })).toBeNull();
   expect(screen.queryByRole("button", { name: "PR Review" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Pull request tools" })).toBeNull();
   client.clear();
 });
 
@@ -1269,7 +1358,7 @@ it("opens project availability, keeps composer draft and refreshes later New ses
   await act(async () => { await client.invalidateQueries({ queryKey: ["supported-harnesses"] }); });
   fireEvent.change(draftInput(), { target: { value: "Keep this existing session draft" } });
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
-  fireEvent.click(screen.getByRole("button", { name: "Project agent availability", exact: true }));
+  fireEvent.click(menuItem("Project settings", "Agent availability"));
   await screen.findByRole("dialog", { name: "Project agent availability" }); await screen.findByLabelText("Codex");
   expect(invoke).toHaveBeenCalledWith("project_agent_availability_load", { projectId: "project" });
   fireEvent.click(screen.getByLabelText("Claude Code")); fireEvent.click(screen.getByLabelText("Pi"));
@@ -1436,7 +1525,7 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   const text = "Keep this unsent 世界\n{{area}}";
   const composer = draftInput();
   fireEvent.change(composer, { target: { value: text } });
-  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  fireEvent.click(menuItem("More draft actions", "Save as template"));
   expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
   const editor = screen.getByRole("dialog", { name: "User prompt editor" });
   fireEvent.change(within(editor).getByLabelText("Template name"), { target: { value: "Saved composer" } });
@@ -1448,7 +1537,7 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull();
   expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
-  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  fireEvent.click(menuItem("More draft actions", "Save as template"));
   expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe(text);
   fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Saved composer" } });
   fails = false;

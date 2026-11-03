@@ -154,7 +154,7 @@ kbd {
 .app { display: flex; height: 100vh; overflow: hidden; }
 
 .sidebar {
-  width: 300px;
+  width: clamp(220px, 26vw, 300px);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -193,6 +193,9 @@ kbd {
 /* ── Sidebar navigation ─────────────────────────────────── */
 
 .nav { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+/* An expanded Tools group scrolls on its own so it can't push the project
+   tree out of the sidebar on a short window. */
+.nav-tools { max-height: 40vh; overflow-y: auto; }
 
 .nav-section {
   display: flex;
@@ -651,14 +654,21 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px 16px;
   padding: 22px 28px 16px;
 }
-.page-title { min-width: 0; }
-.page-title-row { display: flex; align-items: center; gap: 10px; }
-.page-title h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.015em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The title takes the room; the actions keep their own width and wrap below
+   it as a whole row rather than squeezing the name. */
+.page-title { flex: 1 1 280px; min-width: 0; }
+.page-title-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; min-width: 0; }
+.page-title-row > .badge, .page-title-row > .page-icon { flex: none; }
+.page-title h1 { flex: 0 1 auto; min-width: 8ch; font-size: 20px; font-weight: 650; letter-spacing: -0.015em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-actions { display: flex; flex: 0 1 auto; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 4px; margin-left: auto; }
+.page-actions > .btn { flex: none; }
+.page-actions-sep { flex: none; width: 1px; height: 16px; margin: 0 4px; background: var(--border); }
 .page-icon { color: var(--text-faint); }
 .page-subtitle {
   display: flex;
@@ -672,6 +682,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   overflow: hidden;
 }
 .page-subtitle .icon { color: var(--text-faint); }
+.page-subtitle > .workdir.mono { flex: 1 1 0; min-width: 0; }
 .crumb { margin-bottom: 4px; }
 
 .page-body { padding: 0 28px 28px; }
@@ -751,6 +762,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   overflow-x: auto;
 }
 .tabs-spacer { flex: 1; }
+.tab-add { flex: none; align-self: center; margin: 0 0 4px 4px; }
 .tab {
   display: inline-flex;
   align-items: center;
@@ -814,13 +826,18 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 }
 .composer-head {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   padding: 8px 8px 0 14px;
   color: var(--accent);
+  min-width: 0;
 }
-.composer-head strong { color: var(--text); font-size: 13px; }
+.composer-head strong { color: var(--text); font-size: 13px; white-space: nowrap; }
+/* One toolbar row: the helper text gives way first, then hides. */
+.composer-head-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-head > .btn, .composer-head > .icon { flex: none; }
+@media (max-width: 1180px) { .composer-head-note { display: none; } }
 .composer textarea {
   display: block;
   width: 100%;
@@ -860,16 +877,16 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .steering-stale { margin: 8px 0 0; }
 .composer-foot {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
   padding: 6px 8px 8px 14px;
 }
-.composer-help { display: flex; flex-direction: column; gap: 4px; }
+.composer-help { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .composer-shortcuts { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .composer-shortcuts > span { white-space: nowrap; }
-.composer-foot > .btn { margin-left: auto; }
+.composer-foot > .btn { margin-left: auto; flex: none; }
 
 /* ── TODOs ──────────────────────────────────────────────── */
 
@@ -1331,9 +1348,18 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 
 .precall { display: flex; flex-direction: column; gap: 12px; }
 
+@media (max-width: 1000px) {
+  .page-subtitle .workdir { display: none; }
+}
+/* About 640px of content beside the sidebar: labelled ghost actions keep only their icon. */
+@media (max-width: 860px) {
+  .page-actions .btn-label-optional { display: none; }
+}
 @media (max-width: 760px) {
   .sidebar { width: min(200px, 40vw); }
-  .page-header { padding: 16px 16px 12px; flex-wrap: wrap; }
+  .page-header { padding: 16px 16px 12px; }
+  .page-actions { flex: 1 1 100%; justify-content: flex-start; }
+  .page-actions-sep { margin-left: auto; }
   .page-body { padding: 0 16px 16px; }
   .session { padding: 10px 12px 12px; }
   .form-row { grid-template-columns: 1fr; }

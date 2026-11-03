@@ -1,6 +1,6 @@
 # Project preferred harness in the desktop
 
-Open a project and choose **Preferred harness**. This edits the project's saved
+Open a project and choose **⋯ (Project settings) → Preferred agent**. This edits the project's saved
 default separately from **Agent availability**, which edits its allowed-harness
 configuration. Choosing a value changes nothing until **Save settings**. Cancel
 and reload protect unsaved edits. Existing features, session bindings and running

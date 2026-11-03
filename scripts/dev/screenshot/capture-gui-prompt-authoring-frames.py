@@ -304,7 +304,8 @@ try:
     capture('008-unsupported-source-copy-refused.png','Browsing remains tolerant of future declarative fields, but copying refuses metadata that could be lost. The source is unchanged and no User copy is created.',['Future metadata','unsupported metadata'],allow_alert=True)
     click('Cancel')
     assert composer_body() == draft
-    click('Save as template','.composer button')
+    evaluate('document.querySelector(`.composer button[aria-label="More draft actions"]`).click()')
+    click('Save as template','[role=menuitem]')
     wait('!!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     assert editor_body() == draft
     field('Template name','Saved composer')

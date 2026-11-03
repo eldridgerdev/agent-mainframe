@@ -10,8 +10,9 @@ PR links open in your browser. Reading a comment does not build a separate
 image gallery or automatically download Actions artifacts or linked galleries.
 The description has its own retry if GitHub cannot be read.
 
-Use **Screenshots** on a feature to review agent validation evidence, or
-**Session screenshots** to filter to the selected producing session. These
+Use **Tools → Screenshots** on a feature to review agent validation evidence,
+or **Screenshots for this session** in a session tab's `⋯` menu to filter to
+that producing session. These
 entries also work for stopped features and ordinary non-git directories.
 The workspace's **Validation screenshots** entry includes historical evidence
 after the original sessions/features disappear.

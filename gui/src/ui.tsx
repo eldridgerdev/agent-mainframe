@@ -601,13 +601,17 @@ export function Menu({
     setOpen(true);
   };
 
-  const renderItem = (item: MenuItem) => (
+  // The label names the item and the hint describes it, so a hint such as
+  // "Experimental" or a disabled reason never becomes part of its name.
+  const renderItem = (item: MenuItem, index: number) => (
     <button
       key={`item:${item.label}`}
       role="menuitem"
       type="button"
       tabIndex={-1}
       title={item.title}
+      aria-labelledby={`${menuId}-label-${index}`}
+      aria-describedby={item.hint ? `${menuId}-hint-${index}` : undefined}
       className={`menu-item${item.danger ? " menu-item-danger" : ""}`}
       disabled={item.disabled}
       onClick={() => {
@@ -618,8 +622,8 @@ export function Menu({
       }}
     >
       {item.icon && <Icon name={item.icon} />}
-      <span className="menu-item-label">{item.label}</span>
-      {item.hint && <span className="menu-item-hint">{item.hint}</span>}
+      <span id={`${menuId}-label-${index}`} className="menu-item-label">{item.label}</span>
+      {item.hint && <span id={`${menuId}-hint-${index}`} className="menu-item-hint">{item.hint}</span>}
       {item.shortcut && <kbd className="menu-item-shortcut">{item.shortcut}</kbd>}
     </button>
   );
@@ -644,8 +648,8 @@ export function Menu({
       flush();
       rows.push(<div key={`sep:${index}`} role="separator" className="menu-sep" />);
     } else if (isMenuItem(entry)) {
-      if (group) group.children.push(renderItem(entry));
-      else rows.push(renderItem(entry));
+      if (group) group.children.push(renderItem(entry, index));
+      else rows.push(renderItem(entry, index));
     } else {
       flush();
       group = { key: `section:${index}`, heading: entry.section, children: [] };

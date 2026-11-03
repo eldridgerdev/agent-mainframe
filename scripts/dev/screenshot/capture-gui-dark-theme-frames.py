@@ -92,9 +92,16 @@ def click(text):
     )
     assert found, f"No button {text!r}"
 
-
-
-
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
 
 
 def tauri(command, args=None):
@@ -245,7 +252,7 @@ try:
     before_canvas = evaluate('getComputedStyle(document.querySelector(".term-frame")).backgroundColor')
     assert before_canvas == ("rgb(13, 16, 20)" if mode == "before" else "rgb(36, 41, 50)"), before_canvas
     capture("001-workspace-terminal.png", f"{mode.capitalize()}: feature workspace, expanded projects sidebar, agent sidebar and live terminal with ANSI status colors.", ["Invoice API", "Round invoice totals", "Invoice checks", "rounding preserves cents", "Send prompt"])
-    click("New session")
+    evaluate('document.querySelector(`button.tab-add[aria-label="New session"]`).click()')
     wait('!!document.querySelector("[role=dialog]")')
     capture("002-new-session-dialog.png", f"{mode.capitalize()}: New session dialog shows panel separation, borders, labels and secondary text.", ["New session", "Open another agent, terminal, editor or configured session in this feature."])
     evaluate('document.querySelector("[role=dialog] button[aria-label=Close]").click()')
@@ -255,7 +262,7 @@ try:
     capture("003-highlighted-diff.png", f"{mode.capitalize()}: Rust syntax colors on added diff rows with file navigation and controls.", ["Changes · Round invoice totals", "invoice.rs", "Round currency at the boundary.", "rounded_total"])
     click("Close")
     wait('!document.querySelector(".diff-reader")')
-    click("Final Review")
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")')
     choose_rust()
     capture("004-final-review.png", f"{mode.capitalize()}: Final Review uses the same readable text, syntax colors, surfaces and controls.", ["Final Review", "invoice.rs", "rounded_total", "Pause review"])

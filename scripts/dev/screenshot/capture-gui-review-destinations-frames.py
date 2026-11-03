@@ -73,7 +73,8 @@ with GuiFrames.from_argv() as frames:
     draft='Keep this unsent investigation. 🦀\nCheck negative invoice totals.'
     action('fill',name='Draft prompt',value=draft)
     click('Invoice rounding','nav[aria-label=Workspace]')
-    wait('Final Review'); click('Final Review')
+    action('wait',expression='!!document.querySelector(`[aria-label="Feature tools"]`)')
+    click('Feature tools'); click('Final Review')
     action('wait',expression='!!document.querySelector(".diff-file")')
     click('Pre-finish summary'); wait('Complete review…')
     capture('001-current-destination.png','Final Review names its current agent destination and keeps completion and destination preparation separate.', ['Complete review','Feedback destination: Primary agent','Choose feedback destination…'])

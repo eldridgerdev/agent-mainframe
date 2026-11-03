@@ -414,6 +414,17 @@ export function formatTotal(total: number): string {
                 + ").click()"
             )
 
+        def feature_tool(label):
+            # Screenshots and PR Triage live in the feature header's Tools menu.
+            wait("!!document.querySelector('[aria-label=\"Feature tools\"]')")
+            evaluate("document.querySelector('[aria-label=\"Feature tools\"]').click()")
+            wait(
+                "Array.from(document.querySelectorAll('[role=menuitem]')).some(b=>b.textContent.trim()==="
+                + json.dumps(label)
+                + ")"
+            )
+            click(label)
+
         def invoke(command, args=None):
             evaluate(
                 "window.checkResult=null; window.__TAURI_INTERNALS__.invoke("
@@ -493,8 +504,7 @@ export function formatTotal(total: number): string {
         escape()
         wait("!document.querySelector('.screenshot-grid')")
         click("Round invoice totals")
-        wait("document.body.innerText.includes('PR Triage')")
-        click("Screenshots")
+        feature_tool("Screenshots")
         wait("document.querySelectorAll('.screenshot-card').length===2")
         evaluate(
             "window.originalInvoke=window.__TAURI_INTERNALS__.invoke; window.__TAURI_INTERNALS__.invoke=(command,args,...rest)=>{const value=window.originalInvoke(command,args,...rest);return command==='screenshots_list' && args.selection.session_id==='claude-session' ? value.then(result=>new Promise(resolve=>setTimeout(()=>resolve(result),1200))) : value;};"
@@ -522,7 +532,7 @@ export function formatTotal(total: number): string {
         )
         escape()
         wait("!document.querySelector('.screenshot-grid')")
-        click("PR Triage")
+        feature_tool("PR Triage")
         wait("!!document.querySelector('.pr-entry')")
         evaluate("document.querySelector('.pr-entry').click()")
         wait("!!document.querySelector('.pr-detail')")

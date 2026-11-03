@@ -5,6 +5,7 @@ import {
   companionCatalog, destinationCancel, destinationPrepare, destinationPreview, destinationStatus,
 } from "./prDestinationApi";
 import { Field, Spinner } from "./ui";
+import { modeHint } from "./SuperVibeWarning";
 
 const INPUT_DEBOUNCE_MS = 250;
 const POLL_MS = 300;
@@ -221,7 +222,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
           </select>
         </Field>
         {unavailable.length > 0 && <p className="small muted">{unavailable.map((a) => `${a.label}: ${a.unavailable}`).join(" · ")}</p>}
-        <Field label="Mode" hint={catalog.modes.find((m) => m.mode === mode)?.description}>
+        <Field label="Mode" hint={modeHint(catalog.modes.find((m) => m.mode === mode)?.description, mode)}>
           <select value={mode} disabled={locked} onChange={(event) => setMode(event.target.value as ModeSlug)}>
             {catalog.modes.map((m) => <option key={m.mode} value={m.mode} disabled={unsupported(m)}>{m.label}{unsupported(m) ? " (not supported by this agent)" : ""}</option>)}
           </select>

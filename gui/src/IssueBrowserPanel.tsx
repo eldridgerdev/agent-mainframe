@@ -5,6 +5,7 @@ import {
 } from "./issueApi";
 import { ApprovalDialog, Field, Icon, Modal, Spinner, Switch } from "./ui";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
+import { SuperVibeConfirm, modeHint } from "./SuperVibeWarning";
 
 /** The issue text is GitHub-authored data: it is shown as plain text, never
  * rendered as markup, and reaches the agent only inside the labeled prompt. */
@@ -236,13 +237,20 @@ function IssueFixForm({
     setStale(false);
   }, [preview]);
   const [approval, setApproval] = useState<string | null>(null);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useState(false);
+  const modeSelect = useRef<HTMLSelectElement>(null);
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
   const hasDuplicate = preview.linked_features.length > 0;
   const ready = !busy && hook.ready && !!featureName.trim() && !!branch.trim() && !!prompt.trim()
     && (!hasDuplicate || duplicate);
 
-  async function submit(approved: boolean) {
+  // `approved` (the resource gate) only follows a submit that already passed
+  // the SuperVibe confirmation, so it implies that one too.
+  async function submit(approved: boolean, superVibeConfirmed = approved) {
     if (!ready && !approved) return;
+    // As in the terminal app, SuperVibe asks once more before creating.
+    if (mode === "supervibe" && !superVibeConfirmed) { setConfirmSuperVibe(true); return; }
+    setConfirmSuperVibe(false);
     setBusy(true);
     setError(null);
     try {
@@ -347,12 +355,14 @@ function IssueFixForm({
                 {agents.map((a) => <option key={a.slug} value={a.slug}>{a.display_name}</option>)}
               </select>
             </Field>
-            <Field label="Mode" hint={modeInfo?.description}>
-              <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)} disabled={busy}>
+            <Field label="Mode" hint={modeHint(modeInfo?.description, mode)}>
+              <select ref={modeSelect} value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)} disabled={busy}>
                 {modes.map((m) => <option key={m.slug} value={m.slug}>{m.display_name}</option>)}
               </select>
             </Field>
           </div>
+          {confirmSuperVibe && mode === "supervibe" && <SuperVibeConfirm busy={busy}
+            onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }} onConfirm={() => void submit(false, true)} />}
           {isGit && (
             <Switch checked={useWorktree} onChange={setUseWorktree} disabled={busy}
               label="Use a separate checkout (worktree)" hint="Gives the feature its own folder and branch so agents don't collide." />

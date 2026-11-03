@@ -143,7 +143,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       </button>
     </>}>
     <div className="library-toolbar">
-      <button className="btn btn-primary btn-sm" disabled={busy || authorBusy} onClick={() => setEditor({ snapshot: null })}>New User template</button>
+      <button className="btn btn-primary btn-sm" disabled={busy || authorBusy} onClick={() => setEditor({ snapshot: null })}>New prompt</button>
       <Field label="Library scope"><select disabled={busy || authorBusy} value={JSON.stringify(scope)} onChange={(event) => {
         setScope(JSON.parse(event.target.value) as LibraryScope); setSelected(null); setValues({}); setError(null); setNotice(null);
       }}>
@@ -161,7 +161,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       <div className="library-list" role="group" aria-label="Prompt library entries">
         {library.isLoading && <p className="muted">Loading prompts…</p>}
         {library.data?.entries.length === 0 && <EmptyState icon="book" title={search ? "No matching prompts" : "No saved prompts"}>
-          {search ? "Try a different search or library scope." : "Create a User template here, or configure declarative templates in amf.json."}
+          {search ? "Try a different search or library scope." : "No saved prompts yet. Click New prompt to save one you can reuse. Project prompts live in the project's amf.json."}
         </EmptyState>}
         {library.data?.entries.map((entry) => <button key={entry.key} disabled={busy || authorBusy}
           className={`library-item ${selected?.key === entry.key ? "library-item-active" : ""}`}
@@ -178,8 +178,8 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
           <div className="library-actions">
             <button className="btn btn-secondary btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("duplicate")}>Duplicate to User</button>
             {selected.source === "User" && <>
-              <button className="btn btn-secondary btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("edit")}>Edit User template</button>
-              <button className="btn btn-ghost btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("delete")}>Delete User template…</button>
+              <button className="btn btn-secondary btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("edit")}>Edit saved prompt</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("delete")}>Delete saved prompt…</button>
             </>}
             {selected.source !== "User" && <button className="btn btn-secondary btn-sm" disabled={busy||authorBusy||library.isError} onClick={()=>void editFile()}>Edit declarative template</button>}
             <button className="btn btn-secondary btn-sm" disabled={busy||authorBusy||library.isError} onClick={()=>setExporting(selected)}>Export template…</button>
@@ -219,7 +219,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
   {fileEditor && <DeclarativePromptEditor snapshot={fileEditor} onClose={()=>setFileEditor(null)} onSaved={fileSaved}/> }
   {exporting && <PromptExportDialog scope={scope} entry={exporting} projects={projects} onClose={()=>setExporting(null)} onSaved={fileSaved}/> }
   {editor && <UserPromptEditor snapshot={editor.snapshot} onClose={() => setEditor(null)} onSaved={saved} />}
-  {deleting && <Modal label="Delete User template" title="Delete this User template?" onClose={() => { if (!inFlight.current && !authorBusy) setDeleting(null); }} dismissable={!authorBusy}
+  {deleting && <Modal label="Delete saved prompt" title="Delete this saved prompt?" onClose={() => { if (!inFlight.current && !authorBusy) setDeleting(null); }} dismissable={!authorBusy}
     footer={<><button className="btn btn-secondary" disabled={authorBusy} onClick={() => { if (!inFlight.current) setDeleting(null); }}>Cancel</button>
       <button className="btn btn-danger" disabled={authorBusy} onClick={async () => {
         if (inFlight.current) return;
@@ -230,7 +230,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
           await queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
         } catch (err) { setDeleteError(asGuiError(err).message); }
         finally { inFlight.current = false; authorPending.current = false; setAuthorBusy(false); }
-      }}>{authorBusy && <Spinner />}Delete User template</button></>}>
+      }}>{authorBusy && <Spinner />}Delete saved prompt</button></>}>
     <p>Delete “{deleting.name}”? Existing composer drafts and declarative templates are kept.</p>
     {deleteError && <p role="alert" className="callout callout-danger">{deleteError}</p>}
   </Modal>}

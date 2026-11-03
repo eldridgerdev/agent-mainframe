@@ -3,7 +3,7 @@ import { asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
 import PrReviewPanel from "./PrReviewPanel";
 import Markdown from "./Markdown";
-import { Icon, Spinner } from "./ui";
+import { ExperimentalBadge, Icon, Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import DedicatedSessionForm from "./DedicatedSessionForm";
 import CompanionFeatureForm from "./CompanionFeatureForm";
@@ -317,7 +317,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
 
   return <section className="pr-workspace-page" aria-label="Experimental PR Workspace">
     <header className="pr-workspace-page-header">
-      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><span className="tag tag-accent">Experimental</span></div>
+      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><ExperimentalBadge title="New and still changing. Your GitHub data is not affected." /></div>
       <div className="pr-workspace-page-title-row">
         <div><h1>Pull request workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place</p></div>
         <div className="pr-workspace-page-actions">
@@ -341,7 +341,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         <nav className="pr-workspace-tabs" aria-label="PR workspace views">
           {(["files", "threads", "ai"] as const).map((item) => <button key={item} className={`btn ${tab === item ? "btn-primary" : "btn-secondary"}`} aria-current={tab === item ? "page" : undefined} disabled={busy || triageBusy || (filesDirty && tab === "files") || !review && item !== "threads"} onClick={() => void switchTab(item)}>{item === "ai" ? `AI Review${ai?.running ? " · Running" : ""}` : item[0].toUpperCase() + item.slice(1)}</button>)}
         </nav>
-        {!review && tab === "threads" && <p className="muted">Choose the highlighted PR to load its threads and workspace.</p>}
+        {!review && tab === "threads" && <p className="muted">Pick a pull request from the list. Entries marked 'Selected for this feature' match this branch.</p>}
         {review && tab === "files" && workflowId && <PrReviewPanel key={`${workflowId}:${review.number}:${review.head_sha}`} projectId={target.project_id} onClose={() => undefined}
           embedded={{ workflowId, number: review.number, onDirtyChange: setFilesDirty, onOpenReview: () => void closeWorkspace(false, true), fallback: <ReadOnlyFiles workflowId={workflowId} /> }} />}
         {workflowId && <div className="pr-workspace-threads" hidden={tab !== "threads"}>

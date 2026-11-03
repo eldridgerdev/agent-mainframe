@@ -39,6 +39,7 @@ import {
   TodoHostChoice,
   TodoHostPrompt,
   WorkspaceSnapshot,
+  agentName,
   asGuiError,
   createFeature,
   createProject,
@@ -129,6 +130,7 @@ import {
 import {
   ApprovalDialog,
   EmptyState,
+  ExperimentalBadge,
   Field,
   Icon,
   IconName,
@@ -334,6 +336,8 @@ export default function App() {
   // `isPending` reaches the dialog a render late, so a double-click (or
   // Enter then click) would otherwise send two launches and two sessions.
   const addSessionInFlight = useRef(false);
+  // Stopping a feature with more than one running session asks first.
+  const [stopFeatureConfirm, setStopFeatureConfirm] = useState<{ target: FeatureTarget; name: string; count: number } | null>(null);
   const [closeSessionDialog, setCloseSessionDialog] = useState<{
     target: SessionTarget;
     label: string;
@@ -1307,7 +1311,12 @@ export default function App() {
       stopping: stopFeatureMutation.isPending
         && stopFeatureMutation.variables?.feature_id === feature.id,
       onStart: () => void beginFeatureStart(projectId, feature),
-      onStop: () => stopFeatureMutation.mutate(target),
+      onStop: () => {
+        const running = feature.sessions
+          .filter((session) => sessionRunning(feature, session, workspace.data?.stopped_session_ids ?? [])).length;
+        if (running > 1) setStopFeatureConfirm({ target, name: feature.name, count: running });
+        else stopFeatureMutation.mutate(target);
+      },
     };
   };
 
@@ -1398,7 +1407,7 @@ export default function App() {
               <Icon name="sliders" /><span className="nav-label">Prompt overrides</span>
             </button>
 
-            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="camera" /><span className="nav-label">Validation screenshots</span></button>
+            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="camera" /><span className="nav-label">Screenshots</span></button>
 
             <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="layers" /><span className="nav-label">Feature presets</span></button>
             <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="gauge" /><span className="nav-label">Context settings</span></button>
@@ -1914,7 +1923,7 @@ export default function App() {
       {pendingTodoNewApproval && (
         <ApprovalDialog
           label="Approve new TODO feature"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingTodoNewApproval.message}
           confirmLabel="Start anyway"
           busy={todoNewBusy}
@@ -1939,7 +1948,7 @@ export default function App() {
       {pendingStart && (
         <ApprovalDialog
           label="Approve agent start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingStart.message}
           confirmLabel="Start anyway"
           busy={startFeatureMutation.isPending}
@@ -1951,7 +1960,7 @@ export default function App() {
       {pendingSessionStart && (
         <ApprovalDialog
           label="Approve session start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingSessionStart.message}
           confirmLabel="Start anyway"
           busy={startSessionMutation.isPending}
@@ -1993,6 +2002,17 @@ export default function App() {
             approved: false,
           })}
           onClose={() => setNewSessionDialog(null)}
+        />
+      )}
+
+      {stopFeatureConfirm && (
+        <ApprovalDialog
+          label="Stop feature"
+          title={`Stop ${stopFeatureConfirm.name}?`}
+          message={`Stop ends all ${stopFeatureConfirm.count} running sessions of this feature. They stay in the list and you can start them again; saved agent conversations can be resumed.`}
+          confirmLabel="Stop feature"
+          onConfirm={() => { stopFeatureMutation.mutate(stopFeatureConfirm.target); setStopFeatureConfirm(null); }}
+          onCancel={() => setStopFeatureConfirm(null)}
         />
       )}
 
@@ -2060,7 +2080,7 @@ export default function App() {
           label="Approve new session"
           title={pendingAddSessionApproval.choice.type === "builtin"
             && ["claude", "codex", "opencode", "pi"].includes(pendingAddSessionApproval.choice.kind)
-            ? "Start another agent?" : "Start this feature?"}
+            ? "Resource limit reached. Start anyway?" : "Start this feature?"}
           message={pendingAddSessionApproval.message}
           confirmLabel="Start anyway"
           busy={addSessionMutation.isPending}
@@ -2077,7 +2097,7 @@ export default function App() {
       {pendingRecoveryApproval && (
         <ApprovalDialog
           label="Approve agent recovery"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingRecoveryApproval.message}
           confirmLabel="Start anyway"
           busy={recoverSessionMutation.isPending}
@@ -2105,7 +2125,7 @@ export default function App() {
       {pendingTodoLaunch && (
         <ApprovalDialog
           label="Approve TODO agent start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingTodoLaunch.message}
           confirmLabel="Start anyway"
           onConfirm={() => void launchTodoAgent(pendingTodoLaunch.todoId, pendingTodoLaunch.target, true)}
@@ -2118,7 +2138,7 @@ export default function App() {
         onClose={() => setSavePromptBody(null)} onSaved={() => {
           setSavePromptBody(null);
           void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
-          pushToast({ tone: "info", title: "User template saved", message: "Your composer draft is unchanged. Sending remains explicit." });
+          pushToast({ tone: "info", title: "Prompt saved", message: "Your composer draft is unchanged. Sending remains explicit." });
         }} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
@@ -2541,8 +2561,8 @@ function FeatureView({
               indicator={reviewBusy || learningBusy}
               items={[
                 { section: "Plan" },
-                { label: "Plan interview", icon: "sparkles", hint: "Full", onSelect: () => onPlan(false) },
-                { label: "Quick Plan", icon: "zap", hint: "Fast", onSelect: () => onPlan(true) },
+                { label: "Plan interview", icon: "sparkles", hint: "Guided, for big tasks", onSelect: () => onPlan(false) },
+                { label: "Quick Plan", icon: "zap", hint: "A question or two", onSelect: () => onPlan(true) },
                 { section: "Review" },
                 { label: "Learning", icon: "bookOpen", disabled: learningBusy, hint: learningBusy ? "Working…" : undefined, onSelect: onLearning },
                 ...(project.is_git ? [{
@@ -2570,12 +2590,13 @@ function FeatureView({
               label="More feature actions"
               className="btn btn-ghost btn-icon btn-sm"
               items={[
-                { section: "Mode" },
+                { section: "Vibe mode" },
                 ...vibeModes.map((mode) => {
                   const unsupported = mode.unsupported_agents?.includes(feature.agent) ?? false;
                   return {
-                    label: `Vibe mode: ${mode.display_name}`,
-                    icon: "sparkles" as const,
+                    label: mode.display_name,
+                    // One setting, so the current choice carries the check.
+                    icon: feature.mode === mode.slug ? "check" as const : undefined,
                     hint: feature.mode === mode.slug
                       ? "Current"
                       : unsupported ? `Unavailable with ${harnessName(feature.agent)}` : undefined,
@@ -2587,10 +2608,10 @@ function FeatureView({
                 // While edits wait, the header's counted button is the way in.
                 ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "shieldCheck" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
-                { label: "Rename, ready and summary…", icon: "pencil" as const, onSelect: () => onFeatureActions(null) },
+                { label: "Rename or mark ready…", icon: "pencil" as const, title: "Rename the feature or its sessions, mark it ready, or write a summary", onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",
-                { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
+                { label: "Delete feature…", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />
           </>
@@ -2611,7 +2632,7 @@ function FeatureView({
                 !isStopped && !isRunning(session) && "tab-stopped",
               ].filter(Boolean).join(" ")}
               onClick={() => onTab(session.id)}
-              title={`${session.kind} — ${isRunning(session) ? "running" : "stopped"}`}
+              title={`${sessionKindName(session.kind)} · ${isRunning(session) ? "running" : "stopped"}`}
             >
               <SessionStateDot running={isRunning(session)} />
               {session.label}
@@ -2893,6 +2914,12 @@ export function CreateProjectForm({
 
 const AGENT_KINDS = ["claude", "codex", "opencode", "pi"];
 
+/** What a session tab's tooltip calls its kind (never the raw id). */
+function sessionKindName(kind: string): string {
+  const names: Record<string, string> = { terminal: "Terminal", nvim: "Neovim", vscode: "VS Code", todos: "TODOs" };
+  return AGENT_KINDS.includes(kind) ? `${agentName(kind)} agent` : names[kind] ?? "Custom session";
+}
+
 type PlanKind = "none" | "quick" | "full";
 
 export function CreateFeatureForm({
@@ -3047,7 +3074,8 @@ export function CreateFeatureForm({
           checked={steering && planKind === "none"}
           disabled={planKind !== "none"}
           onChange={setSteering}
-          label="Steering coach (experimental)"
+          label="Steering coach"
+          badge={<ExperimentalBadge />}
           hint={planKind !== "none"
             ? "Planning already shapes the startup prompt, so the coach is off while Quick or Full Plan is chosen."
             : "After the agent starts, get feedback on your first message: is the goal clear, how will you know it is done, what could go wrong. Nothing is sent until you send it."}

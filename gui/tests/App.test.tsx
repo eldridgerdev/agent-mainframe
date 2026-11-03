@@ -256,7 +256,7 @@ it("retains the worktree disposition through the project-list choice and submits
     return initialInvoke(command, args, options);
   });
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Delete feature" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete feature…" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
   fireEvent.click(await screen.findByRole("radio", { name: "Move them to the global list" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
@@ -285,7 +285,7 @@ it("cancels a project-list choice without issuing another deletion request", asy
     return initialInvoke(command, args, options);
   });
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Delete feature" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete feature…" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
   await screen.findByRole("radio", { name: "Keep on First" });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -343,7 +343,7 @@ describe("feature header", () => {
     fireEvent.keyDown(tools, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
     const more = screen.getByRole("menu", { name: "More feature actions" });
-    expect(within(more).getByRole("group", { name: "Mode" })).toBeTruthy();
+    expect(within(more).getByRole("group", { name: "Vibe mode" })).toBeTruthy();
     expect(within(within(more).getByRole("group", { name: "Feature" })).getByRole("menuitem", { name: "Supervised edits" })).toBeTruthy();
     expect(within(more).getByRole("separator")).toBeTruthy();
     client.clear();
@@ -1455,14 +1455,14 @@ it("takes vibe mode availability from the backend and shows a change on a runnin
 
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
   const item = (name: RegExp) => screen.getByRole("menuitem", { name }) as HTMLButtonElement;
-  await screen.findByRole("menuitem", { name: /Vibe mode: SuperVibe/ });
-  expect(item(/Vibe mode: Vibeless/).disabled).toBe(true);
-  expect(item(/Vibe mode: Vibeless/).textContent).toContain("Current");
-  expect(item(/Vibe mode: SuperVibe/).disabled).toBe(true);
-  expect(item(/Vibe mode: SuperVibe/).textContent).toContain("Unavailable with Claude");
-  expect(item(/Vibe mode: Vibe$/).disabled).toBe(false);
+  await screen.findByRole("menuitem", { name: /^SuperVibe$/ });
+  expect(item(/^Vibeless$/).disabled).toBe(true);
+  expect(item(/^Vibeless$/).textContent).toContain("Current");
+  expect(item(/^SuperVibe$/).disabled).toBe(true);
+  expect(item(/^SuperVibe$/).textContent).toContain("Unavailable with Claude");
+  expect(item(/^Vibe$/).disabled).toBe(false);
 
-  fireEvent.click(item(/Vibe mode: Vibe$/));
+  fireEvent.click(item(/^Vibe$/));
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_feature_vibe_mode", {
     target: { project_id: "project", feature_id: "feature" }, mode: "vibe",
   }));
@@ -1472,7 +1472,7 @@ it("takes vibe mode availability from the backend and shows a change on a runnin
 
   // Changing back to what the agents were launched with leaves nothing pending.
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
-  fireEvent.click(item(/Vibe mode: Vibeless/));
+  fireEvent.click(item(/^Vibeless$/));
   await waitFor(() => expect(mode).toBe("vibeless"));
   await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
   await waitFor(() => expect(screen.queryByText(/on restart/)).toBeNull());
@@ -1490,7 +1490,7 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
   fireEvent.change(draftInput(), { target: { value: "Unsent context draft" } });
   fireEvent.click(await toolButton("Context settings"));
   await screen.findByRole("dialog", { name: "Context settings" });
-  fireEvent.change(await screen.findByLabelText("Warning percent"), { target: { value: "60" } });
+  fireEvent.change(await screen.findByLabelText("Warn at (% full)"), { target: { value: "60" } });
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context settings" })).toBeNull());
   expect(draftInput().value).toBe("Unsent context draft");
@@ -1525,23 +1525,23 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   const text = "Keep this unsent 世界\n{{area}}";
   const composer = draftInput();
   fireEvent.change(composer, { target: { value: text } });
-  fireEvent.click(menuItem("More draft actions", "Save as template"));
+  fireEvent.click(menuItem("More draft actions", "Save as prompt"));
   expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
   const editor = screen.getByRole("dialog", { name: "User prompt editor" });
   fireEvent.change(within(editor).getByLabelText("Template name"), { target: { value: "Saved composer" } });
   fireEvent.change(within(editor).getByRole("textbox", { name: /^Template body/ }), { target: { value: "Edited template only" } });
-  fireEvent.click(within(editor).getByRole("button", { name: "Save User template" }));
+  fireEvent.click(within(editor).getByRole("button", { name: "Save prompt" }));
   await screen.findByText("Database busy");
   expect(composer.value).toBe(text);
   fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
   fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull();
   expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
-  fireEvent.click(menuItem("More draft actions", "Save as template"));
+  fireEvent.click(menuItem("More draft actions", "Save as prompt"));
   expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe(text);
   fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Saved composer" } });
   fails = false;
-  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull());
   expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
   expect(promptCalls()).toHaveLength(0);
@@ -1599,7 +1599,7 @@ it("opens the rename, ready and summary panel from the feature and session menus
         sessions: [{ id: "Shell", label: "Shell" }, { id: "Agent", label: "Agent" }], summary_outcome: null })
       : original(command, args, options));
   fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Rename, ready and summary…" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Rename or mark ready…" }));
   expect(await screen.findByRole("dialog", { name: "Feature actions" })).toBeTruthy();
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("feature_actions_load",
     { target: { project_id: "project", feature_id: "feature" } });
@@ -1624,7 +1624,7 @@ describe("icon vocabulary", () => {
       Appearance: "palette",
       "Prompt library": "book",
       "Prompt overrides": "sliders",
-      "Validation screenshots": "camera",
+      Screenshots: "camera",
       "Feature presets": "layers",
       "Context settings": "gauge",
       "Syntax languages": "code",
@@ -1643,6 +1643,29 @@ describe("icon vocabulary", () => {
     expect(icons("Feature tools", ["Learning", "Final Review", "Screenshots", "PR Triage", "PR Workspace"]))
       .toEqual(["bookOpen", "clipboardCheck", "camera", "gitPullRequest", "gitPullRequestDraft"]);
     fireEvent.keyDown(screen.getByRole("menu", { name: "Feature tools" }), { key: "Escape" });
-    expect(iconOf(menuItem("More feature actions", "Rename, ready and summary…"))).toBe("pencil");
+    expect(iconOf(menuItem("More feature actions", "Rename or mark ready…"))).toBe("pencil");
   });
+});
+
+it("asks before Stop ends more than one running session, and stops a single one directly", async () => {
+  const header = () => document.querySelector(".page-header") as HTMLElement;
+  const client = await openFeature([session("Shell"), session("Logs")], [], "idle", true);
+  const stops = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "stop_feature").length;
+  fireEvent.click(within(header()).getByRole("button", { name: "Stop" }));
+  const confirm = await screen.findByRole("dialog", { name: "Stop feature" });
+  expect(confirm.textContent).toContain("all 2 running sessions");
+  expect(stops()).toBe(0);
+  fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+  expect(stops()).toBe(0);
+  fireEvent.click(within(header()).getByRole("button", { name: "Stop" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Stop feature" })).getByRole("button", { name: "Stop feature" }));
+  await waitFor(() => expect(stops()).toBe(1));
+  client.clear();
+
+  cleanup();
+  const single = await openFeature([session("Shell"), session("Logs")], ["Logs"], "idle", true);
+  fireEvent.click(within(header()).getByRole("button", { name: "Stop" }));
+  await waitFor(() => expect(stops()).toBe(2));
+  expect(screen.queryByRole("dialog", { name: "Stop feature" })).toBeNull();
+  single.clear();
 });

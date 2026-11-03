@@ -99,7 +99,7 @@ export default function NewSessionDialog({
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={busy || !choice}>
             {busy && <Spinner />}
-            {builtin?.kind === "vscode" ? "Open VS Code" : failure ? "Run pre-check again" : "Create session"}
+            {builtin?.kind === "vscode" ? "Open VS Code" : failure ? "Run pre-check again" : startsFeature ? "Start feature and add session" : "Create session"}
           </button>
         </>
       }

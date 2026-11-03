@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { asGuiError, FeaturePreset, featurePresetsLoad, featurePresetsSave, PresetRow, PresetsView } from "./api";
 import { Field, Modal, Spinner } from "./ui";
 import { SHARED_WITH_TERMINAL } from "./terminalNote";
+import { CHROME_HINT, REVIEW_HINT } from "./creationCopy";
 
 const emptyPreset = (): FeaturePreset => ({ name: "", branch_prefix: null, mode: "vibe", agent: "claude",
   review: false, plan_mode: false, quick_plan: false, enable_chrome: false, remote_control: false });
@@ -95,10 +96,14 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
           onChange={(event) => edit({ plan_mode: event.target.value !== "none", quick_plan: event.target.value === "quick" })}>
           <option value="none">Start directly</option><option value="quick">Quick Plan</option><option value="full">Full Plan</option>
         </select></Field>
-        {([ ["review", "Review"], ["enable_chrome", "Chrome"], ["remote_control", "Remote Control"] ] as const).map(([key, label]) =>
-          <label className="switch-row" key={key}><input className="switch" type="checkbox" checked={row.preset[key]} disabled={busy} onChange={(event) => edit({ [key]: event.target.checked })} /><span className="switch-label">{label}</span></label>)}
-        <p className="muted">Project presets with the same name override these. New feature offers presets whose agent is allowed and installed.
-          Remote Control presets can be used in AMF's terminal app; the desktop app requires clearing that option first.</p>
+        {([
+          ["review", "Review", REVIEW_HINT],
+          ["enable_chrome", "Chrome", CHROME_HINT],
+          ["remote_control", "Remote Control", "Control the agent from another device. Only AMF's terminal app can create features with it; the desktop app asks you to turn it off first."],
+        ] as const).map(([key, label, hint]) =>
+          <label className="switch-row" key={key}><input className="switch" type="checkbox" role="switch" aria-label={label} checked={row.preset[key]} disabled={busy} onChange={(event) => edit({ [key]: event.target.checked })} />
+            <span><span className="switch-label">{label}</span><span className="field-hint">{hint}</span></span></label>)}
+        <p className="muted">Project presets with the same name override these. New feature offers presets whose agent is allowed and installed.</p>
       </>}
       {!namesValid && <p role="alert">Use a nonempty, unique name for every preset.</p>}
       {blocking.some((item) => item !== row) && <p role="alert">Fix the Codex + Vibeless combination in: {

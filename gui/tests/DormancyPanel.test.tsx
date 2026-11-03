@@ -114,7 +114,7 @@ it("says when editor cleanup is off, both in the confirmation and the result", a
   mount();
   fireEvent.click(await screen.findByRole("checkbox", { name: "Select Docs refresh" }));
   fireEvent.click(button("Stop selected (1)"));
-  expect(screen.getByText(/Editor cleanup is off \(kill_editor_on_stop\)/)).toBeTruthy();
+  expect(screen.getByText(/Closing editors when a feature stops is turned off in your AMF settings/)).toBeTruthy();
   fireEvent.click(button("Stop 1 feature"));
   expect(await screen.findByText("Editor cleanup is off; no editor was examined.")).toBeTruthy();
 });

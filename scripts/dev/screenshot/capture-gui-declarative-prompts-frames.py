@@ -252,7 +252,7 @@ try:
     click('Confirm unchanged destination');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')');assert project_path.read_bytes()==before
     click('Cancel');wait('!document.querySelector(\'[role=dialog][aria-label="Prompt library"]\')');assert composer_body()==draft
     evaluate('Array.from(document.querySelectorAll(".toast .btn-icon")).forEach(b=>b.click())')
-    capture('010-composer-and-sessions-preserved.png','After Global, Project and Worktree edits and metadata-preserving export, the original multiline composer is unchanged and both offline sessions remain alive and empty.',['Round invoice totals','Save as template'],'document.querySelector(".composer textarea").value==='+json.dumps(draft))
+    capture('010-composer-and-sessions-preserved.png','After Global, Project and Worktree edits and metadata-preserving export, the original multiline composer is unchanged and both offline sessions remain alive and empty.',['Round invoice totals','Save as prompt'],'document.querySelector(".composer textarea").value==='+json.dumps(draft))
     for filename in ['claude-received.json','opencode-received.json']:assert json.loads((repo/filename).read_text())==[]
     (out/'capture-notes.jsonl').write_text(''.join(json.dumps({'file':note['file'],'note':note['note']})+'\n' for note in notes));print('PASS: declarative edits, raw preservation, legacy permissions, stale guards, explicit export and unchanged composer',flush=True)
 except Exception:

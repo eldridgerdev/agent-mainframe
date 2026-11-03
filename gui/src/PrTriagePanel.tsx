@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentSlug, asGuiError } from "./api";
+import { AgentSlug, agentName, asGuiError } from "./api";
 import Markdown from "./Markdown";
 import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
 import ScreenshotViewer from "./ScreenshotViewer";
@@ -444,15 +444,15 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
                   onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id, destination_revision: fixTarget!.destination_revision })}>Prepare fix…</button>
                 <button className="btn btn-ghost btn-sm" disabled={locked || view?.reply != null || investigate !== null || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
               </> : <>
-                <p className="small muted">Add an agent session to this feature to prepare a fix draft.</p>
+                <p className="small muted">Fixes are sent to an agent session in this feature. Add one for PR fixes to prepare a fix.</p>
                 <button className="btn btn-secondary btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
               </>}
             </div>}
             {selected.actionable && !selected.local_finding && <div className="pr-actions">
-              <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "toggle_done", comment_id: selected.id })}>
-                {selected.triage === "done" ? "Clear done" : "Mark done (local)"}</button>
-              <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "toggle_skipped", comment_id: selected.id })}>
-                {selected.triage === "skipped" ? "Clear skip" : "Skip (local)"}</button>
+              <button className="btn btn-secondary btn-sm" disabled={locked} title="Only AMF remembers this; nothing changes on GitHub" onClick={() => void act({ kind: "toggle_done", comment_id: selected.id })}>
+                {selected.triage === "done" ? "Clear done" : "Mark done (only in AMF)"}</button>
+              <button className="btn btn-secondary btn-sm" disabled={locked} title="Only AMF remembers this; nothing changes on GitHub" onClick={() => void act({ kind: "toggle_skipped", comment_id: selected.id })}>
+                {selected.triage === "skipped" ? "Clear skip" : "Skip (only in AMF)"}</button>
               <button className="btn btn-secondary btn-sm" disabled={locked || investigate !== null}
                 onClick={() => setInvestigate({ commentId: selected.id, harness: view!.default_harness ?? view!.harnesses[0], text: "", followUp: false })}>Investigate…</button>
               {selected.investigation?.answer && <button className="btn btn-secondary btn-sm" disabled={locked || investigate !== null}
@@ -481,7 +481,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             {investigate && investigate.commentId === selected.id && <section className="review-editor" aria-label="Investigation request" ref={reveal}>
               <Field label="Investigate with">
                 <select value={investigate.harness} disabled={busy || !!view?.precall} onChange={(e) => setInvestigate({ ...investigate, harness: e.target.value as AgentSlug })}>
-                  {view!.harnesses.map((h) => <option key={h} value={h}>{h}</option>)}
+                  {view!.harnesses.map((h) => <option key={h} value={h}>{agentName(h)}</option>)}
                 </select>
               </Field>
               <Field label={investigate.followUp ? "Follow-up question" : "What do you suspect? (optional)"}>

@@ -306,7 +306,7 @@ function ContextMeter({ meter, onFreshContext }: { meter: SidebarContextMeter; o
         {meter.estimated && <span className="sb-chip">estimated</span>}
         {meter.stale && <span className="sb-chip sb-chip-stale">stale</span>}
       </p>
-      <button className="sb-action" onClick={onFreshContext}>Fresh context</button>
+      <button className="sb-action" onClick={onFreshContext}>Continue in new session</button>
       {meter.fresh_context_hint && (
         <p className="sb-hint">Context is filling up.</p>
       )}

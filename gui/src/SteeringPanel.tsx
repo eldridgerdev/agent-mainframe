@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
 import { steeringAnalyze, SteeringAnalysis } from "./steeringApi";
-import { Icon, Spinner } from "./ui";
+import { ExperimentalBadge, Icon, Spinner } from "./ui";
 
 /**
  * Advisory steering checklist shown beside an UNSENT composer draft. It only
@@ -42,7 +42,8 @@ export default function SteeringPanel({ text, onClose }: { text: string; onClose
     <section className="steering-panel" aria-label="Steering coach" data-stale={stale ? "true" : "false"}>
       <header className="steering-head">
         <Icon name="compass" />
-        <strong>Steering Coach</strong>
+        <strong>Steering coach</strong>
+        <ExperimentalBadge />
         {analysis && !stale && !analysis.blank && <span className={`steering-score steering-${tone}`}>Score: {analysis.score} / {analysis.max_score}</span>}
         <span className="muted small">Advisory only. Your draft stays unsent.</span>
         <span className="tabs-spacer" />

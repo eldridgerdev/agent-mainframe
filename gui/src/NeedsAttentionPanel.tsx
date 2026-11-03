@@ -40,7 +40,7 @@ export default function NeedsAttentionPanel({ onJump, onClose }: {
   const view = query.data;
   return <Modal label="Needs attention" title="Needs attention" size="lg" onClose={() => { if (!inFlight.current) onClose(); }}
     subtitle="Agents that are paused and waiting for you: a question, an approval or finished work."
-    footer={<button className="btn btn-secondary" disabled={busy} onClick={onClose}>Close</button>}>
+    footer={<><span className="muted small modal-footer-hint">Esc to close</span><button className="btn btn-secondary" disabled={busy} onClick={onClose}>Close</button></>}>
     {(error || query.error) && <p role="alert">{error || asGuiError(query.error).message}{query.error && view && " Showing the previous load."}</p>}
     {view?.limits.map(limit => <p key={limit} className="muted small" role="note">{limit}</p>)}
     {view?.explanation && <details className="muted small">

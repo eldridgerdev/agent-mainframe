@@ -44,7 +44,7 @@ it("maps Shift-click to an inclusive range and submits a follow-up by stable ans
   expect(onAct).toHaveBeenLastCalledWith({ kind: "lines_anchor", start: 1, end: 3 });
   fireEvent.click(screen.getByRole("button", { name: "Follow up" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Question" }), { target: { value: "Why?" } });
-  fireEvent.click(screen.getByRole("button", { name: "Ask claude" }));
+  fireEvent.click(screen.getByRole("button", { name: "Ask Claude Code" }));
   expect(onAct).toHaveBeenLastCalledWith({ kind: "ask", question: "Why?", intent: "explain", parent_id: "qa-1" });
 });
 
@@ -65,7 +65,7 @@ it("requires an explicit editing handoff and disables actions while one is pendi
 it("keeps the question after a refused submission and states Codex's effective scope", async () => {
   render(<LearningPanel view={{ ...view, harness: "codex" }} busy={false} onAct={vi.fn(async () => false)} onClose={vi.fn()} onLaunch={vi.fn()} />);
   fireEvent.change(screen.getByRole("textbox", { name: "Question" }), { target: { value: "Keep this" } });
-  fireEvent.click(screen.getByRole("button", { name: "Ask codex" }));
+  fireEvent.click(screen.getByRole("button", { name: "Ask Codex" }));
   expect((screen.getByRole("textbox", { name: "Question" }) as HTMLTextAreaElement).value).toBe("Keep this");
   expect(screen.getByText("Codex reads the repository in a read-only sandbox.")).toBeTruthy();
 });
@@ -150,4 +150,18 @@ it("marks only the open file in the list as current", () => {
   expect(screen.getByRole("button", { name: "other.rs" }).hasAttribute("aria-current")).toBe(false);
   rerender(<LearningPanel {...props} view={{ ...view, entries, selected_key: null }} />);
   expect(screen.getByRole("button", { name: "README.md" }).hasAttribute("aria-current")).toBe(false);
+});
+
+it("names agents by product, sets Start here apart and never leaves the reader blank", () => {
+  const props = { busy: false, onAct: vi.fn(async () => true), onClose: vi.fn(), onLaunch: vi.fn() };
+  const { rerender } = render(<LearningPanel {...props} view={{ ...view,
+    entries: [{ key: "start_here", label: "Start here", kind: "header", depth: 0, expanded: true }, ...view.entries],
+    selected_key: null, content_path: null, content: [], content_line_labels: [] }} />);
+  const answerWith = screen.getByRole("combobox", { name: "Answer with" });
+  expect(within(answerWith).getAllByRole("option").map((option) => option.textContent)).toEqual(["Claude Code", "Codex", "OpenCode", "Pi"]);
+  expect(screen.getByRole("button", { name: "Start here" }).className).toContain("learning-file-header");
+  expect(screen.getByText(/Pick a file on the left to read it here/)).toBeTruthy();
+  rerender(<LearningPanel {...props} view={{ ...view, content: [], content_line_labels: [] }} />);
+  expect(screen.getByText(/This file is empty/)).toBeTruthy();
+  expect(screen.getByText(/· Claude Code ·/)).toBeTruthy();
 });

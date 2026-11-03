@@ -16,12 +16,13 @@ it("offers resume, fresh start, and the saved-session picker after tmux exits", 
       onChoose={onChoose} onBack={vi.fn()} onSelect={vi.fn()} onRecover={onRecover} onClose={vi.fn()} />,
   );
 
-  expect(screen.getByText("saved-claude-id")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Resume saved session" }));
+  // The saved id is an internal detail; the choices are described in words.
+  expect(screen.queryByText(/saved-claude-id/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Continue where it left off" }));
   expect(onRecover).toHaveBeenCalledWith("resume", null);
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
   expect(onRecover).toHaveBeenCalledWith("clear", null);
-  fireEvent.click(screen.getByRole("button", { name: "Choose another saved session" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pick an older conversation" }));
   expect(onChoose).toHaveBeenCalledOnce();
 });
 
@@ -38,6 +39,6 @@ it("passes the chosen saved transcript to recovery", () => {
   render(<Harness />);
 
   fireEvent.click(screen.getByText("Current work"));
-  fireEvent.click(screen.getByRole("button", { name: "Resume selected session" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue this conversation" }));
   expect(onRecover).toHaveBeenCalledWith("pick", "newer-id");
 });

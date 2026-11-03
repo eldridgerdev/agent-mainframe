@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
+import { AgentSlug, agentName, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import ReviewSummaryPanel from "./ReviewSummaryPanel";
@@ -256,7 +256,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       <p className="muted small">The answering agent reads the repository and reviewed diff. Answers stay in this review while it is open. Follow-ups include earlier answers for this review version.</p>
       <Field label="Review question"><textarea rows={4} value={question.text} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, text: event.target.value })} /></Field>
       <Field label="Answer with"><select value={question.harness} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, harness: event.target.value as AgentSlug })}>
-        {ai.harnesses.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
+        {ai.harnesses.map((harness) => <option key={harness} value={harness}>{agentName(harness)}</option>)}
       </select></Field>
       <button className="btn btn-primary" disabled={busy || ai.running || pending !== null || !question.text.trim()}>Ask review question</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => request("cancel")}>Cancel question</button>

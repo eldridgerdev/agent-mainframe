@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import App, { CreateFeatureForm } from "../src/App";
 import SteeringPanel from "../src/SteeringPanel";
+import { ExperimentalBadge } from "../src/ui";
 import type { SteeringAnalysis } from "../src/steeringApi";
 import type { WorkspaceSnapshot } from "../src/api";
 
@@ -106,7 +107,7 @@ async function fillAndCreate() {
 
 it("creation form: the coach is off by default and passes no option", async () => {
   const onSubmit = form();
-  expect(screen.getByRole("switch", { name: /Steering coach \(experimental\)/ })).toHaveProperty("checked", false);
+  expect(screen.getByRole("switch", { name: /^Steering coach Experimental/ })).toHaveProperty("checked", false);
   await fillAndCreate();
   expect(onSubmit).toHaveBeenCalledOnce();
   expect(onSubmit.mock.calls[0]).toHaveLength(2);
@@ -114,7 +115,7 @@ it("creation form: the coach is off by default and passes no option", async () =
 
 it("creation form: ticking the coach reports it, and planning turns it off", async () => {
   const onSubmit = form();
-  const box = screen.getByRole("switch", { name: /Steering coach \(experimental\)/ });
+  const box = screen.getByRole("switch", { name: /^Steering coach Experimental/ });
   fireEvent.click(box);
   expect(box).toHaveProperty("checked", true);
   fireEvent.click(screen.getByRole("radio", { name: "Quick Plan" }));
@@ -165,7 +166,7 @@ it("creating with the coach opens an empty, unsent draft with the checklist and 
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  fireEvent.click(await screen.findByRole("switch", { name: /Steering coach \(experimental\)/ }));
+  fireEvent.click(await screen.findByRole("switch", { name: /^Steering coach Experimental/ }));
   await fillAndCreate();
   const panel = await screen.findByRole("region", { name: "Steering coach" });
   await within(panel).findByText(/Start with the concrete task\./);
@@ -235,7 +236,7 @@ it("hides the score for a blank draft", async () => {
 
 it("creation form: clearing planning does not bring a previously ticked coach back", async () => {
   const onSubmit = form();
-  const box = screen.getByRole("switch", { name: /Steering coach \(experimental\)/ });
+  const box = screen.getByRole("switch", { name: /^Steering coach Experimental/ });
   fireEvent.click(box);
   fireEvent.click(screen.getByRole("radio", { name: "Full Plan" }));
   fireEvent.click(screen.getByText("Start directly"));
@@ -254,9 +255,16 @@ it("tells the user when the created feature has no agent session to coach", asyn
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  fireEvent.click(await screen.findByRole("switch", { name: /Steering coach \(experimental\)/ }));
+  fireEvent.click(await screen.findByRole("switch", { name: /^Steering coach Experimental/ }));
   await fillAndCreate();
   expect(await screen.findByText(/no agent session to coach/)).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Steering coach" })).toBeNull();
   client.clear();
+});
+
+it("renders the one shared Experimental badge with its explanation", () => {
+  // The badge is one component wherever an experimental feature is named.
+  const badge = render(<ExperimentalBadge />).container.querySelector(".badge-experimental")!;
+  expect(badge.textContent).toBe("Experimental");
+  expect(badge.getAttribute("title")).toBe("New and still changing");
 });

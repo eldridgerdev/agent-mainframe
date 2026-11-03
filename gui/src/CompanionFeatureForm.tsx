@@ -13,7 +13,7 @@ const POLL_RETRIES = 3;
 
 const PHASE_LABEL: Record<PrDestinationOperation["phase"], string> = {
   starting: "Starting", fetching: "Fetching the PR head from the remote", creating_worktree: "Creating the separate checkout",
-  running_hook: "Running the setup script", registering: "Registering the stopped feature", done: "Finished",
+  running_hook: "Running the setup script", registering: "Adding the new feature (stopped)", done: "Finished",
 };
 
 /** The operation's final answer in the shape the dedicated-session form hands its caller. */
@@ -227,7 +227,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
           </select>
         </Field>
         <label className="row small"><input type="checkbox" checked={review} disabled={locked} onChange={(event) => setReview(event.target.checked)} /><span>Review workflow</span></label>
-        <label className="row small"><input type="checkbox" checked={chrome} disabled={locked} onChange={(event) => setChrome(event.target.checked)} /><span>Enable Chrome</span></label>
+        <label className="row small"><input type="checkbox" checked={chrome} disabled={locked} onChange={(event) => setChrome(event.target.checked)} /><span>Chrome</span></label>
         {hook?.prompt_title && <Field label={hook.prompt_title} hint="The project's setup script asks this once, before the feature is added.">
           <select value={hookChoice} disabled={locked} onChange={(event) => setHookChoice(event.target.value)}>
             <option value="">Choose a setup option</option>

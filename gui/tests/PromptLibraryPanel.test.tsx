@@ -218,13 +218,13 @@ it("edits User prompts through a fresh identity and preserves unsaved fields whi
     return original(command, args, options);
   });
   const { client, onClose } = mount(); await choose();
-  fireEvent.click(screen.getByRole("button", { name: "Edit User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit saved prompt" }));
   await screen.findByRole("dialog", { name: "User prompt editor" });
   expect(invoke).toHaveBeenCalledWith("prompt_user_edit", { scope, entryKey: "template" });
   fireEvent.change(screen.getByRole("textbox", { name: /^Template body/ }), { target: { value: "Local edited prompt" } });
   act(() => client.setQueryData(["prompt-library", scope, ""], { ...view, entries: [], available_keys: [] }));
   expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe("Local edited prompt");
-  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
   await screen.findByText("Row changed; draft kept");
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.getByRole("dialog", { name: "Discard prompt edits" })).toBeTruthy();
@@ -243,15 +243,15 @@ it("confirms User deletion, refuses stale rows and locks a retry while pending",
     return original(command, args, options);
   });
   const { onClose } = mount(); await choose();
-  fireEvent.click(screen.getByRole("button", { name: "Delete User template…" }));
-  await screen.findByRole("dialog", { name: "Delete User template" });
+  fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt…" }));
+  await screen.findByRole("dialog", { name: "Delete saved prompt" });
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_delete")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt" }));
   await screen.findByText("Template was changed");
-  expect(screen.getByRole("dialog", { name: "Delete User template" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Delete saved prompt" })).toBeTruthy();
   stale = false;
-  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
-  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt" }));
   fireEvent.keyDown(document, { key: "Escape" });
   expect(onClose).not.toHaveBeenCalled();
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_delete")).toHaveLength(2);
@@ -266,8 +266,8 @@ it("duplicates declarative sources into User while never offering edit or deleti
   vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_user_duplicate" ? new Promise<string>(resolve => { finish = () => resolve("copied"); }) : original(command, args, options));
   mount();
   fireEvent.click(await screen.findByRole("button", { name: /Project prompt/ }));
-  expect(screen.queryByRole("button", { name: "Edit User template" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Delete User template…" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Edit saved prompt" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete saved prompt…" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
   fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_duplicate")).toHaveLength(1);
@@ -280,7 +280,7 @@ it("duplicates declarative sources into User while never offering edit or deleti
   await screen.findByText("Duplicated to your User library.");
   // The new copy is selected, so it can be edited or inserted straight away.
   await waitFor(() => expect(screen.getByRole("button", { name: /Project prompt \(copy\)/ }).getAttribute("aria-pressed")).toBe("true"));
-  expect(screen.getByRole("button", { name: "Edit User template" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit saved prompt" })).toBeTruthy();
 });
 
 it.each(["duplicate", "delete"])("protects a pending %s even if Escape arrives before React commits the busy state", async (action) => {
@@ -296,10 +296,10 @@ it.each(["duplicate", "delete"])("protects a pending %s even if Escape arrives b
   });
   const { onClose } = mount(); await choose();
   if (action === "delete") {
-    fireEvent.click(screen.getByRole("button", { name: "Delete User template…" }));
-    await screen.findByRole("dialog", { name: "Delete User template" });
-    fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
-    expect(screen.getByRole("dialog", { name: "Delete User template" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt…" }));
+    await screen.findByRole("dialog", { name: "Delete saved prompt" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete saved prompt" }));
+    expect(screen.getByRole("dialog", { name: "Delete saved prompt" })).toBeTruthy();
   } else {
     fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
     expect(screen.getByRole("dialog", { name: "Prompt library" })).toBeTruthy();

@@ -81,7 +81,10 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
     subtitle="Parsers shared by the desktop app and AMF's terminal app. Your open views and drafts stay in place."
     footer={<><button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void load(true)}>Refresh languages</button>
       <button type="button" className="btn btn-ghost" disabled={requesting} onClick={close}>Close manager</button></>}>
-    <p className="muted small">Install or repair clones a grammar from GitHub and compiles it with your C compiler. Uninstall removes its parser and managed source checkout. Files in your project stay unchanged.</p>
+    <p className="muted small">Install a language to color its code in Changes, Final Review and Learning. Installing needs a C compiler
+      (<code>cc</code>): AMF downloads the language's grammar from GitHub and builds it. If an install says <code>cc</code> was not found,
+      install your system's build tools (for example <code>build-essential</code> or Xcode command line tools) and try again.
+      Uninstall removes the parser and its downloaded source. Files in your project stay unchanged.</p>
     {loading && <p role="status"><Spinner /> Reading parser state…</p>}
     {error && <p role="alert" className="callout callout-danger">{error}</p>}
     {operation?.running && <div role="status" className="callout callout-info syntax-manager-progress"><Spinner />

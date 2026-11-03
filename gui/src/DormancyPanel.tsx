@@ -35,7 +35,7 @@ const key = (observation: { target: FeatureTarget }) =>
 function editorPolicy(view: DormancyView): string {
   return view.kill_editor_on_stop
     ? "Editor windows AMF opened for these features are closed too. A window AMF did not open, one whose process now belongs to something else, or one sharing its VS Code instance with other windows is left running and reported."
-    : "Editor cleanup is off (kill_editor_on_stop), so no editor window is examined or closed.";
+    : "Closing editors when a feature stops is turned off in your AMF settings, so editor windows are left alone.";
 }
 
 export function EditorReport({ editors }: { editors: EditorCleanup | null }) {
@@ -78,8 +78,7 @@ function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, onDele
       aria-label={`Close editors for ${observation.feature_name}`}>Close editors</button>}
     <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onDelete}
       aria-label={`Delete ${observation.feature_name}`}>Delete</button>
-    <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onOpen}
-      title="Opening a session counts as attention, so the feature stops being dormant">Open</button>
+    <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onOpen}>Open</button>
   </li>;
 }
 
@@ -278,8 +277,9 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
       <p>{editorPolicy(view)}</p>
       <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its running sessions, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
     </section> : view && (!view.enabled
-      ? <EmptyState icon="alert" title="Dormancy detection is off">
-          Open Settings and set both thresholds above 0 to list idle, unattended features.
+      ? <EmptyState icon="alert" title="Dormancy detection is off"
+          action={<button className="btn btn-primary btn-sm" onClick={() => setShowSettings(true)}>Turn on…</button>}>
+          It lists features that are idle and unopened. Setting either threshold to 0 turns it off; set both above 0 to turn it on.
         </EmptyState>
       : view.features.length === 0
         ? <EmptyState icon="check" title="Nothing is dormant right now">
@@ -287,7 +287,7 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
           </EmptyState>
         : <>
           {notice && <p role="status" className="callout callout-warning">{notice}</p>}
-          <p className="muted">Longest idle first. Checked {when(view.checked_at)}. Select features to stop them; nothing is stopped until you confirm.</p>
+          <p className="muted">Longest idle first. Checked {when(view.checked_at)}. Select features to stop them; nothing is stopped until you confirm. Opening a feature counts as attention, so it leaves this list.</p>
           <ul className="dormancy-list" aria-label="Dormant features">
             {view.features.map((row) => <Row key={key(row.observation)} row={row}
               selected={!!selected[key(row.observation)]} disabled={stopping || query.isFetching} editorsStale={editorsStale}

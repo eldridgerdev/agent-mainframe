@@ -196,7 +196,7 @@ try:
         import json as json_module
         saved=json_module.load(f)
     assert saved["dormant_idle_minutes"] == 0 and saved["dormant_last_accessed_hours"] == 4, saved
-    capture("004-detection-disabled.png", "Saving zero idle minutes immediately disables detection while preserving the other threshold.", ["Dormancy detection is off", "Open Settings and set both thresholds above 0"])
+    capture("004-detection-disabled.png", "Saving zero idle minutes immediately disables detection while preserving the other threshold.", ["Dormancy detection is off", "set both above 0 to turn it on", "Turn on…"])
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"], "note": n["note"]}) + "\n" for n in notes))
     print("PASS: settings load, discard guard, stale-save refusal and successful disable verified", flush=True)
 finally:

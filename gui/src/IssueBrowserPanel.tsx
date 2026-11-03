@@ -374,7 +374,7 @@ function IssueFixForm({
       {approval && (
         <ApprovalDialog
           label="Approve agent start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={approval}
           confirmLabel="Start anyway"
           busy={busy}

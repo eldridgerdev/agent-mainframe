@@ -196,6 +196,11 @@ def alive(pid):
 dialog = 'document.querySelector("[role=dialog][aria-label=\\"New session\\"]")'
 
 
+def create_session():
+    # On a stopped feature the same button reads "Start feature and add session".
+    evaluate(f'Array.from({dialog}.querySelectorAll("button")).find(b=>["Create session","Start feature and add session"].includes(b.textContent.trim())).click()')
+
+
 def open_picker():
     evaluate('document.querySelector(`button.tab-add[aria-label="New session"]`).click()')
     wait(f"!!{dialog}")
@@ -219,7 +224,7 @@ try:
     )
 
     choose("Database")
-    click("Create session", dialog)
+    create_session()
     wait(f"!!{dialog}.querySelector('[role=alert]')")
     assert custom_sessions() == [], custom_sessions()
     capture(
@@ -232,7 +237,7 @@ try:
 
     choose("Dev server")
     wait(f"!{dialog}.querySelector('[role=alert]')")
-    click("Create session", dialog)
+    create_session()
     wait(f"!{dialog}")
     wait('Array.from(document.querySelectorAll("[role=tab]")).some(t=>t.textContent.includes("Dev server")&&t.getAttribute("aria-selected")==="true")')
     wait('(document.querySelector(".xterm-rows")?.innerText??"").includes("ready in 312 ms")', tries=200)

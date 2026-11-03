@@ -194,7 +194,7 @@ it("holds answers for the configured duration and restarts the hold on changed e
   fireEvent.click(approve);
   fireEvent.keyDown(document.activeElement!, { key: "Enter" });
   expect(screen.queryByRole("alertdialog", { name: "Confirm answer" })).toBeNull();
-  expect(screen.getByText(/Review hold/)).toBeTruthy();
+  expect(screen.getByText(/Buttons unlock in/)).toBeTruthy();
   await waitFor(() => expect(approve.disabled).toBe(false));
   fireEvent.click(approve);
   expect(screen.getByRole("alertdialog", { name: "Confirm answer" })).toBeTruthy();

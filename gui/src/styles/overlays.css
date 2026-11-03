@@ -121,6 +121,8 @@
   background: var(--surface-2);
   border-radius: 0 0 var(--r-lg) var(--r-lg);
 }
+/* "Esc to close" in a read-only dialog's footer: pushed left, away from the buttons. */
+.modal-footer-hint { margin-right: auto; align-self: center; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px) scale(0.99); } }
 

@@ -487,11 +487,15 @@ export function ConfirmCallout({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLElement | null>(null);
+  // Captured once: StrictMode re-runs this effect after focus has already
+  // moved inside, and the re-run must not mistake our own button for the opener.
+  const openerRef = useRef<Element | null | undefined>(undefined);
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const opener = document.activeElement;
-    if (!root.contains(opener)) {
+    if (openerRef.current === undefined) openerRef.current = document.activeElement;
+    const opener = openerRef.current;
+    if (!root.contains(document.activeElement)) {
       const controls = focusableWithin(root);
       const target = [root.querySelector("[data-autofocus]"), root.querySelector(".btn-primary")].find(canFocus)
         ?? controls.find((el) => !el.classList.contains("btn-danger")) ?? controls[0];

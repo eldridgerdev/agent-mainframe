@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import {
   ApprovalDialog,
   ConfirmCallout,
@@ -424,6 +424,16 @@ it("renders an inline confirmation as a named alert, focuses its confirm and ret
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   expect(screen.queryByRole("alert")).toBeNull();
+  expect(document.activeElement).toBe(ask);
+});
+
+it("returns focus to the opener under StrictMode's effect replay", () => {
+  render(<StrictMode><InlineConfirm /></StrictMode>);
+  const ask = screen.getByRole("button", { name: "Ask" });
+  ask.focus();
+  fireEvent.click(ask);
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   expect(document.activeElement).toBe(ask);
 });
 

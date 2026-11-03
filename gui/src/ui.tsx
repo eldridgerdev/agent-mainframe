@@ -902,6 +902,13 @@ export function Field({
   );
 }
 
+/** The one "Experimental" marker for features that are new and still
+ * changing. Its text is part of the surrounding control's name, so what a
+ * screen reader announces matches what is on screen. */
+export function ExperimentalBadge({ title = "New and still changing" }: { title?: string }) {
+  return <span className="tag tag-accent badge-experimental" title={title}>Experimental</span>;
+}
+
 /** A compact list filter with a search icon and placeholder, the same
  * pattern as the sidebar's project filter. The label is visually hidden
  * but still names the field. */
@@ -927,12 +934,15 @@ export function Switch({
   checked,
   onChange,
   label,
+  badge,
   hint,
   disabled,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  /** Shown after the label, e.g. an {@link ExperimentalBadge}. */
+  badge?: ReactNode;
   hint?: string;
   disabled?: boolean;
 }) {
@@ -947,7 +957,7 @@ export function Switch({
         onChange={(event) => onChange(event.target.checked)}
       />
       <span>
-        <span className="switch-label">{label}</span>
+        <span className="switch-label">{label}{badge && <> {badge}</>}</span>
         {hint && <span className="field-hint">{hint}</span>}
       </span>
     </label>

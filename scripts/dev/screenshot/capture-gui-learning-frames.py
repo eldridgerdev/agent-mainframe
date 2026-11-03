@@ -242,7 +242,7 @@ try:
     wait('document.querySelectorAll(".learning-line-selected").length===2')
     capture('001-code-reader.png',
             'Learning reads the private worktree through real IPC and highlights a selected line range. The answering harness and reading level are explicit; no question has been sent.',
-            ['Learning · host', 'within_quota', 'Ask codex', 'Next question:'],
+            ['Learning · host', 'within_quota', 'Ask Codex', 'Next question:'],
             'document.querySelectorAll(".learning-line-selected").length===2')
     assert not rows('SELECT id FROM learning_qa') and not call_records('answer')
     click('Show branch changes')
@@ -251,7 +251,7 @@ try:
     wait('document.body.innerText.includes("Next question:")')
     capture('002-diff-hunk.png',
             'The reader switches to branch changes and selects the actual diff hunk as the next question anchor. Browsing and selection invoke no answering or editing harness.',
-            ['Show repo tree', 'Hunk 1', 'Reject accounts at or above their quota.', 'Ask codex'])
+            ['Show repo tree', 'Hunk 1', 'Reject accounts at or above their quota.', 'Ask Codex'])
     click('Show repo tree')
     wait('!document.querySelector(".learning-hunk")')
     click('Ask about file')
@@ -267,7 +267,7 @@ try:
     click('Keep writing')
     assert evaluate('document.querySelector(".learning-question textarea").value') == draft
     field('Question', 'Why reject work at quota?')
-    click('Ask codex')
+    click('Ask Codex')
     wait_db("SELECT status FROM learning_qa", [('answered',)])
     wait('document.querySelector(`[aria-label="Learning answer"]`)?.innerText.includes("Quota explanation")')
     original = rows('SELECT id,anchor_kind,file_path,selection_text,answer FROM learning_qa')[0]
@@ -287,7 +287,7 @@ try:
             ['Quota explanation', 'Why reject work at quota?', 'Follow up', 'Keep as TODO'])
     click('Follow up')
     field('Question', 'Which boundary test?')
-    click('Ask codex')
+    click('Ask Codex')
     wait_db('SELECT status FROM learning_qa ORDER BY created_at,id', [('answered',), ('answered',)])
     wait('document.querySelector(`[aria-label="Learning answer"]`)?.innerText.includes("Which boundary test?")')
     child = rows('SELECT id,parent_qa_id,anchor_kind,file_path,selection_text FROM learning_qa WHERE parent_qa_id IS NOT NULL')[0]

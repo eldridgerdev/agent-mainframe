@@ -14,7 +14,7 @@ Use **Tools → Screenshots** on a feature to review agent validation evidence,
 or **Screenshots for this session** in a session tab's `⋯` menu to filter to
 that producing session. These
 entries also work for stopped features and ordinary non-git directories.
-The workspace's **Validation screenshots** entry includes historical evidence
+The workspace's **Screenshots** entry includes historical evidence
 after the original sessions/features disappear.
 
 Click a thumbnail to open the shared viewer. Use **Fit**, **Original size**,

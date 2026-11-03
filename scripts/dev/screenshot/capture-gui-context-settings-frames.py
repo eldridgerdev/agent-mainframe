@@ -26,13 +26,13 @@ with gui:
     click("Context settings")
     wait('!!document.querySelector(".modal input") && !document.body.innerText.includes("Loading or saving settings…")')
     assert values() == ["500000", "70", "85"]
-    capture("001-context-settings-loaded.png", "Loaded global context limit and warning/critical thresholds share the TUI settings; a blank token limit restores harness defaults.", ["Context settings", "Context window (tokens)", "Warning percent", "Critical percent", "Leave blank to restore harness defaults."])
-    fill("Warning percent", "90")
+    capture("001-context-settings-loaded.png", "Loaded global context limit and warning/critical thresholds share the TUI settings; a blank token limit restores harness defaults.", ["Context settings", "Context size (tokens)", "Warn at (% full)", "Critical at (% full)", "Leave blank to use each agent's default."])
+    fill("Warn at (% full)", "90")
     wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("002-context-invalid-order.png", "Critical must exceed warning; the invalid order blocks Save without writing configuration.", ["Percentages must be 1–100, with critical greater than warning."], 'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Save settings").disabled', allow_alert=True)
     assert json.loads(config_path.read_text())["context_warning_percent"] == 70
-    fill("Warning percent", "70")
-    fill("Context window (tokens)", "18446744073709551615")
+    fill("Warn at (% full)", "70")
+    fill("Context size (tokens)", "18446744073709551615")
     click("Cancel")
     wait('!!document.querySelector("[data-confirm-callout]")')
     capture("003-context-discard-guard.png", "Cancel protects the unsaved full-width token-limit draft until explicit discard.", ["Discard unsaved settings and close?", "Keep editing", "Discard changes"])
@@ -53,17 +53,17 @@ with gui:
     click("Discard changes")
     wait('!document.querySelector("[data-confirm-callout]") && !document.body.innerText.includes("Loading or saving settings…")')
     assert values() == ["300000", "60", "90"]
-    fill("Context window (tokens)", "18446744073709551615")
+    fill("Context size (tokens)", "18446744073709551615")
     click("Save settings")
     wait('!document.querySelector(".modal")')
     assert json.loads(config_path.read_text())["context_window_override"] == 18446744073709551615
     click("Context settings")
     wait('!!document.querySelector(".modal input") && !document.body.innerText.includes("Loading or saving settings…")')
     assert values() == ["18446744073709551615", "60", "90"]
-    capture("005-context-full-u64-saved.png", "Saving and reopening retains the maximum u64 token limit exactly across native IPC and JSON persistence.", ["Context settings", "Context window (tokens)"])
-    fill("Context window (tokens)", "")
-    fill("Warning percent", "80")
-    fill("Critical percent", "95")
+    capture("005-context-full-u64-saved.png", "Saving and reopening retains the maximum u64 token limit exactly across native IPC and JSON persistence.", ["Context settings", "Context size (tokens)"])
+    fill("Context size (tokens)", "")
+    fill("Warn at (% full)", "80")
+    fill("Critical at (% full)", "95")
     click("Save settings")
     wait('!document.querySelector(".modal")')
     saved = json.loads(config_path.read_text())
@@ -72,6 +72,6 @@ with gui:
     click("Context settings")
     wait('!!document.querySelector(".modal input") && !document.body.innerText.includes("Loading or saving settings…")')
     assert values() == ["", "80", "95"]
-    capture("006-context-defaults-restored.png", "A blank override restores harness defaults while new thresholds, unrelated config and existing sessions are preserved.", ["Context settings", "Leave blank to restore harness defaults.", "Existing sessions keep running."])
+    capture("006-context-defaults-restored.png", "A blank override restores harness defaults while new thresholds, unrelated config and existing sessions are preserved.", ["Context settings", "Leave blank to use each agent's default.", "Existing sessions keep running."])
     gui.write_notes()
     print("PASS: context loading, ordered validation, unsaved guard, stale refusal, exact u64 save and default restoration", flush=True)

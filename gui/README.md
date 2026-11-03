@@ -262,9 +262,9 @@ IPC-only review activity are not reported as current. The per-field source
 matrix is in `src/gui_contract/session_sidebar.rs`. Native offline proof:
 `scripts/dev/screenshot/scenarios/gui-session-sidebar.txt`.
 
-**Fresh context** in the Context section opens an editable continuation from
+**Continue in new session** (the TUI's fresh context) in the Context section opens an editable continuation from
 that feature's plan, changed files, summary and known prompt, using the same
-builder as TUI leader F. **Start fresh context** uses the feature's configured
+builder as TUI leader F. **Start new session** uses the feature's configured
 harness and opens a new tab with the continuation as an unsent composer draft;
 your original session stays open. Resource warnings require **Start anyway**.
 If the source changes while editing, reload context and review the retained
@@ -919,7 +919,7 @@ remains open.
 
 ### Feature rename, ready and summary
 
-**More feature actions → Rename, ready and summary…** (or **Rename session…** on
+**More feature actions → Rename or mark ready…** (or **Rename session…** on
 a session tab) opens one panel for the TUI's `r`, `y` and `Z`. A feature rename
 sets or clears its nickname and a session rename changes its label, exactly as
 the dashboard does: no branch, worktree or tmux window is renamed, and the

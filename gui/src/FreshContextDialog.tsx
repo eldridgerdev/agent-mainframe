@@ -41,14 +41,14 @@ export default function FreshContextDialog({ target, onCreated, onClose }: {
       else { setApproval(null); setError(e.message); }
     } finally { busy.current = false; setPending(false); }
   };
-  return <Modal label="Fresh context" title="Fresh context" size="lg" onClose={close}
+  return <Modal label="Continue in a new session" title="Continue in a new session" size="lg" onClose={close}
     footer={<>
       <button className="btn btn-secondary" disabled={pending} onClick={close}>Cancel</button>
       <button className="btn btn-primary" disabled={pending || discard || preview.isFetching || !preview.data || !!preview.error || !text.trim() || !!approval}
-        onClick={() => void start()}>{pending ? "Starting…" : "Start fresh context"}</button>
+        onClick={() => void start()}>{pending ? "Starting…" : "Start new session"}</button>
     </>}>
     <div data-unsaved-changes={dirty}>
-      <p>Start a new agent session with the feature’s configured harness. Your current session stays open. The continuation opens as an unsent composer draft for you to review.</p>
+      <p>Starts a new agent session with a short summary of this one, useful when the conversation gets too long. Your current session stays open. The summary opens as an unsent draft for you to review.</p>
       {preview.isPending && <p><Spinner /> Preparing context…</p>}
       {preview.error && <p role="alert">{asGuiError(preview.error).message}</p>}
       {preview.data && <label className="field">Continuation prompt

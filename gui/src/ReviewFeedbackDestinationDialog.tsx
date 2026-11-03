@@ -141,7 +141,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
         <Field label="Companion branch"><input value={branch} disabled={busy} onChange={event => edit(() => setBranch(event.target.value))} /></Field>
         <Field label="Mode"><select value={mode} disabled={busy} onChange={event => edit(() => setMode(event.target.value as ModeSlug))}><option value="supervibe">SuperVibe</option><option value="vibe">Vibe</option><option value="vibeless">Vibeless</option></select></Field>
         <label className="checkbox"><input type="checkbox" checked={review} disabled={busy} onChange={event => edit(() => setReview(event.target.checked))} /> Review workflow</label>
-        <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Enable Chrome</label>
+        <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Chrome</label>
         {catalog.hook_prompt && <Field label={catalog.hook_prompt.title}><select value={hookChoice} disabled={busy} onChange={event => edit(() => setHookChoice(event.target.value))}><option value="">Choose a worktree setup option</option>{catalog.hook_prompt.options.map(option => <option key={option}>{option}</option>)}</select></Field>}
         <p>Branches from {catalog.source_branch} at {catalog.source_head}. Uncommitted reviewed changes are not copied. Integrate the companion's commits later from the companion feature's “Integrate companion…” dialog.</p>
       </>}

@@ -164,7 +164,7 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
   const editing = draft !== null && row?.id === draft.promptId;
 
   return <Modal label="Prompt overrides" title="Prompt overrides" size="xl" onClose={requestClose} dismissable={!busy}
-    subtitle="Change the prompts AMF sends for headless AI calls. The nearest scope wins: feature, then project, then global, then the built-in default."
+    subtitle="AMF sends its own instructions to an AI for tasks like plan interviews, code review and summaries. Change that wording for one feature, one project, or everywhere. The closest one wins: feature, then project, then everywhere, then AMF's built-in wording."
     footer={<>
       <span className="muted small">{view ? `Context: ${view.context_label}` : ""}</span>
       <button className="btn btn-secondary" disabled={busy} onClick={requestClose}>Done</button>
@@ -201,21 +201,20 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
         {view?.rows.map((candidate) => <button key={candidate.id} disabled={busy}
           ref={row?.id === candidate.id ? activeItem : undefined}
           className={`library-item ${row?.id === candidate.id ? "library-item-active" : ""}`}
-          aria-pressed={row?.id === candidate.id}
+          aria-pressed={row?.id === candidate.id} title={candidate.id}
           onClick={() => candidate.id !== row?.id && guard("open another prompt", () => { setSelectedId(candidate.id); setConfirmClear(null); setError(null); setNotice(null); })}>
           <span className="library-item-heading"><strong>{candidate.title}</strong>
             <span className={`badge ${candidate.source === "built_in" ? "" : "overrides-badge-active"}`}>
               {candidate.source === "built_in" ? "Built-in" : slotLabel(candidate.source, candidate.source_harness)}
             </span>
           </span>
-          <span className="muted small mono">{candidate.id}</span>
         </button>)}
       </div>
       <div className="library-detail">
         {!row && !overrides.isLoading && <EmptyState icon="sliders" title="Select a prompt">Choose a prompt to see its effective template.</EmptyState>}
         {row && <>
           <h3>{row.title}</h3>
-          <p className="muted">{row.summary} <code>{row.id}</code></p>
+          <p className="muted" title={row.id}>{row.summary}</p>
           <p className="small"><strong>Placeholders:</strong>{" "}
             {row.placeholders.length === 0 ? <span className="muted">none</span> :
               row.placeholders.map((name) => <code key={name} className="overrides-token">{`{{${name}}}`}</code>)}
@@ -236,7 +235,8 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                 {HARNESSES.map((slug) => <option key={slug} value={slug}>{HARNESS_LABELS[slug]} only</option>)}
               </select></Field>
             </div>
-            <Field label="Template" hint="Placeholders are not validated: a missing token is sent literally. While an override stands, built-in prompt updates no longer apply.">
+            <div className="callout callout-warning"><p>Placeholders are not checked: a misspelled or missing <code>{"{{token}}"}</code> is sent as typed. While this override stands, AMF's updates to the built-in wording no longer apply.</p></div>
+            <Field label="Template">
               <textarea className="overrides-textarea" disabled={busy} rows={14} value={draft.text}
                 onChange={(event) => setDraft({ ...draft, text: event.target.value })} />
             </Field>

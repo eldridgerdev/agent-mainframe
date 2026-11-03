@@ -21,7 +21,7 @@ it("edits the seed and opens the returned target with an unsent draft", async ()
   const input = await screen.findByRole("textbox", { name: "Continuation prompt" });
   expect((input as HTMLTextAreaElement).value).toBe(preview.prompt);
   fireEvent.change(input, { target: { value: "Edited continuation" } });
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
   await waitFor(() => expect(handlers.onCreated).toHaveBeenCalledWith({ ...target, session_id: "new" }, "Edited continuation"));
   expect(invoke).toHaveBeenCalledWith("fresh_context_start", { target, request: { revision: "r1", prompt: "Edited continuation", approved: false } });
   expect(handlers.onClose).toHaveBeenCalledOnce();
@@ -48,12 +48,12 @@ it("retains a stale draft and reloads its revision before retry", async () => {
   });
   mount();
   fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retain me" } });
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
   expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Source changed");
   fireEvent.click(screen.getByRole("button", { name: "Reload context (keep draft)" }));
   await waitFor(() => expect(loads).toBe(2));
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retain me");
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("fresh_context_start", { target, request: { revision: "r2", prompt: "Retain me", approved: false } }));
 });
 it("requires resource approval and blocks repeated pending starts", async () => {
@@ -66,7 +66,7 @@ it("requires resource approval and blocks repeated pending starts", async () => 
   });
   const handlers = mount();
   await screen.findByRole("textbox");
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
   await screen.findByRole("alert", { name: "Resource warning" });
   fireEvent.click(screen.getByRole("button", { name: "Start anyway" }));
   fireEvent.click(screen.getByRole("button", { name: "Start anyway" }));

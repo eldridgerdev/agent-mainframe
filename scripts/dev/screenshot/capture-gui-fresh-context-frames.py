@@ -151,14 +151,14 @@ try:
     assert 'The TUI offers a fresh context here' not in evaluate('document.body.innerText')
     capture('001-fresh-context-action.png',
         'The native Context section offers Fresh context without a running TUI; the former TUI-only message is absent.',
-        ['Claude Sidebar', 'Fresh context', 'Context is filling up.'])
-    sidebar_button('context', 'Fresh context')
+        ['Claude Sidebar', 'Continue in new session', 'Context is filling up.'])
+    sidebar_button('context', 'Continue in new session')
     wait("document.querySelector('textarea[aria-label=\"Continuation prompt\"]')?.value.includes('AMF_PLAN.md')")
     seed = evaluate("document.querySelector('textarea[aria-label=\"Continuation prompt\"]').value")
     assert 'Grill me' in seed
     capture('002-editable-continuation.png',
         'The editable continuation comes from the shared TUI builder, including the plan, feature summary and conservative clarification request. Nothing has launched.',
-        ['Fresh context', 'Continuation prompt', 'Start fresh context', 'unsent composer draft'])
+        ['Continue in a new session', 'Continuation prompt', 'Start new session', 'unsent draft for you to review'])
     edit_prompt(seed + '\nCheck negative invoice totals first.')
     button('Cancel')
     wait("!!document.querySelector('[aria-label=\"Discard continuation draft\"]')")
@@ -173,7 +173,7 @@ try:
             db.execute(sql)
             db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
     shared_write("UPDATE features SET agent='codex' WHERE id='f-round'")
-    button('Start fresh context')
+    button('Start new session')
     wait("document.querySelector('[role=alert]:not([data-confirm-callout])')?.innerText.includes('source changed')")
     assert db_value("SELECT COUNT(*) FROM feature_sessions WHERE feature_id='f-round'") == 2
     capture('004-stale-source-refused.png',
@@ -186,7 +186,7 @@ try:
     assert evaluate("document.querySelector('textarea[aria-label=\"Continuation prompt\"]').value") == seed + '\nCheck negative invoice totals first.'
     # Seed inputs moving while the source agent works must not refuse the draft.
     shared_write("UPDATE features SET summary='Updated rounding summary' WHERE id='f-round'")
-    button('Start fresh context')
+    button('Start new session')
     wait("document.querySelector('.composer textarea')?.value.includes('Check negative invoice totals first.')")
     wait("document.querySelector('.xterm-rows')?.innerText.includes('Waiting for the next instruction')")
     assert db_value("SELECT COUNT(*) FROM feature_sessions WHERE feature_id='f-round'") == 3

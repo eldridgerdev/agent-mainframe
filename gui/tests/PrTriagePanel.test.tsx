@@ -231,7 +231,7 @@ it("asks before resolving a thread and offers cancelling a running investigation
   expect(within(confirm).getByRole("button", { name: "Resolve thread on GitHub" })).toBeTruthy();
   fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
   expect(await screen.findByText(/Investigating comment read-only with claude/)).toBeTruthy();
-  expect((screen.getByRole("button", { name: "Mark done (local)" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Mark done (only in AMF)" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Cancel investigation" })).toBeTruthy();
 });
 
@@ -298,7 +298,7 @@ it("blocks other triage actions during a fix draft and protects edited text on c
 it("explains how to get a fix target when a feature has no agent sessions", async () => {
   backend(review, () => review);
   render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
-  expect(await screen.findByText("Add an agent session to this feature to prepare a fix draft.")).toBeTruthy();
+  expect(await screen.findByText("Fixes are sent to an agent session in this feature. Add one for PR fixes to prepare a fix.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Prepare fix…" })).toBeNull();
 });
 

@@ -46,6 +46,10 @@
 .learning-line:hover, .learning-line-selected { background: var(--surface-2); }
 .learning-line-selected { box-shadow: inset 3px 0 var(--accent); }
 .learning-file-selected { background: var(--surface-2); box-shadow: inset 3px 0 var(--accent); }
+/* "Start here" is a group heading and the tour is an action, not files. */
+.learning-file-header { font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.learning-file-project { color: var(--accent); }
+.learning-empty { padding: 16px; }
 .learning-hunk {
   display: block;
   width: 100%;

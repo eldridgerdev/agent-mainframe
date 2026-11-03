@@ -12,20 +12,20 @@ function mount(text: string, onSaveTemplate = vi.fn()) {
   return onSaveTemplate;
 }
 
-it("keeps one toolbar row and moves Save as template into its overflow menu", () => {
+it("keeps one toolbar row and moves Save as prompt into its overflow menu", () => {
   const onSaveTemplate = mount("Fix the cart total");
   const head = document.querySelector(".composer-head") as HTMLElement;
   expect(Array.from(head.querySelectorAll("button")).map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim()))
     .toEqual(["Steering coach", "Prompt library", "Clear", "More draft actions"]);
   fireEvent.click(screen.getByRole("button", { name: "More draft actions" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Save as template" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Save as prompt" }));
   expect(onSaveTemplate).toHaveBeenCalledTimes(1);
 });
 
-it("says why Save as template is unavailable for an empty draft", () => {
+it("says why Save as prompt is unavailable for an empty draft", () => {
   mount("  ");
   fireEvent.click(screen.getByRole("button", { name: "More draft actions" }));
-  const item = screen.getByRole("menuitem", { name: /Save as template/ }) as HTMLButtonElement;
+  const item = screen.getByRole("menuitem", { name: /Save as prompt/ }) as HTMLButtonElement;
   expect(item.disabled).toBe(true);
   expect(item.textContent).toContain("Write a draft first");
 });

@@ -106,6 +106,9 @@ with GuiFrames.from_argv() as frames:
     # Feature-level Stop is an ordinary user action. The subsequent conversion
     # must update bindings/hooks without launching any replacement processes.
     dismiss_toasts(); click('Stop')
+    # More than one session is running, so Stop asks first.
+    action('wait',expression='!!document.querySelector(\'[role=dialog][aria-label="Stop feature"]\')')
+    click('Stop feature','[role=dialog]')
     wait_for(lambda: state()[1]=='stopped','Feature did not stop')
     wait_for(lambda: not feature_panes(),'Feature panes remained after Stop')
     launch_count = len((scratch/'launches.jsonl').read_text().splitlines())

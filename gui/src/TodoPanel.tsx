@@ -256,7 +256,7 @@ export default function TodoPanel({
 
       <div className="todo-scratchpad">
         <div className="todo-scratchpad-head">
-          <span className="field-label">Scratchpad</span>
+          <span className="field-label" title="A note on where you left off with this list">Scratchpad</span>
           <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad({ listId: view.data?.list.id ?? null })}>
             {view.data?.list.carry_over ? "Edit" : "Add note"}
           </button>
@@ -267,7 +267,7 @@ export default function TodoPanel({
       {view.isLoading && <p className="muted small pad">Loading…</p>}
       {view.error && <p role="alert" className="error-text pad">{String(view.error)}</p>}
       {!view.isLoading && todos.length === 0 && (
-        <p className="todo-empty">Nothing here yet.</p>
+        <p className="todo-empty">No TODOs yet. Add tasks you can hand to an agent; Start on one picks or creates a feature for it.</p>
       )}
 
       {todos.length > 0 && (

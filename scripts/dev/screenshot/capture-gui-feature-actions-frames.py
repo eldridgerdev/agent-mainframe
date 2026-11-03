@@ -208,7 +208,7 @@ try:
     click("Round invoice totals")
     wait('!!document.querySelector(\'[aria-label="More feature actions"]\')')
     windows_before = tmux_windows()
-    menu_item("More feature actions", "Rename, ready and summary")
+    menu_item("More feature actions", "Rename or mark ready…")
     wait('!!document.querySelector(\'[role=dialog][aria-label="Feature actions"]\') && !!document.querySelector(\'[aria-label="Name of session Claude"]\')')
     capture("001-actions-panel.png", "The feature menu opens one panel for nickname, session names, ready state and summary; nothing has run.", ["Rename, ready and summary", "Save nickname", "Generate summary…", "Not marked ready."])
 

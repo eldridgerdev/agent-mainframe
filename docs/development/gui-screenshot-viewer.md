@@ -208,7 +208,7 @@ in the local `AMF_PLAN.md` progress notes.
 
 The feature header's **Tools → Screenshots** item, each session tab's
 **Screenshots for this session** menu item, and the
-workspace's **Validation screenshots** navigation open local evidence galleries.
+workspace's **Screenshots** navigation open local evidence galleries.
 The workspace entry includes historical evidence whose original sessions/features
 have been deleted. After the user adjustment on 2026-10-08, PR Triage/PR Review
 renders images inline in the description, selected comment and replies. Clicking

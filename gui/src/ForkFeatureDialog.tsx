@@ -222,7 +222,7 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
             )}
           </section>
           <div className="callout callout-info"><Icon name="check" /><p>{preview.staging_note}</p></div>
-          <Field label="New branch / feature name">
+          <Field label="Branch / feature name">
             <input value={branch} onChange={(event) => setBranch(event.target.value)} spellCheck={false} />
           </Field>
           <Field label="Agent" hint={choices.isError ? `Could not load the project's agents: ${asGuiError(choices.error).message}` : `Mode ${preview.mode} is inherited from the source.`}>
@@ -238,7 +238,7 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
             checked={includeContext}
             disabled={preview.context.status !== "available"}
             onChange={setIncludeContext}
-            label="Include the conversation as .claude/context.md"
+            label="Give the new agent a copy of this conversation"
             hint={preview.context.message}
           />
           {preview.hook && (
@@ -297,8 +297,10 @@ function ForkResult({ outcome }: { outcome: ForkOutcome }) {
       <dl className="fork-facts">
         <dt>Stopped at</dt><dd>{PHASE_LABEL[outcome.phase].replace("…", "")}</dd>
         {outcome.retained
-          ? <><dt>Kept checkout</dt><dd><code>{outcome.retained.workdir}</code> on branch <code>{outcome.retained.branch}</code></dd></>
-          : <><dt>Checkout</dt><dd>None remains.</dd></>}
+          ? <><dt>Checkout</dt><dd>A partial copy was kept at <code>{outcome.retained.workdir}</code> on branch <code>{outcome.retained.branch}</code>.{outcome.feature
+            ? " You can delete it from the sidebar."
+            : " It was not added to AMF, so remove it with git when you are done."}</dd></>
+          : <><dt>Checkout</dt><dd>Nothing was left behind.</dd></>}
         <dt>Agent</dt><dd>Not started</dd>
       </dl>
     </div>

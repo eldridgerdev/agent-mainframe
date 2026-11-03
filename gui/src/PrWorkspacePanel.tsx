@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { asGuiError, type FeatureTarget } from "./api";
+import { agentName, asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
 import PrReviewPanel from "./PrReviewPanel";
 import Markdown from "./Markdown";
-import { ConfirmCallout, Icon, Spinner } from "./ui";
+import { ConfirmCallout, ExperimentalBadge, Icon, Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import DedicatedSessionForm from "./DedicatedSessionForm";
 import CompanionFeatureForm from "./CompanionFeatureForm";
@@ -317,7 +317,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
 
   return <section className="pr-workspace-page" aria-label="PR workspace">
     <header className="pr-workspace-page-header">
-      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><span className="tag tag-accent" title="New and still changing. Your GitHub data is not affected.">Experimental</span></div>
+      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><ExperimentalBadge title="New and still changing. Your GitHub data is not affected." /></div>
       <div className="pr-workspace-page-title-row">
         <div><h1>PR workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place. Review comments and Write a review do the same jobs one at a time.</p></div>
         <div className="pr-workspace-page-actions">
@@ -341,14 +341,14 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         <nav className="pr-workspace-tabs" aria-label="PR workspace views">
           {(["files", "threads", "ai"] as const).map((item) => <button key={item} className={`btn ${tab === item ? "btn-primary" : "btn-secondary"}`} aria-current={tab === item ? "page" : undefined} disabled={busy || triageBusy || (filesDirty && tab === "files") || !review && item !== "threads"} onClick={() => void switchTab(item)}>{item === "ai" ? `AI Review${ai?.running ? " · Running" : ""}` : item[0].toUpperCase() + item.slice(1)}</button>)}
         </nav>
-        {!review && tab === "threads" && <p className="muted">Choose the highlighted PR to load its threads and workspace.</p>}
+        {!review && tab === "threads" && <p className="muted">Pick a pull request from the list. Entries marked 'Selected for this feature' match this branch.</p>}
         {review && tab === "files" && workflowId && <PrReviewPanel key={`${workflowId}:${review.number}:${review.head_sha}`} projectId={target.project_id} onClose={() => undefined}
           embedded={{ workflowId, number: review.number, onDirtyChange: setFilesDirty, onOpenReview: () => void closeWorkspace(false, true), fallback: <ReadOnlyFiles workflowId={workflowId} /> }} />}
         {workflowId && <div className="pr-workspace-threads" hidden={tab !== "threads"}>
           <PrTriagePanel target={target} embedded embeddedActive={tab === "threads"} embeddedView={triage} onEmbeddedViewChange={setTriage} onEmbeddedBusyChange={setTriageBusy} onRequestClose={(close) => { triageClose.current = close; }} onClose={() => void closeWorkspace(true)} onHandoff={onHandoff} />
         </div>}
         {review && tab === "ai" && <section className="pr-workspace-ai" aria-label="AI PR review">
-          {ai?.precall ? <div className="callout"><h3>{ai.precall.title}</h3><p>{ai.precall.harness}</p><details><summary>Review prompt</summary><pre>{ai.precall.preview}</pre></details><button className="btn btn-secondary" disabled={busy} onClick={() => void aiAct("cancel_precall")}>Cancel AI review</button><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("confirm_precall")}>Continue</button></div>
+          {ai?.precall ? <div className="callout"><h3>{ai.precall.title}</h3><p>{agentName(ai.precall.harness)}</p><details><summary>Review prompt</summary><pre>{ai.precall.preview}</pre></details><button className="btn btn-secondary" disabled={busy} onClick={() => void aiAct("cancel_precall")}>Cancel AI review</button><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("confirm_precall")}>Continue</button></div>
             : ai?.running ? <section className="pr-ai-progress" aria-label={`AI review running on PR #${ai.pr_number}`}>
               <header className="pr-ai-progress-heading"><Spinner /><div><span className="tag tag-accent">In progress</span><h3>Reviewing PR #{ai.pr_number}</h3><p className="muted">The review runs in the background. You can switch tabs while it works.</p></div></header>
               <ol className="pr-ai-steps" aria-label="Review progress">

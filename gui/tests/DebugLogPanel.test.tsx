@@ -38,9 +38,9 @@ it("renders chronological shared history as text and filters by exact level plus
   ]);
   expect(list.querySelector("script")).toBeNull();
   fireEvent.change(screen.getByLabelText("Level"), { target: { value: "WARN" } });
-  fireEvent.change(screen.getByLabelText("Search context or message"), { target: { value: "CAFÉ" } });
+  fireEvent.change(screen.getByLabelText("Filter entries"), { target: { value: "CAFÉ" } });
   expect(within(list).getAllByRole("listitem")).toHaveLength(1);
-  fireEvent.change(screen.getByLabelText("Search context or message"), { target: { value: "SYNC" } });
+  fireEvent.change(screen.getByLabelText("Filter entries"), { target: { value: "SYNC" } });
   expect(within(list).getAllByRole("listitem")).toHaveLength(1);
   fireEvent.change(screen.getByLabelText("Level"), { target: { value: "ERROR" } });
   expect(screen.getByText("No entries match these filters.")).toBeTruthy();
@@ -54,7 +54,7 @@ it("refreshes without reopening and retains the viewer filters", async () => {
   mount();
   await screen.findByText("Pane attached");
   fireEvent.change(screen.getByLabelText("Level"), { target: { value: "WARN" } });
-  fireEvent.change(screen.getByLabelText("Search context or message"), { target: { value: "sync" } });
+  fireEvent.change(screen.getByLabelText("Filter entries"), { target: { value: "sync" } });
   refresh();
   expect(await screen.findByText("New sync warning")).toBeTruthy();
   expect(screen.queryByText("Pane attached")).toBeNull();
@@ -87,7 +87,7 @@ it("hides cached history when this opening fails and loads it only after retry",
 it("states when only process-local history is available and closes with Escape", async () => {
   vi.mocked(invoke).mockResolvedValue({ ...view, entries: [], shared_history: false });
   const { onClose } = mount();
-  expect(await screen.findByText(/Shared database unavailable/)).toBeTruthy();
+  expect(await screen.findByText(/AMF's database is unavailable/)).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
+import { AgentSlug, agentName, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import ReviewSummaryPanel from "./ReviewSummaryPanel";
@@ -236,7 +236,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
     {ai.precall && <ConfirmCallout label="Review AI call" className="review-confirm" as="section">
-      <p>Background AI call: {ai.precall.title} · {ai.precall.harness}. This reads your files and uses your agent account's usage.</p>
+      <p>Background AI call: {ai.precall.title} · {agentName(ai.precall.harness)}. This reads your files and uses your agent account's usage.</p>
       {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
       {onEditPrompt && <button className="btn btn-secondary" disabled={commandBusy} onClick={onEditPrompt}>Edit prompt</button>}
@@ -282,7 +282,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       <p className="muted small">The answering agent reads the repository and reviewed diff. Answers stay in this review while it is open. Follow-ups include earlier answers for this review version.</p>
       <Field label="Review question"><textarea rows={4} value={question.text} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, text: event.target.value })} /></Field>
       <Field label="Answer with"><select value={question.harness} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, harness: event.target.value as AgentSlug })}>
-        {ai.harnesses.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
+        {ai.harnesses.map((harness) => <option key={harness} value={harness}>{agentName(harness)}</option>)}
       </select></Field>
       <button className="btn btn-primary" disabled={busy || ai.running || pending !== null || !question.text.trim()}>Ask review question</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => request("cancel")}>Cancel question</button>

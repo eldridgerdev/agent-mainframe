@@ -7,6 +7,11 @@ import type { FeatureEditor, NewSessionOptions } from "./sessionsApi";
 // types instead of re-declaring them per component.
 
 export type AgentSlug = "claude" | "opencode" | "codex" | "pi";
+
+/** The product name to show for an agent slug (selects, buttons, metadata).
+ * Unknown values are shown as they came. */
+export const AGENT_NAMES: Record<AgentSlug, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "Pi" };
+export const agentName = (slug: string): string => AGENT_NAMES[slug as AgentSlug] ?? slug;
 export type ModeSlug = "vibeless" | "vibe" | "supervibe";
 export type FeatureStatus = "active" | "idle" | "stopped";
 

@@ -43,6 +43,8 @@ export default function AgentAvailabilityPanel({ projectId, onClose, onSaved }: 
     {(busy, view) => {
       const shown = inherit ? (view.inherited_agents ?? []) : allowed;
       return <>
+        <p className="muted">Choose which installed agents AMF offers. This does not install an agent or sign you in to one; install
+          it yourself, then reload agents in New feature.</p>
         {projectId && <>
           <p className="mono muted">{view.repo}</p>
           <label className={`option ${inherit ? "option-selected" : ""}`}>
@@ -62,10 +64,10 @@ export default function AgentAvailabilityPanel({ projectId, onClose, onSaved }: 
         <p className="muted">{projectId
           ? "Project choices apply to new features and sessions in this repository. Save with Use global setting to remove this project's override."
           : "Choose the globally allowed agents for new features and sessions. Project allowed-agent settings take precedence."}
-          {" "}Only agents installed on this computer are offered. This does not install or sign in to an agent.</p>
+          {" "}Only agents installed on this computer are offered.</p>
         {projectId
           ? <p className="muted">Saves to <span className="mono">{view.config_path}</span>.
-            {view.source_path && view.source_path !== view.config_path && " The effective legacy config is copied to this file; the legacy file is kept unchanged."}</p>
+            {view.source_path && view.source_path !== view.config_path && " Settings were moved to this new location; the old file is left in place."}</p>
           : <p className="muted">Saved changes apply here immediately. Restart AMF's terminal app if it is open: it keeps the choices it started with,
             and saving settings from it puts them back.</p>}
         {!valid && <p role="alert">Select at least one agent.</p>}

@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
-import { PlanAction, PlanInput, PlanView, PrecallView } from "./api";
+import { agentName, PlanAction, PlanInput, PlanView, PrecallView } from "./api";
 import Markdown from "./Markdown";
 import { Icon, IconName, Spinner } from "./ui";
 
@@ -92,7 +92,7 @@ export default function PlanPanel({
             <Icon name="sparkles" />
             <div>
               <strong>{precall.title}</strong>
-              <p>This step calls {precall.harness}. Review the prompt if you like, then continue.</p>
+              <p>This step calls {agentName(precall.harness)}. Review the prompt if you like, then continue.</p>
             </div>
           </div>
           {precall.viewing && <pre className="doc doc-mono">{precall.preview}</pre>}
@@ -185,7 +185,7 @@ export default function PlanPanel({
             )}
           </div>
           <Actions>
-            {button("Draft plan now", "finish_early", input, "ghost")}
+            {button("Write the plan now", "finish_early", input, "ghost")}
             {button("Continue", "next", input, "primary")}
           </Actions>
         </>
@@ -223,7 +223,7 @@ export default function PlanPanel({
               </>
             }
           >
-            {button("Draft plan now", "finish_early", input, "ghost")}
+            {button("Write the plan now", "finish_early", input, "ghost")}
             {view.question.optional && button("Skip", "skip", undefined, "secondary")}
             {button("Continue", "next", input, "primary")}
           </Actions>
@@ -233,11 +233,11 @@ export default function PlanPanel({
       {view.phase === "ai_consent" && (
         <>
           <p className="plan-lead">The core questions are complete.</p>
-          <p className="muted">AI follow-ups and synthesis use agent tokens. Choose how to draft the plan.</p>
+          <p className="muted">Choose how to write the plan. The first two use your agent account's usage.</p>
           <div className="choice-cards">
-            <ChoiceCard icon="sparkles" title="Use AI follow-ups" body="The agent asks a few more targeted questions first." disabled={busy} onClick={() => void onAct("opt_in_ai")} />
-            <ChoiceCard icon="zap" title="Synthesize now" body="The agent drafts the plan from your answers." disabled={busy} onClick={() => void onAct("finish_early")} />
-            <ChoiceCard icon="file" title="Draft without AI" body="Build the plan straight from your answers." disabled={busy} onClick={() => void onAct("next")} />
+            <ChoiceCard icon="sparkles" title="Ask a few more questions" body="The agent asks a few targeted questions, then writes the plan (uses AI)." disabled={busy} onClick={() => void onAct("opt_in_ai")} />
+            <ChoiceCard icon="zap" title="Write the plan now" body="The agent writes the plan from your answers (uses AI)." disabled={busy} onClick={() => void onAct("finish_early")} />
+            <ChoiceCard icon="file" title="Write it without AI" body="AMF lays out your answers as the plan." disabled={busy} onClick={() => void onAct("next")} />
           </div>
           <Actions left={button("Back", "back", undefined, "ghost")} />
         </>
@@ -324,7 +324,7 @@ export default function PlanPanel({
         <div className="plan-cancel">
           {confirmCancel ? (
             <div className="callout callout-danger">
-              <p>Cancel this interview? The plan will not be accepted or launched.</p>
+              <p>Cancel this interview? No plan is kept or launched, and a feature that is still being set up is not created.</p>
               <div className="row">
                 <button className="btn btn-sm btn-ghost" onClick={() => setConfirmCancel(false)}>Keep planning</button>
                 {button("Cancel interview", "cancel", undefined, "danger")}

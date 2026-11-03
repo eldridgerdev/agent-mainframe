@@ -2154,12 +2154,12 @@ function PageHeader({
         {crumb && <div className="crumb">{crumb}</div>}
         <div className="page-title-row">
           {icon && <span className="page-icon"><Icon name={icon} size={18} /></span>}
-          <h1>{title}</h1>
+          <h1 title={title}>{title}</h1>
           {badge}
         </div>
         {subtitle && <div className="page-subtitle">{subtitle}</div>}
       </div>
-      {actions && <div className="row">{actions}</div>}
+      {actions && <div className="page-actions">{actions}</div>}
     </header>
   );
 }
@@ -2171,20 +2171,22 @@ interface Lifecycle {
   onStop: () => void;
 }
 
-function StartStopButton({ status, starting, stopping, onStart, onStop, size }: Lifecycle & {
+function StartStopButton({ status, starting, stopping, onStart, onStop, size, title }: Lifecycle & {
   status: Feature["status"];
   size?: "sm";
+  /** Tooltip on the Stop button, e.g. how many sessions it ends. */
+  title?: string;
 }) {
   // In lists every row has one of these, so they stay quiet; the feature
   // header's single Start is the primary action on its page.
-  const sm = size === "sm" ? " btn-sm" : "";
+  const list = size === "sm";
   return status === "stopped" ? (
-    <button className={`btn ${size === "sm" ? "btn-secondary" : "btn-primary"}${sm}`} onClick={onStart} disabled={starting}>
+    <button className={`btn btn-sm ${list ? "btn-secondary" : "btn-primary"}`} onClick={onStart} disabled={starting}>
       {starting ? <Spinner /> : <Icon name="play" size={12} />}
       {starting ? "Starting…" : "Start"}
     </button>
   ) : (
-    <button className={`btn ${size === "sm" ? "btn-ghost" : "btn-secondary"}${sm}`} onClick={onStop} disabled={stopping}>
+    <button className={`btn btn-sm ${list ? "btn-ghost" : "btn-secondary"}`} onClick={onStop} disabled={stopping} title={title}>
       {stopping ? <Spinner /> : <Icon name="stop" size={12} />}
       {stopping ? "Stopping…" : "Stop"}
     </button>
@@ -2232,21 +2234,32 @@ function ProjectView({
         }
         actions={
           <>
-            <button className="btn btn-secondary" aria-label="Project agent availability" onClick={onAgentAvailability}>
-              <Icon name="list" size={12} /> Agent availability
-            </button>
-            <button className="btn btn-secondary" onClick={onProjectPreference}>Preferred harness</button>
-            {project.is_git && <button className="btn btn-secondary" onClick={onIssues}>
-              <Icon name="list" size={12} /> Issues
+            {project.is_git && <button className="btn btn-ghost btn-sm" aria-label="Issues" title="Issues" onClick={onIssues}>
+              <Icon name="list" size={14} /><span className="btn-label-optional">Issues</span>
             </button>}
-            {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
-              <Icon name="inbox" size={12} /> PR Triage
-            </button>}
-            {project.is_git && <button className="btn btn-secondary" onClick={onPrReview}>
-              <Icon name="file" size={12} /> PR Review
-            </button>}
-            <button className="btn btn-primary" onClick={onNewFeature}>
-              <Icon name="plus" /> New feature
+            {project.is_git && <Menu
+              label="Pull request tools"
+              text="Pull request"
+              icon={null}
+              className="btn btn-ghost btn-sm"
+              title="Triage or review a pull request"
+              items={[
+                { label: "PR Triage", icon: "inbox", onSelect: onPrTriage },
+                { label: "PR Review", icon: "file", onSelect: onPrReview },
+              ]}
+            />}
+            <Menu
+              label="Project settings"
+              className="btn btn-ghost btn-icon btn-sm"
+              title="Project settings"
+              items={[
+                { label: "Agent availability", icon: "list", onSelect: onAgentAvailability },
+                { label: "Preferred harness", icon: "check", onSelect: onProjectPreference },
+              ]}
+            />
+            <span className="page-actions-sep" aria-hidden="true" />
+            <button className="btn btn-primary btn-sm" onClick={onNewFeature}>
+              <Icon name="plus" size={14} /> New feature
             </button>
           </>
         }
@@ -2490,71 +2503,71 @@ function FeatureView({
               : modeName(feature.mode)}
             {feature.is_worktree && (
               <>
-                <span className="dot-sep" />
-                <span className="mono truncate" title={feature.workdir}>{feature.workdir}</span>
+                <span className="dot-sep workdir" />
+                <span className="mono truncate workdir" title={feature.workdir}>{feature.workdir}</span>
               </>
             )}
           </>
         }
         actions={
           <>
-            <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
-              {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
+            <button className="btn btn-ghost btn-icon btn-sm" aria-label="Quick TODO" title="Quick TODO" onClick={onQuickTodo}>
+              <Icon name="list" size={14} />
             </button>
-            <button className="btn btn-secondary" onClick={onQuickTodo}>
-              <Icon name="list" size={12} /> Quick TODO
-            </button>
-            <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
-              <Icon name="file" size={12} /> Learning
-            </button>
-            {project.is_git && <button className="btn btn-secondary" onClick={onDiff}>
-              <Icon name="branch" size={12} /> Changes
+            {project.is_git && <button className="btn btn-ghost btn-sm" aria-label="Changes" title="Changes on this branch" onClick={onDiff}>
+              <Icon name="branch" size={14} /><span className="btn-label-optional">Changes</span>
             </button>}
-            {pendingEdits > 0 && <button className="btn btn-secondary" onClick={onSupervisedEdits}>
-              <Icon name="check" size={12} /> Supervised edits
-              {pendingEdits > 0 && <span className="nav-count nav-count-attention">{pendingEdits}</span>}
+            {pendingEdits > 0 && <button className="btn btn-ghost btn-sm" onClick={onSupervisedEdits}>
+              <Icon name="check" size={14} /> Supervised edits
+              <span className="nav-count nav-count-attention">{pendingEdits}</span>
             </button>}
-            {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
-              {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
-            </button>}
-            {(feature.review_source || feature.triage_source) && <button className="btn btn-secondary" onClick={() => setIntegrateCompanion(true)}>{feature.triage_source && !feature.review_source ? `Integrate PR #${feature.triage_source.pr_number} fixes…` : "Integrate companion…"}</button>}
-            <button className="btn btn-secondary" onClick={() => onScreenshots(null)}>Screenshots</button>
-            {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
-            {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
-              <Icon name="inbox" size={12} /> PR Triage
-            </button>}
-            {project.is_git && <button className="btn btn-secondary" onClick={onPrWorkspace}>
-              <Icon name="file" size={12} /> PR Workspace (experimental)
-            </button>}
+            {(feature.review_source || feature.triage_source) && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setIntegrateCompanion(true)}
+                title={feature.triage_source && !feature.review_source
+                  ? `Integrate PR #${feature.triage_source.pr_number} fixes from the companion feature`
+                  : "Integrate the companion feature's commits"}>
+                {feature.triage_source && !feature.review_source ? "Integrate fixes…" : "Integrate companion…"}
+              </button>
+            )}
             <Menu
-              label="Plan"
-              icon="sparkles"
-              text="Plan"
-              className="btn btn-secondary"
+              label="Feature tools"
+              text="Tools"
+              icon={null}
+              className="btn btn-ghost btn-sm"
+              title="Plan, review and pull request tools"
+              indicator={reviewBusy || learningBusy}
               items={[
+                { section: "Plan" },
                 { label: "Plan interview", icon: "sparkles", hint: "Full", onSelect: () => onPlan(false) },
                 { label: "Quick Plan", icon: "zap", hint: "Fast", onSelect: () => onPlan(true) },
+                { section: "Review" },
+                { label: "Learning", icon: "search", disabled: learningBusy, hint: learningBusy ? "Working…" : undefined, onSelect: onLearning },
+                ...(project.is_git ? [{
+                  label: "Final Review", icon: "check" as const, disabled: reviewBusy,
+                  hint: reviewBusy ? "Working…" : undefined, onSelect: onReview,
+                }] : []),
+                { label: "Screenshots", icon: "file", onSelect: () => onScreenshots(null) },
+                ...(project.is_git ? [
+                  { section: "Pull request" },
+                  { label: "PR Triage", icon: "inbox" as const, onSelect: onPrTriage },
+                  { label: "PR Workspace", icon: "file" as const, hint: "Experimental", onSelect: onPrWorkspace },
+                ] : []),
               ]}
             />
-            {activeSession && !isStopped && (
-              <SessionStartStopButton
-                label={activeSession.label}
-                running={activeSessionRunning}
-                {...sessionLifecycle(activeSession)}
-              />
-            )}
+            <span className="page-actions-sep" aria-hidden="true" />
             <StartStopButton
               status={feature.status}
               starting={starting}
               stopping={stopping}
               onStart={onStart}
               onStop={onStop}
+              title={sessions.length > 1 ? `Stop feature (ends all ${sessions.length} sessions)` : "Stop feature"}
             />
             <Menu
               label="More feature actions"
-              icon="more"
-              className="btn btn-secondary btn-icon"
+              className="btn btn-ghost btn-icon btn-sm"
               items={[
+                { section: "Mode" },
                 ...vibeModes.map((mode) => {
                   const unsupported = mode.unsupported_agents?.includes(feature.agent) ?? false;
                   return {
@@ -2567,10 +2580,13 @@ function FeatureView({
                     onSelect: () => onVibeMode(mode.slug),
                   };
                 }),
-                ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
+                { section: "Feature" },
+                // While edits wait, the header's counted button is the way in.
+                ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Rename, ready and summary…", icon: "check" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
+                "separator",
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />
@@ -2612,6 +2628,8 @@ function FeatureView({
                       onSelect: sessionLifecycle(session).onStart,
                     },
                   { label: "Rename session…", icon: "check" as const, onSelect: () => onFeatureActions(session.id) },
+                  { label: "Screenshots for this session", icon: "file", onSelect: () => onScreenshots(session.id) },
+                  "separator",
                   { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
                 ]}
               />
@@ -2623,6 +2641,10 @@ function FeatureView({
             <Icon name="terminal" size={14} /> Agent
           </button>
         )}
+        <button type="button" className="btn btn-ghost btn-icon btn-sm tab-add" aria-label="New session"
+          title="New session" onClick={onNewSession} disabled={newSessionLoading}>
+          {newSessionLoading ? <Spinner /> : <Icon name="plus" size={14} />}
+        </button>
         <span className="tabs-spacer" />
         {(editors.length > 0 || activeTab === VSCODE_TAB) && (
           <button
@@ -2714,6 +2736,7 @@ function FeatureView({
                 onFreshSession={onReusePrompt}
                 onPrTriage={onPrTriage}
                 onSupervisedEdits={onSupervisedEdits}
+                onStartPlan={() => onPlan(false)}
               />
             )}
           </div>

@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 def select(label, value):
     evaluate(
@@ -202,8 +213,8 @@ try:
     x.sync()
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Round invoice totals")')
     click("Round invoice totals")
-    wait('document.body.innerText.includes("Stopped") && document.body.innerText.includes("Final Review")')
-    click("Final Review")
+    wait('document.body.innerText.includes("Stopped") && !!document.querySelector(`[aria-label="Feature tools"]`)')
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")')
     choose_file("invoice.ts")
     capture("001-review-ai-controls.png", "A stopped feature offers walkthroughs, a changeset overview, co-review and questions without starting a terminal agent.", ["Final Review · Round invoice totals", "Generate walkthrough", "AI co-review file", "Ask about file", "Changeset overview"], 'document.querySelectorAll(".diff-lines:not(.diff-split)").length>0')
@@ -283,7 +294,7 @@ try:
     assert "Reject" in progress["decisions"]["invoice.ts"]
     click("Pause review")
     wait('!document.querySelector("[role=dialog]")')
-    click("Final Review")
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")')
     choose_file("invoice.ts")
     open_detail("Saved line comments")

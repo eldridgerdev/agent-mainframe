@@ -60,7 +60,7 @@ with GuiFrames.from_argv() as frames:
     frames.resize(1360,980)
     action('wait',text='Invoice rounding',scope='nav[aria-label=Workspace]')
     action('click',selector='nav[aria-label=Workspace] [aria-describedby="tree-feature-proof-feature"]')
-    action('wait',text='Learning',scope='main')
+    action('wait',text='Tools',scope='main')
     initial_rows, initial_panes = rows(), panes()
     manager(); state_is('Not installed')
     assert frames.evaluate('document.querySelectorAll(`.syntax-languages tbody tr`).length')==16
@@ -85,7 +85,7 @@ with GuiFrames.from_argv() as frames:
     assert library.read_bytes()==b'externally replaced parser' and source.exists()
     capture('006-stale-refusal.png','An external library replacement invalidates the confirmed revision. The stale uninstall is refused and preserves the replacement.', ['Parser files changed.','Uninstall the JSON parser?'],allow_alert=True)
     click('Refresh languages'); state_is('Needs repair'); parser_action('Repair'); confirm('Repair'); state_is('Installed')
-    close_manager(); click('Learning','main')
+    close_manager(); click('Feature tools','main'); click('Learning','main')
     action('wait',text='invoice.json',scope='[role=dialog][aria-label="Learning"]')
     click('invoice.json','[role=dialog][aria-label="Learning"]')
     wait('!!document.querySelector(`.learning-reader .syn-string`) || !!document.querySelector(`.learning-content .syn-string`) || !!document.querySelector(`[role=dialog][aria-label="Learning"] .syn-string`)')

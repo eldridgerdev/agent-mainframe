@@ -165,8 +165,11 @@ def checked():
     return evaluate('Array.from(document.querySelectorAll("input[type=checkbox]")).filter(e=>e.checked).map(e=>e.parentElement.textContent.trim())')
 
 def open_settings():
-    wait('!!document.querySelector(`button[aria-label="Project agent availability"]`)')
-    evaluate('document.querySelector(`button[aria-label="Project agent availability"]`).click()')
+    # Project-scoped agent availability sits in the project header's settings menu.
+    wait('!!document.querySelector(`button[aria-label="Project settings"]`)')
+    evaluate('document.querySelector(`button[aria-label="Project settings"]`).click()')
+    wait('Array.from(document.querySelectorAll("[role=menuitem]")).some(b=>b.textContent.trim()==="Agent availability")')
+    evaluate('Array.from(document.querySelectorAll("[role=menuitem]")).find(b=>b.textContent.trim()==="Agent availability").click()')
     wait('document.querySelectorAll("input[type=checkbox]").length===4 && !document.body.innerText.includes("Loading or saving settings…")')
 
 def close_settings():
@@ -229,7 +232,7 @@ try:
     click('Cancel'); wait('!document.querySelector(`[role=dialog]`)'); click('Round invoice totals')
     wait('!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
     assert evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).value') == draft
-    click('New session'); wait('!!document.querySelector(`[role=dialog][aria-label="New session"]`)')
+    evaluate('document.querySelector(`button.tab-add[aria-label="New session"]`).click()'); wait('!!document.querySelector(`[role=dialog][aria-label="New session"]`)')
     types = evaluate('Array.from(document.querySelectorAll("input[name=new-session-kind]")).map(e=>e.value)')
     assert 'codex' in types and 'pi' in types and 'claude' not in types and 'opencode' not in types, types
     capture('006-project-agent-new-session.png','A later New session form offers project Codex/Pi choices while the existing Claude session and unsent composer remain intact.', ['New session','Codex','Pi','Create session'])

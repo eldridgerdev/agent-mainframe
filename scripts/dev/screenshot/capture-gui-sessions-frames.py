@@ -197,7 +197,7 @@ dialog = 'document.querySelector("[role=dialog][aria-label=\\"New session\\"]")'
 
 
 def open_picker():
-    click("New session")
+    evaluate('document.querySelector(`button.tab-add[aria-label="New session"]`).click()')
     wait(f"!!{dialog}")
 
 

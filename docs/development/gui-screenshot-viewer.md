@@ -13,7 +13,7 @@ The evidence contract is defined in [screenshot-evidence-contract.md](screenshot
 | Desktop framework | `gui/package.json`: React 18, TypeScript, Vite, Tauri 2 | Components, API DTOs and styling under `gui/src/`; desktop commands under `gui/src-tauri/` |
 | Shared backend | `src/gui_contract.rs`: `GuiHandle` owns a private `App`; `FeatureTarget` and `SessionTarget` carry stable IDs | A narrow GUI adapter calls evidence orchestration under `src/app/`; no filesystem reads or GitHub retrieval in renderers |
 | Desktop bridge | `gui/src-tauri/src/main.rs`: registered Tauri commands, `AppState(Mutex<GuiHandle>)`; frontend calls `invoke` | Plan work under the handle lock, run blocking retrieval/decoding outside it, then recheck ownership and selection before applying results |
-| PR Triage entry | `gui/src/App.tsx`: Git feature page's **PR Triage** action opens `PrTriagePanel` | Render inline description/comment/reply images and enlarge one image; retain comment selection and drafts |
+| PR Triage entry | `gui/src/App.tsx`: Git feature page's **Tools → PR Triage** action opens `PrTriagePanel` | Render inline description/comment/reply images and enlarge one image; retain comment selection and drafts |
 | PR selection | `gui/src/PrTriagePanel.tsx`, `gui/src/prTriageApi.ts`: picker, loading and review stages | Scope requests to workflow ID, revision, repository, PR number and resolved head SHA; clear the screenshot selection when the PR changes |
 | Feature entry | `FeatureView` in `gui/src/App.tsx`: page header actions, including stopped features | Add feature evidence browsing independently of Git support or running state |
 | Session entry | `FeatureView`: `activeTab`, `activeSession` and stable `SessionTarget` | Offer the selected session's evidence; feature browsing must also include historical sessions |
@@ -206,7 +206,8 @@ in the local `AMF_PLAN.md` progress notes.
 
 ## Implemented coverage and acceptance
 
-The feature header's **Screenshots** and **Session screenshots** actions and the
+The feature header's **Tools → Screenshots** item, each session tab's
+**Screenshots for this session** menu item, and the
 workspace's **Validation screenshots** navigation open local evidence galleries.
 The workspace entry includes historical evidence whose original sessions/features
 have been deleted. After the user adjustment on 2026-10-08, PR Triage/PR Review

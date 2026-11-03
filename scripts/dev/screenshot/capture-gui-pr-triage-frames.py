@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 def select(label, value):
     evaluate(
@@ -189,8 +200,8 @@ try:
     x.sync()
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Round invoice totals")')
     click("Round invoice totals")
-    wait('document.body.innerText.includes("Stopped") && ' + has_button("PR Triage"))
-    click("PR Triage")
+    wait('document.body.innerText.includes("Stopped") && !!document.querySelector(`[aria-label="Feature tools"]`)')
+    header_menu("Feature tools", "PR Triage")
     wait('!!document.querySelector(".pr-entry")')
     capture("001-pr-list.png", "PR Triage opens on the repository's open pull requests. The branch's own PR is marked, drafts are labelled, and a PR can also be opened by number. Nothing has been fetched beyond the list.", ["PR Triage · Round invoice totals", "#12", "Round invoice totals to cents", "This branch", "Yours", "Draft", "Include closed and merged", "Open by number"], '!document.body.innerText.includes("Initial invoice API")')
     assert ai_calls() == [] and gh_writes() == []

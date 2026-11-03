@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { asGuiError, type SessionTarget } from "./api";
 import Markdown from "./Markdown";
@@ -24,6 +24,23 @@ const TUI_KEY: Record<SidebarAction["kind"], string> = {
   supervised_edits: "leader V",
 };
 
+/** Viewport width below which the agent sidebar starts collapsed. */
+export const NARROW_QUERY = "(max-width: 900px)";
+
+function useMediaQuery(query: string): boolean {
+  const get = () => (typeof window.matchMedia === "function" ? window.matchMedia(query).matches : false);
+  const [matches, setMatches] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, [query]);
+  return matches;
+}
+
 export const sessionSidebarKey = (target: SessionTarget) =>
   ["session-sidebar", target.project_id, target.feature_id, target.session_id];
 
@@ -37,6 +54,7 @@ export default function SessionSidebar({
   onPrTriage,
   onSupervisedEdits,
   onFreshSession,
+  onStartPlan,
 }: {
   target: SessionTarget;
   /** Append a prompt to this session's composer draft. */
@@ -44,8 +62,17 @@ export default function SessionSidebar({
   onPrTriage: () => void;
   onSupervisedEdits: () => void;
   onFreshSession: (target: SessionTarget, draft: string) => void;
+  /** Offered on the Plan card when no plan is selected yet. */
+  onStartPlan?: () => void;
 }) {
-  const [collapsed, setCollapsed] = useSidebarCollapsed("sessionSidebar");
+  const [storedCollapsed, setStoredCollapsed] = useSidebarCollapsed("sessionSidebar");
+  // Below NARROW_QUERY the terminal needs the width more than the sidebar
+  // does, so the sidebar starts on its rail there. Opening it while narrow
+  // lasts for this view only; the remembered wide-window choice is untouched.
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [narrowOpen, setNarrowOpen] = useState(false);
+  const collapsed = narrow ? !narrowOpen : storedCollapsed;
+  const setCollapsed = (next: boolean) => (narrow ? setNarrowOpen(!next) : setStoredCollapsed(next));
   useSidebarShortcut("sessionSidebar", () => setCollapsed(!collapsed));
   const sidebar = useQuery({
     queryKey: sessionSidebarKey(target),
@@ -115,6 +142,7 @@ export default function SessionSidebar({
             onReusePrompt={onReusePrompt}
             onPrTriage={onPrTriage}
             onSupervisedEdits={onSupervisedEdits}
+            onStartPlan={onStartPlan}
           />
         ))}
         {view?.notes.map((note) => <p key={note} className="agent-sidebar-note">{note}</p>)}
@@ -153,6 +181,7 @@ function Section({
   onReusePrompt,
   onPrTriage,
   onSupervisedEdits,
+  onStartPlan,
 }: {
   target: SessionTarget;
   section: SessionSidebarSection;
@@ -161,6 +190,7 @@ function Section({
   onReusePrompt: (prompt: string) => void;
   onPrTriage: () => void;
   onSupervisedEdits: () => void;
+  onStartPlan?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [showFull, setShowFull] = useState(false);
@@ -181,6 +211,9 @@ function Section({
   });
   const fullPrompt = section.actions.find((action) => action.kind === "reuse_prompt");
   const completeTodo = section.actions.find((action) => action.kind === "complete_todo");
+  // Plan lives in the header's Tools menu; an empty Plan card points there too.
+  const startPlan = section.kind === "plan" && onStartPlan
+    && !section.actions.some((action) => action.kind === "open_plan") ? onStartPlan : undefined;
 
   const button = (action: SidebarAction) => {
     const title = (text: string) => `${text} (TUI: ${TUI_KEY[action.kind]})`;
@@ -219,7 +252,13 @@ function Section({
     >
       <header className="sb-section-head">
         <h3>{section.title}</h3>
-        {section.actions.length > 0 && <div className="sb-actions">{section.actions.map(button)}</div>}
+        {(section.actions.length > 0 || startPlan) && (
+          <div className="sb-actions">
+            {section.actions.map(button)}
+            {startPlan && <button type="button" className="sb-action" title="Start a plan interview for this feature"
+              onClick={startPlan}>Start plan</button>}
+          </div>
+        )}
       </header>
       {section.context && <ContextMeter meter={section.context} onFreshContext={onFreshContext} />}
       <div className="sb-lines">

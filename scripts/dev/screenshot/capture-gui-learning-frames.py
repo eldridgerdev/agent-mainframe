@@ -88,6 +88,17 @@ def click_js(button, shift=False):
 def click(text):
     click_js(f'Array.from(document.querySelectorAll("button")).find(b=>b.offsetParent!==null && (b.textContent.trim()==={json.dumps(text)} || b.querySelector(".nav-label")?.textContent.trim()==={json.dumps(text)}))')
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
@@ -204,7 +215,7 @@ def close_reader():
 
 
 def open_reader():
-    click('Learning')
+    header_menu("Feature tools", "Learning")
     wait('!!document.querySelector(`[role=dialog][aria-label="Learning"]`)')
     field('Answering harness', 'codex')
     wait('document.querySelector(".learning-question button.btn-primary").textContent.trim()==="Ask codex"')

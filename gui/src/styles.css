@@ -32,7 +32,7 @@
   --border-control: #82878c;
   --text: #1a1e24;
   --text-muted: #5a6370;
-  --text-faint: #626a75;
+  --text-faint: #5f6772;
   --accent: #4954c4;
   --accent-hover: #3f49b0;
   --accent-fg: #ffffff;
@@ -73,12 +73,12 @@
     --surface: #2b323d;
     --surface-2: #333c49;
     --surface-3: #3c4756;
-    --border: #94a3b8;
-    --border-strong: #afbdd0;
+    --border: #526074;
+    --border-strong: #8a96a5;
     --border-control: #9aa8bb;
     --text: #f1f4f8;
-    --text-muted: #d0d8e3;
-    --text-faint: #c1cad6;
+    --text-muted: #c1cad6;
+    --text-faint: #b5bec9;
     --accent: #bec7ff;
     --accent-hover: #c5ccff;
     --accent-fg: #0c0f1c;
@@ -247,7 +247,8 @@ kbd {
   margin: 2px 0 0;
   padding: 0 8px;
   height: 30px;
-  border: 1px solid var(--border);
+  /* A text field: drawn with the control boundary (3:1), not the card border. */
+  border: 1px solid var(--border-control);
   border-radius: 7px;
   background: var(--surface);
   color: var(--text-faint);
@@ -1756,12 +1757,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   --surface: #2b323d;
   --surface-2: #333c49;
   --surface-3: #3c4756;
-  --border: #94a3b8;
-  --border-strong: #afbdd0;
+  --border: #526074;
+  --border-strong: #8a96a5;
   --border-control: #9aa8bb;
   --text: #f1f4f8;
-  --text-muted: #d0d8e3;
-  --text-faint: #c1cad6;
+  --text-muted: #c1cad6;
+  --text-faint: #b5bec9;
   --accent: #bec7ff;
   --accent-hover: #c5ccff;
   --accent-fg: #0c0f1c;

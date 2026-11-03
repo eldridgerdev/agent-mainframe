@@ -2619,7 +2619,15 @@ function FeatureView({
                 className="btn btn-ghost btn-icon btn-sm"
                 items={[
                   isRunning(session)
-                    ? { label: "Stop session", icon: "stop", onSelect: sessionLifecycle(session).onStop }
+                    ? {
+                      label: "Stop session",
+                      icon: "stop",
+                      // The header's per-session Stop (and its spinner) is gone;
+                      // keep the in-flight state visible here instead.
+                      disabled: sessionLifecycle(session).stopping,
+                      hint: sessionLifecycle(session).stopping ? "Stopping…" : undefined,
+                      onSelect: sessionLifecycle(session).onStop,
+                    }
                     : {
                       label: "Start session",
                       icon: "play",

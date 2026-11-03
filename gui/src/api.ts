@@ -924,7 +924,10 @@ export interface ReviewView {
 export interface ReviewFinish {
   approved: number;
   needs_work: number;
+  /** Every file with no verdict, AMF-generated ones included. */
   skipped: number;
+  /** How many of `skipped` are AMF-generated (left out while those files are folded away). */
+  amf_skipped: number;
   file_comments: number;
   line_comments: number;
   general_feedback: boolean;
@@ -947,7 +950,10 @@ export interface ReviewCompletion {
 }
 export interface ReviewSummary {
   rows: { path: string | null; title: string; text: string; severity: ReviewSeverity | null; suggestion: string | null; apply_blocked: string | null }[];
+  /** Every file with no verdict, AMF-generated ones included. */
   undecided: number;
+  /** How many of `undecided` are AMF-generated (left out while those files are folded away). */
+  amf_undecided: number;
   pending_suggestions: number;
   failures: string[];
 }
@@ -1002,7 +1008,9 @@ export type ReviewAction =
   | { kind: "cancel_preparation"; operation_id: string }
   | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" | "cancel_check" }
   | { kind: "run_check"; command: string }
-  | { kind: "complete"; check_command: string | null; apply_suggestions: number; handoff_session: string | null; handoff_revision?: string | null; deliver: boolean }
+  | { kind: "complete"; check_command: string | null; apply_suggestions: number; handoff_session: string | null; handoff_revision?: string | null; deliver: boolean;
+    /** AMF-generated files were folded away: leave undecided ones out of the recorded tally. */
+    amf_hidden?: boolean }
   | { kind: "history_open" | "history_load_older" | "history_close" }
   | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }

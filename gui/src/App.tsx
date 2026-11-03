@@ -88,6 +88,7 @@ import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import ProjectPreferencePanel from "./ProjectPreferencePanel";
 import WelcomePanel from "./WelcomePanel";
+import { BrowseButton, PathInputRow } from "./BrowseButton";
 import { useCreationHarness } from "./useCreationHarness";
 import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
 import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
@@ -2812,6 +2813,11 @@ function useOfferedAgents(projectId: string | null, supported: HarnessInfo[]): H
   return allowed.data ?? supported;
 }
 
+/** The last segment of a typed or picked path, used to suggest a project name. */
+function folderName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+}
+
 export function CreateProjectForm({
   agents,
   pending,
@@ -2840,21 +2846,31 @@ export function CreateProjectForm({
   const trimmed = path.trim();
   const pathCheck = check && check.path === trimmed ? check : null;
 
-  async function checkPath() {
-    if (!trimmed) { setCheck(null); return; }
-    const projectName = name.trim() || trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "project";
+  // `candidate` is a path that has not reached state yet (a Browse… pick).
+  async function checkPath(candidate: string = trimmed, currentName: string = name) {
+    const target = candidate.trim();
+    if (!target) { setCheck(null); return; }
+    const projectName = currentName.trim() || folderName(target) || "project";
     try {
       // A dry run validates the folder and finds the repository root; it creates nothing.
-      const response = await createProject({ path: trimmed, project_name: projectName, preferred_agent: null, dry_run: true });
-      setCheck({ path: trimmed, ok: true, message: response.is_git
+      const response = await createProject({ path: target, project_name: projectName, preferred_agent: null, dry_run: true });
+      setCheck({ path: target, ok: true, message: response.is_git
         ? `Git repository found at ${response.project_path}.`
         : "This folder is not a git repository. AMF can still use it, but features will share this folder instead of getting their own branch and checkout." });
     } catch (cause) {
       const message = asGuiError(cause).message;
       // A name clash is about the name field, not the folder.
-      if (/already exists/.test(message)) setCheck({ path: trimmed, ok: true, message: "" });
-      else setCheck({ path: trimmed, ok: false, message });
+      if (/already exists/.test(message)) setCheck({ path: target, ok: true, message: "" });
+      else setCheck({ path: target, ok: false, message });
     }
+  }
+
+  function changePath(next: string): string {
+    setPath(next);
+    onEdit();
+    const nextName = nameEdited ? name : folderName(next);
+    if (!nameEdited) setName(nextName);
+    return nextName;
   }
   const errorId = useId();
 
@@ -2884,23 +2900,29 @@ export function CreateProjectForm({
         <Field label="Repository path" hint={pathCheck?.message
           ? <span className={pathCheck.ok ? undefined : "field-error"} role={pathCheck.ok ? "status" : "alert"}>{pathCheck.message}</span>
           : "The folder of a git repository, for example the one you cloned."}>
-          <input
-            className="mono"
-            value={path}
-            onChange={(event) => {
-              setPath(event.target.value);
-              onEdit();
-              if (!nameEdited) {
-                setName(event.target.value.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-              }
-            }}
-            onBlur={() => void checkPath()}
-            placeholder="/home/you/code/my-repo"
-            required
-            autoFocus
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? errorId : undefined}
-          />
+          <PathInputRow browse={
+            <BrowseButton
+              kind="directory"
+              label="Browse for repository folder"
+              dialogTitle="Choose a repository folder"
+              defaultPath={trimmed}
+              disabled={pending}
+              // A pick is checked the same way leaving the field is.
+              onPick={(picked) => { const nextName = changePath(picked); void checkPath(picked, nextName); }}
+            />
+          }>
+            <input
+              className="mono"
+              value={path}
+              onChange={(event) => { changePath(event.target.value); }}
+              onBlur={() => void checkPath()}
+              placeholder="/home/you/code/my-repo"
+              required
+              autoFocus
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? errorId : undefined}
+            />
+          </PathInputRow>
         </Field>
         {error && (
           <p id={errorId} className="field-error" role="alert">

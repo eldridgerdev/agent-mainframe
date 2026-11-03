@@ -1010,3 +1010,15 @@ recorded head branch on `origin` and is refused when that branch is missing
 the triage source checkout has out, which the preview names. The workflow makes
 no GitHub call and starts no agent. Creating triage companions in the GUI remains
 TUI-only. See [feedback destination validation](../docs/development/gui-review-feedback-destinations.md).
+
+### Browse for paths
+
+**New project**'s repository path and the Plan interview's reference document
+field have a **Browse…** button that opens the system folder or file picker
+(Tauri's dialog plugin; on Linux and WSLg this is the GTK3 file chooser, which
+the WebKitGTK prerequisites already install). A chosen folder is checked the
+same way as leaving the field, and cancelling the picker leaves the field as it
+was. Typing or pasting a path still works, and is the only way in a plain
+browser (`npm run dev` without Tauri), where the button is hidden. The app's
+capability grants only `dialog:allow-open`: the picker returns a path to the
+page and gives it no filesystem access.

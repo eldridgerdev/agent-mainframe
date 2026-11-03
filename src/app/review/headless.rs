@@ -33,10 +33,37 @@ pub(crate) struct ReviewFeedbackDispatch {
     pub(crate) review_harness: Option<crate::project::AgentKind>,
 }
 
+/// Which files a recorded round's tally (files reviewed / skipped) covers.
+///
+/// The terminal review counts every file: its finish prompt already names
+/// how many undecided files are AMF's own (`undecided_amf_note`), so they
+/// are recorded as skipped. The desktop review folds AMF-generated files
+/// away and leaves them out of its counts while they are hidden, so a
+/// completion from there can ask for the tally to match what was visible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum RoundTally {
+    /// Every file in the review (the TUI's behaviour).
+    #[default]
+    AllFiles,
+    /// Leave AMF-generated files that have no verdict out of the totals:
+    /// the reviewer never saw them, so they were not skipped. Decided AMF
+    /// files still count, and their feedback is recorded either way.
+    ExcludeHiddenAmf,
+}
+
 /// Cap on how much of a check command's combined stdout/stderr is kept, so a
 /// noisy build/test failure can't blow up the feedback file or the agent
 /// prompt built from it. `checks::combine_output` divides it between streams.
 pub(super) const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
+
+/// ` (N AMF-generated file(s) hidden, not counted)` for a round recorded
+/// with [`RoundTally::ExcludeHiddenAmf`], else empty.
+fn hidden_amf_note(hidden: usize) -> String {
+    match hidden {
+        0 => String::new(),
+        n => format!(" ({n} AMF-generated file(s) hidden, not counted)"),
+    }
+}
 
 impl App {
     /// Generate a walkthrough for the current file when it has no developer
@@ -679,7 +706,7 @@ impl App {
     /// optional build/test-gate `check` outcome, then dispatch an actionable
     /// round to the chosen fix target.
     pub(super) fn complete_final_review(&mut self, check: Option<CheckOutcome>) -> Result<()> {
-        if let Some(dispatch) = self.record_final_review_round(check) {
+        if let Some(dispatch) = self.record_final_review_round(check, RoundTally::AllFiles) {
             self.dispatch_review_feedback(
                 dispatch.from_view,
                 dispatch.summary,
@@ -699,9 +726,11 @@ impl App {
     /// feedback write also yields `None`, but leaves the review open with an
     /// error message so callers can retry. Lets the desktop interface confirm
     /// the handoff separately while sharing every recording rule with the TUI.
+    /// `tally` chooses which files the round's counts cover ([`RoundTally`]).
     pub(crate) fn record_final_review_round(
         &mut self,
         check: Option<CheckOutcome>,
+        tally: RoundTally,
     ) -> Option<ReviewFeedbackDispatch> {
         let (
             workdir,
@@ -716,6 +745,7 @@ impl App {
             review_harness,
             applied_suggestions,
             suggestion_apply_failures,
+            hidden_amf,
         ) = match &self.mode {
             AppMode::DiffViewer(state) => {
                 // Only failures whose suggestion is still open describe work
@@ -734,6 +764,10 @@ impl App {
                     state.review_harness.clone(),
                     state.applied_suggestions.clone(),
                     suggestion_apply_failures,
+                    match tally {
+                        RoundTally::AllFiles => 0,
+                        RoundTally::ExcludeHiddenAmf => state.undecided_counts().1,
+                    },
                 )
             }
             AppMode::DiffViewerLoading(state) => {
@@ -744,7 +778,9 @@ impl App {
             _ => return None,
         };
 
-        let total = files.len();
+        // Hidden AMF files have no verdict, so they come off the total and
+        // the skipped count together; approvals and rejections are unaffected.
+        let total = files.len().saturating_sub(hidden_amf);
         let mut approved = 0usize;
         let mut rejected: Vec<(String, String, Severity)> = Vec::new();
         for file in &files {
@@ -831,8 +867,11 @@ impl App {
                     &file_comments,
                 );
             }
-            self.message = Some(if total == 0 {
+            let hidden_note = hidden_amf_note(hidden_amf);
+            self.message = Some(if files.is_empty() {
                 "Final review: no changes against the base branch".to_string()
+            } else if total == 0 {
+                format!("Final review complete: no reviewed files{hidden_note}")
             } else {
                 let check_note = match &check {
                     Some(c) => format!(" (check `{}` passed)", c.command),
@@ -841,7 +880,7 @@ impl App {
                 let local_note =
                     local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
                 format!(
-                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
+                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}{hidden_note}",
                     if skipped > 0 {
                         format!(", {skipped} skipped")
                     } else {
@@ -975,9 +1014,10 @@ impl App {
             };
             let local_note =
                 local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
+            let hidden_note = hidden_amf_note(hidden_amf);
             let summary = format!(
                 "Final review: {approved} approved, {} need work, {skipped} skipped\
-                 {file_comment_note}{comment_note}{check_note}{local_note} — feedback saved to .claude/final-review-feedback.md",
+                 {file_comment_note}{comment_note}{check_note}{local_note}{hidden_note} — feedback saved to .claude/final-review-feedback.md",
                 rejected.len()
             );
             // Optionally mirror the feedback onto the branch's GitHub PR as a

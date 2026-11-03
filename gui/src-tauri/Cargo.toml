@@ -15,6 +15,9 @@ tauri-build = { version = "2", features = [] }
 # upfront presentation-free core-crate split.
 agent-mainframe = { path = "../.." }
 tauri = { version = "2", features = [] }
+# Native folder/file pickers behind the GUI's Browse… buttons. Capability is
+# scoped to `dialog:allow-open` only (capabilities/default.json).
+tauri-plugin-dialog = "2.7.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

@@ -78,8 +78,8 @@
 .doc-mono { font-family: var(--mono); font-size: var(--fs-sm); max-height: 50vh; }
 
 .attach { display: flex; flex-direction: column; gap: 8px; }
-.attach-row { display: flex; align-items: center; gap: 8px; color: var(--text-faint); }
-.attach-row input { height: var(--h-md); font-size: var(--fs-md); }
+.attach-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-faint); }
+.attach-row input { flex: 1 1 0; min-width: 0; height: var(--h-md); font-size: var(--fs-md); }
 .attach-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .chip {
   max-width: 100%;

@@ -57,24 +57,25 @@ impl GithubProblemKind {
         }
     }
 
+    /// What to do, without "then press Retry": a panel adds that only when it
+    /// offers Retry, and [`GithubProblem::summary`] says "try again" instead.
+    /// A message ending in `:` is followed by [`Self::command`].
     pub fn message(self) -> &'static str {
         match self {
             Self::CliMissing => {
                 "Pull requests are read with the GitHub CLI (gh), and AMF could not run it. \
-                 Install it from cli.github.com, then press Retry."
+                 Install it from cli.github.com."
             }
             Self::NotSignedIn => {
                 "Pull requests are read with the GitHub CLI (gh). It is installed but not signed in \
-                 to GitHub. Run this in a terminal, then press Retry."
+                 to GitHub. Run this in a terminal:"
             }
             Self::RateLimited => {
-                "GitHub is limiting requests from your account for a while. \
-                 Wait a few minutes, then press Retry."
+                "GitHub is limiting requests from your account for a while. Wait a few minutes."
             }
-            Self::Offline => "Check your internet connection, VPN or proxy, then press Retry.",
+            Self::Offline => "Check your internet connection, VPN or proxy.",
             Self::NoRemote => {
-                "Pull requests need a GitHub remote on this repository. \
-                 Add one in a terminal, then press Retry."
+                "Pull requests need a GitHub remote on this repository. Add one in a terminal:"
             }
         }
     }
@@ -132,13 +133,7 @@ pub fn classify_github_failure(text: &str) -> Option<GithubProblemKind> {
     {
         return Some(GithubProblemKind::NoRemote);
     }
-    // `gh` as a whole word, so "through" or "high" never count.
-    let about_github = lower.contains("github")
-        || lower.contains("graphql")
-        || lower
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| word == "gh");
-    if !about_github {
+    if !mentions_github(&lower) {
         return None;
     }
     if lower.contains("gh auth login")
@@ -157,6 +152,41 @@ pub fn classify_github_failure(text: &str) -> Option<GithubProblemKind> {
         return Some(GithubProblemKind::Offline);
     }
     None
+}
+
+/// Whether `lower` talks about `gh` or GitHub, not merely about a file whose
+/// path happens to contain the word: every error in the GUI is classified, and
+/// a worktree under `~/github/` or a user named `gh` must not turn an agent's
+/// "not logged in" into a GitHub sign-in problem. A path token counts only when
+/// it names a GitHub host. `gh` must be a whole word, so "through" or "high"
+/// never count.
+fn mentions_github(lower: &str) -> bool {
+    lower.split_whitespace().any(|token| {
+        if token.contains('/') {
+            return token.contains("github.com");
+        }
+        token.contains("github")
+            || token.contains("graphql")
+            || token
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word == "gh")
+    })
+}
+
+impl GithubProblem {
+    /// One self-contained sentence for surfaces that show only
+    /// [`GuiError::message`](crate::gui_contract::GuiError): the headline,
+    /// the step with its command inline, and no reference to a Retry button
+    /// that surface may not have.
+    pub fn summary(&self) -> String {
+        match self.command {
+            Some(command) => format!(
+                "{}. {} {command}, then try again.",
+                self.title, self.message
+            ),
+            None => format!("{}. {} Then try again.", self.title, self.message),
+        }
+    }
 }
 
 /// The panel view of `text`, when it is a GitHub failure the user can fix.
@@ -280,7 +310,13 @@ mod tests {
         .unwrap();
         assert_eq!(problem.kind, K::NotSignedIn);
         assert_eq!(problem.command, Some("gh auth login"));
-        assert!(problem.message.contains("Retry"));
+        assert!(!problem.message.contains("Retry"), "the panel adds Retry");
+        assert_eq!(
+            problem.summary(),
+            "The GitHub CLI (gh) is not signed in. Pull requests are read with the GitHub CLI \
+             (gh). It is installed but not signed in to GitHub. Run this in a terminal: \
+             gh auth login, then try again."
+        );
         assert!(
             !problem
                 .detail
@@ -289,6 +325,31 @@ mod tests {
         let missing = github_problem("Failed to run `gh pr list`.").unwrap();
         assert_eq!(missing.link, Some("https://cli.github.com"));
         assert_eq!(missing.command, None);
+        assert!(
+            missing
+                .summary()
+                .ends_with("Install it from cli.github.com. Then try again.")
+        );
+    }
+
+    #[test]
+    fn a_path_that_contains_github_is_not_a_mention_of_github() {
+        // An agent's own sign-in failure in a worktree under ~/github/.
+        assert_eq!(
+            classify_github_failure("claude: not logged in (cwd /home/u/github/app)"),
+            None
+        );
+        assert_eq!(
+            classify_github_failure("connection refused: /home/gh/socket"),
+            None
+        );
+        // A GitHub URL still counts.
+        assert_eq!(
+            classify_github_failure(
+                "request failed: HTTP 401: Bad credentials (https://api.github.com/user)"
+            ),
+            Some(K::NotSignedIn)
+        );
     }
 
     #[test]

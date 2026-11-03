@@ -338,7 +338,8 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     </header>
     {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy}
       onRetry={!workflowId && !triage ? () => { setFailure(null); setBusy(true); setAttempt((n) => n + 1); } : undefined} />}
-    {(error || triage?.error) && !githubProblem && !(triage?.github_problem && !error) && <p className="callout callout-danger" role="alert">{error || triage?.error}</p>}
+    {/* A local refusal is shown even beside the triage view's GitHub problem. */}
+    {(error ? !failure?.github : triage?.error && !triage?.github_problem) && <p className="callout callout-danger" role="alert">{error || triage?.error}</p>}
     <div className={`pr-workspace-layout${sidebarOpen ? "" : " pr-workspace-layout-collapsed"}`}>
       <aside className={`pr-workspace-context${sidebarOpen ? "" : " pr-workspace-context-collapsed"}`} aria-label="Pull request context">
         <div className="pr-workspace-context-heading">

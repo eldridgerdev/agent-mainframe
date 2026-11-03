@@ -174,7 +174,8 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
   const body = <>
     {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy || waiting}
       onRetry={!view ? (embedded ? undefined : reopen) : view.stage === "pick" && !embedded ? () => void act({ kind: "retry" }) : undefined} />}
-    {(error || view?.error) && !githubProblem && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
+    {/* A local refusal is shown even beside the view's GitHub problem. */}
+    {(error ? !failure?.github : view?.error && !view?.github_problem) && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
     {view?.notice && <p role="status">{view.notice}</p>}
     {discard && <div className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
       <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>

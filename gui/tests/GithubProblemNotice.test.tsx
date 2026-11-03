@@ -14,12 +14,12 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const notSignedIn: GithubProblem = {
   kind: "not_signed_in", title: "The GitHub CLI (gh) is not signed in",
-  message: "Pull requests are read with the GitHub CLI (gh). It is installed but not signed in to GitHub. Run this in a terminal, then press Retry.",
+  message: "Pull requests are read with the GitHub CLI (gh). It is installed but not signed in to GitHub. Run this in a terminal:",
   command: "gh auth login", link: null, detail: "`gh pr list` failed: To get started with GitHub CLI, please run:  gh auth login",
 };
 const cliMissing: GithubProblem = {
   kind: "cli_missing", title: "The GitHub CLI (gh) is not installed",
-  message: "Pull requests are read with the GitHub CLI (gh), and AMF could not run it. Install it from cli.github.com, then press Retry.",
+  message: "Pull requests are read with the GitHub CLI (gh), and AMF could not run it. Install it from cli.github.com.",
   command: null, link: "https://cli.github.com", detail: "Failed to run `gh pr list`.: No such file or directory (os error 2)",
 };
 
@@ -29,6 +29,7 @@ it("names the problem, the command to run and keeps the raw text under Details",
   const alert = screen.getByRole("alert");
   expect(within(alert).getByText("The GitHub CLI (gh) is not signed in")).toBeTruthy();
   expect(within(alert).getByLabelText("Command to run in a terminal").textContent).toBe("gh auth login");
+  expect(within(alert).getByText("Then press Retry.")).toBeTruthy();
   expect(within(alert).getByText("Details")).toBeTruthy();
   expect(alert.textContent).toContain("please run:  gh auth login");
   fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
@@ -39,6 +40,8 @@ it("opens the install link in the system browser and offers no Retry without a h
   vi.mocked(invoke).mockResolvedValue(undefined);
   render(<GithubProblemNotice problem={cliMissing} />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  // No Retry button, so the step does not tell the user to press one.
+  expect(screen.getByText("Then try again.")).toBeTruthy();
   expect(screen.queryByLabelText("Command to run in a terminal")).toBeNull();
   fireEvent.click(screen.getByRole("link", { name: "cli.github.com" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("screenshots_open_browser", { url: "https://cli.github.com" }));
@@ -91,7 +94,7 @@ it("PR Triage that cannot open at all because gh is missing retries the open", a
   let begins = 0;
   vi.mocked(invoke).mockImplementation(async (command: string) => {
     if (command === "pr_triage_begin") {
-      if (++begins === 1) throw { kind: "internal", message: `${cliMissing.title} ${cliMissing.message}`, github: cliMissing };
+      if (++begins === 1) throw { kind: "internal", message: `${cliMissing.title}. ${cliMissing.message} Then try again.`, github: cliMissing };
       return { ...triagePick, picker: { ...triagePick.picker!, error: null, github_problem: null } };
     }
     throw new Error(command);
@@ -120,4 +123,21 @@ it("PR Review shows a list failure as its fix and Retry re-reads the list", asyn
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(acted).toEqual([{ kind: "retry" }]));
   await waitFor(() => expect(screen.queryByText("The GitHub CLI (gh) is not signed in")).toBeNull());
+});
+
+it("PR Review keeps a local refusal visible beside the view's GitHub problem", async () => {
+  const failed: PrReviewView = {
+    workflow_id: "review", revision: 1, project_name: "Demo", head_sha: null, stage: "pick", loading: false, entries: [],
+    number: null, title: null, files: [], summary: "", submission: null, error: notSignedIn.detail, github_problem: notSignedIn, notice: null,
+  };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_review_begin") return failed;
+    if (command === "pr_review_act") throw { kind: "conflict", message: "PR Review changed; reload it" };
+    if (command === "pr_review_poll") return failed;
+    throw new Error(command);
+  });
+  render(<PrReviewPanel projectId="project" onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("PR Review changed; reload it")).toBeTruthy();
+  expect(screen.getByText("The GitHub CLI (gh) is not signed in")).toBeTruthy();
 });

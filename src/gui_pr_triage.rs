@@ -28,7 +28,7 @@ use crate::app::pr_review::{
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
 use crate::editor::TextEditor;
-use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread};
+use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread, redact_secrets};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
 use crate::gui_github_errors::{GithubProblem, github_problem};
 use crate::gui_plans::PrecallView;
@@ -708,7 +708,7 @@ fn open_picker(
     let list_pending = entries.is_none();
     let (entries, list_error) = match entries {
         Some(Ok(entries)) => (entries, None),
-        Some(Err(e)) => (Vec::new(), Some(format!("{e:#}"))),
+        Some(Err(e)) => (Vec::new(), Some(redact_secrets(&format!("{e:#}")))),
         None => (Vec::new(), None),
     };
     let selected = branch_pr
@@ -817,7 +817,7 @@ pub fn begin_prefetched(
         match reads.resolve_pr(&workdir) {
             Ok(PrResolution::Found(pr)) => (Some(pr.number), None),
             Ok(PrResolution::NoPrForBranch) => (None, None),
-            Err(e) => (None, Some(format!("{e:#}"))),
+            Err(e) => (None, Some(redact_secrets(&format!("{e:#}")))),
         }
     };
     let current_user = reads.current_user(&workdir).ok();
@@ -993,7 +993,7 @@ fn snapshot(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<PrTr
                 };
                 fetch_failure = Some(match failure {
                     PrFetchFailure::Failed(e) => {
-                        format!("Could not load PR #{number} comments: {e:#}")
+                        redact_secrets(&format!("Could not load PR #{number} comments: {e:#}"))
                     }
                     PrFetchFailure::Disconnected => {
                         format!("Loading PR #{number} comments failed unexpectedly")

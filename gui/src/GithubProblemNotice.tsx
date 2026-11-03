@@ -19,6 +19,8 @@ export default function GithubProblemNotice({ problem, retrying, onRetry, retryL
     <p><strong>{problem.title}</strong></p>
     <p>{problem.message}</p>
     {problem.command && <pre className="github-problem-command" aria-label="Command to run in a terminal"><code>{problem.command}</code></pre>}
+    {/* The backend's step stops short of Retry: only a panel that offers it says so. */}
+    <p>{onRetry ? `Then press ${retryLabel}.` : "Then try again."}</p>
     {problem.link && <p className="small">
       <a href={problem.link} onClick={(event) => {
         event.preventDefault();

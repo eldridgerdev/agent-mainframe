@@ -131,7 +131,7 @@ impl From<anyhow::Error> for GuiError {
         if let Some(problem) = crate::gui_github_errors::github_problem_of(&err) {
             return Self {
                 kind: GuiErrorKind::Internal,
-                message: format!("{} {}", problem.title, problem.message),
+                message: problem.summary(),
                 github: Some(Box::new(problem)),
             };
         }

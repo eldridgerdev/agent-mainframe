@@ -261,13 +261,13 @@ try:
     wait("!!document.querySelector('[role=tab][aria-selected=true]') && document.body.innerText.includes('Compose prompt')")
     capture("006-went-to-work.png",
             "Go to work opens the linked session's tab. No new agent launched and the TODO is still not reserved.",
-            ["billing-retry", "Claude", "Quick TODO"],
+            ["billing-retry", "Claude", "TODOs"],
             "document.querySelector('[role=tab][aria-selected=true]').textContent.includes('Claude')")
     agent_state()
 
     # Quick capture appends to the feature's default scope and creates its TODOs session.
     assert rows("SELECT count(*) FROM feature_sessions WHERE kind='todos'") == [(0,)]
-    click("Quick TODO")
+    evaluate("document.querySelector('.page-header button[aria-label=\"Quick TODO\"]').click()")
     wait("!!document.querySelector('[role=dialog][aria-label=\"Quick TODO\"]')")
     wait("document.body.innerText.includes('Adds to Worktree')")
     set_value('[aria-label="Quick TODO title"]', "Write the retry runbook")

@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
@@ -165,9 +176,9 @@ try:
     window.configure(x=0, y=0, width=1500, height=1000)
     x.sync()
     wait('document.querySelector("h1")?.textContent==="Invoice API"')
-    wait('document.body.innerText.includes("No features yet") && '+has_button("PR Triage")+' && '+has_button("PR Review"))
-    capture("project-pr-buttons.png", "Project selection offers PR Triage and PR Review even with no features.", ["Invoice API", "No features yet", "PR Triage", "PR Review"])
-    click("PR Triage")
+    wait('document.body.innerText.includes("No features yet") && '+has_button("Pull request"))
+    capture("project-pr-buttons.png", "Project selection offers PR Triage and PR Review (under Pull request) even with no features.", ["Invoice API", "No features yet", "Pull request", "New feature"])
+    header_menu("Pull request tools", "PR Triage")
     wait('document.querySelectorAll(".pr-entry").length===2')
     capture("project-pr-triage-picker.png", "PR Triage opens the repository PR picker directly, with no current-branch PR lookup.", ["PR Triage · Invoice API", "#12", "Round invoice totals to cents", "#11", "Add Euro formatting", "Open by number"], '!document.body.innerText.includes("This branch")')
     # Repository-wide entry must not resolve the currently checked-out branch.
@@ -175,7 +186,7 @@ try:
     assert not any(call[:2]==["pr", "view"] for call in gh_calls), gh_calls
     evaluate('document.querySelector("[role=dialog] button[aria-label=Close]").click()')
     wait('!document.querySelector("[role=dialog]")')
-    click("PR Review")
+    header_menu("Pull request tools", "PR Review")
     wait('document.querySelectorAll(".pr-entry").length===2')
     capture("project-pr-review-picker.png", "PR Review opens the project's list of open PRs without opening the checkout's current PR.", ["PR Review · Invoice API", "#12", "Round invoice totals to cents", "#11", "Add Euro formatting", "Refresh pull requests", "Draft PR"], '!document.querySelector("[role=alert]")')
     gh_calls=[json.loads(line) for line in (state / "calls.jsonl").read_text().splitlines()]

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import SteeringPanel from "./SteeringPanel";
-import { Icon, Spinner } from "./ui";
+import { Icon, Menu, Spinner } from "./ui";
 
 export default function PromptComposer({
   text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary, onSaveTemplate, steeringOpen = false, onSteeringChange,
@@ -42,14 +42,24 @@ export default function PromptComposer({
       <div className="composer-head">
         <Icon name="sparkles" />
         <strong>Compose prompt</strong>
-        <span className="muted small">Draft here, then send to the agent.</span>
+        <span className="muted small composer-head-note">Draft here, then send to the agent.</span>
         <span className="tabs-spacer" />
         {onSteeringChange && <button className="btn btn-sm btn-ghost" aria-pressed={steeringOpen} onClick={() => onSteeringChange(!steeringOpen)}><Icon name="check" />Steering coach</button>}
         <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="file" />Prompt library</button>
-        {onSaveTemplate && <button className="btn btn-sm btn-ghost" disabled={sending || !text.trim()} onClick={onSaveTemplate}>Save as template</button>}
         <button className="btn btn-sm btn-ghost" disabled={sending || !text} onClick={onClear}>
           Clear
         </button>
+        {onSaveTemplate && <Menu
+          label="More draft actions"
+          className="btn btn-ghost btn-icon btn-sm"
+          items={[{
+            label: "Save as template",
+            icon: "file",
+            disabled: sending || !text.trim(),
+            hint: !text.trim() ? "Write a draft first" : undefined,
+            onSelect: onSaveTemplate,
+          }]}
+        />}
       </div>
       <textarea
         ref={textarea}

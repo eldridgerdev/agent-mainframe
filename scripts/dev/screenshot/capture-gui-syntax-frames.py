@@ -95,6 +95,17 @@ def click(text):
     )
     assert found, f"No button {text!r}"
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 def select(label, value):
     evaluate(
@@ -325,7 +336,7 @@ try:
     wait('!document.querySelector(".diff-reader")')
 
     # Final Review: a line comment on a highlighted line.
-    click("Final Review")
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")', timeout=20)
     choose_file("src/lib.rs")
     line = line_of("src/lib.rs", "credit notes carry a negative total")
@@ -349,7 +360,7 @@ try:
     wait('!document.querySelector(".diff-reader")')
 
     # The Learning reader shows the whole file with the same colours.
-    click("Learning")
+    header_menu("Feature tools", "Learning")
     wait('!!document.querySelector(".learning-file")', timeout=20)
     if not evaluate('Array.from(document.querySelectorAll(".learning-file")).some(b=>b.textContent.trim().endsWith("lib.rs"))'):
         evaluate('Array.from(document.querySelectorAll(".learning-file")).find(b=>b.textContent.trim()==="src").click()')
@@ -397,7 +408,7 @@ try:
     )
     click("Close")
     wait('!document.querySelector(".diff-reader")')
-    click("Final Review")
+    header_menu("Feature tools", "Final Review")
     wait('!!document.querySelector(".diff-file")', timeout=20)
     choose_file("src/lib.rs")
     evaluate('Array.from(document.querySelectorAll("details")).forEach(d=>d.open=true)')

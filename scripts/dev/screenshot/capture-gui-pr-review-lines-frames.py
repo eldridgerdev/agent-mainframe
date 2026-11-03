@@ -83,6 +83,17 @@ def click(text):
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
+def header_menu(menu, label):
+    """Choose `label` from the page-header menu whose trigger is named `menu`
+    (the feature header keeps Plan, review and PR tools in "Feature tools")."""
+    trigger = json.dumps('[aria-label="%s"]' % menu)
+    wait(f"!!document.querySelector({trigger})")
+    evaluate(f"document.querySelector({trigger}).click()")
+    item = ("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>"
+            f"b.querySelector('.menu-item-label')?.textContent==={json.dumps(label)} && !b.disabled)")
+    wait(f"!!{item}")
+    evaluate(f"{item}.click()")
+
 
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
@@ -189,7 +200,7 @@ try:
     window.configure(x=0, y=0, width=1500, height=1100)
     x.sync()
     wait('document.querySelector("h1")?.textContent==="Invoice API"')
-    click("PR Review")
+    header_menu("Pull request tools", "PR Review")
     wait('document.querySelectorAll(".pr-entry").length===2')
     evaluate('Array.from(document.querySelectorAll(".pr-entry")).find(b=>b.textContent.includes("#12")).click()')
     wait('document.body.innerText.includes("pinned to head") && document.querySelectorAll(".diff-line-select").length>0')

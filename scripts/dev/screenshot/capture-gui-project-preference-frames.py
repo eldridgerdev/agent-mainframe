@@ -42,11 +42,11 @@ with GuiFrames.from_argv() as frames:
     def dismiss_toasts(): frames.evaluate('Array.from(document.querySelectorAll(`.toast button[aria-label="Dismiss"]`)).forEach(button=>button.click())')
     def open_project():
         action('click',selector='nav[aria-label=Workspace] [aria-describedby="tree-project-proof-project"]')
-        action('wait',text='Preferred agent',scope='main')
+        action('wait',text='New feature',scope='main')
     frames.window.configure(width=1320,height=960)
     action('wait',text='Billing API',scope='nav[aria-label=Workspace]')
     open_project()
-    click('Preferred agent')
+    click('Project settings'); click('Preferred agent')
     wait('!!document.querySelector(`[role=dialog] select`) && !document.querySelector(`[role=dialog] select`).disabled')
     initial_rows, initial_panes = rows(), original_panes()
     assert preference()=='claude' and selected()=='claude'

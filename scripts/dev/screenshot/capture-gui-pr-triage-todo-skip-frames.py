@@ -36,7 +36,7 @@ with GuiFrames.from_argv() as frames:
     action('wait',text='Invoice rounding',scope='nav[aria-label=Workspace]')
     click('Invoice rounding','nav[aria-label=Workspace]')
     action('wait',text='Test agent')
-    click('PR Workspace (experimental)')
+    click('Feature tools'); click('PR Workspace')
     action('wait',expression='!!Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`))')
     frames.evaluate('Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`)).click()')
     wait('3 open of 4')

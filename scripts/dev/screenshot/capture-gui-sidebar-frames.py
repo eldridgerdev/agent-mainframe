@@ -232,8 +232,8 @@ try:
     )
 
     click_nav("fix-rounding-bug")
-    wait("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Plan')")
-    click("Plan")
+    wait("!!document.querySelector('[aria-label=\"Feature tools\"]')")
+    evaluate("document.querySelector('[aria-label=\"Feature tools\"]').click()")
     wait("Array.from(document.querySelectorAll('[role=menuitem]')).some(b=>b.textContent.includes('Quick Plan'))")
     evaluate("Array.from(document.querySelectorAll('[role=menuitem]')).find(b=>b.textContent.includes('Quick Plan')).click()")
     wait("!!document.querySelector('[role=dialog]')")

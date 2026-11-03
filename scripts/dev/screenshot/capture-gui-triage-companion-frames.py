@@ -24,11 +24,11 @@ with GuiFrames.from_argv() as frames:
     def capture(name,note,texts,**kwargs): frames.capture(name,note,texts,**kwargs); frames.write_notes()
     frames.window.configure(x=0,y=0,width=1500,height=1000);frames._x.sync();time.sleep(.2)
     action('wait',text='Invoice fixes',scope='nav[aria-label=Workspace]');click('Invoice fixes','nav[aria-label=Workspace]')
-    wait('Integrate PR #42 fixes…');click('Integrate PR #42 fixes…');click('Preview integration')
+    wait('Integrate fixes…');click('Integrate fixes…');click('Preview integration')
     wait('companion checkout has uncommitted changes')
     capture('001-preview.png','The PR Triage companion preview names PR 42, the PR branch, the differing source branch, the exact commit and excluded uncommitted companion changes before any integration.', ['PR Triage companion for','not the PR branch',companion_head,'uncommitted changes'],expression='!!document.querySelector(`[aria-label="Integration preview"]`)')
     action('click',selector='[role=dialog] .modal-footer button:first-child');assert git(source,'rev-parse','HEAD')==original
-    click('Integrate PR #42 fixes…');click('Preview integration');wait('companion checkout has uncommitted changes')
+    click('Integrate fixes…');click('Preview integration');wait('companion checkout has uncommitted changes')
     (source/'new-untracked.txt').write_text('Preserve this change\n')
     click('Confirm cherry-pick');wait('Integration changed; refresh the preview')
     capture('002-stale-refusal.png','A source edit after preview refuses the operation and leaves the new file untouched.', ['Integration changed; refresh the preview'],allow_alert=True)

@@ -59,7 +59,8 @@ it.each([false, true])("gates the Learning handoff and preserves an existing uns
   if (existingDraft) fireEvent.change(screen.getByRole("textbox", { name: "Draft prompt" }), {
     target: { value: "My existing message" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Learning", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Learning" }));
   await screen.findByRole("dialog", { name: "Learning", exact: true });
   fireEvent.click(screen.getByRole("button", { name: "Open editing agent" }));
   const approval = await screen.findByRole("dialog", { name: "Approve Learning agent" });
@@ -116,7 +117,8 @@ it("starts a stopped linked editing session through the tab's own start instead 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
   fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
-  fireEvent.click(screen.getByRole("button", { name: "Learning", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Learning" }));
   await screen.findByRole("dialog", { name: "Learning", exact: true });
   fireEvent.click(screen.getByRole("button", { name: "Return to editing agent" }));
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("start_session", { target, approved: false }));
@@ -166,7 +168,8 @@ it("keeps only a handoff's seed when it lands while the earlier draft is still s
   fireEvent.change(draft(), { target: { value: "Already delivered" } });
   fireEvent.click(screen.getByRole("button", { name: "Send prompt" }));
   await waitFor(() => expect(finishSend).toBeDefined());
-  fireEvent.click(screen.getByRole("button", { name: "Learning", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Learning" }));
   await screen.findByRole("dialog", { name: "Learning", exact: true });
   fireEvent.click(screen.getByRole("button", { name: "Open editing agent" }));
   await waitFor(() => expect(draft().value).toBe("Already delivered\n\nEditable learning seed"));

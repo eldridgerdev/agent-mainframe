@@ -357,8 +357,8 @@ which opens the manager on that prompt. The call keeps waiting and uses your
 saved override when you continue, though its preview still shows the earlier
 text. Native macOS validation remains open.
 
-Use **New session** on a feature page to start another agent, terminal, or
-Neovim session. You can name it or use the next default name; the new tab opens
+Use **+** (New session) after a feature page's session tabs to start another
+agent, terminal, or Neovim session. You can name it or use the next default name; the new tab opens
 when creation succeeds. The picker shows the agents allowed for that project.
 It also lists everything else the TUI's session picker offers:
 
@@ -409,7 +409,7 @@ the TODO is linked only on acceptance. Cancelling an interview retains its
 prepared worktree without reserving the TODO. Direct launches return an unsent
 composer draft.
 
-Use **Learning** on a feature page to browse its files or branch changes and
+Use **Tools → Learning** on a feature page to browse its files or branch changes and
 ask about the project, a file, or a selected range (click, then Shift-click).
 Choose an answering harness and reading level; answers and follow-ups share
 the TUI's Learning history. **Deep dive** lets the answering agent read the
@@ -435,7 +435,7 @@ and context, selecting a commit and displaying a binary notice through real
 Rust IPC. Other native interactions and macOS remain unvalidated. Command
 tests use isolated Git repositories; component tests mock the IPC calls.
 
-Use **Final Review** on a Git feature to approve, reject or skip files, undo a
+Use **Tools → Final Review** on a Git feature to approve, reject or skip files, undo a
 verdict, write whole-file or line/range comments with severity, resolve/reopen
 comments, edit suggested replacements, and save overall feedback. Click a line
 number to select it; Shift-click another to extend a range in diff order. Use
@@ -822,7 +822,7 @@ remains open.
 
 ### PR Triage
 
-**PR Triage** on a Git feature lists the repository's open pull requests (or all
+**Tools → PR Triage** on a Git feature lists the repository's open pull requests (or all
 of them), marks the branch's own PR, and opens any PR from the list or by number.
 Comments load through the same `gh` fetch and normalization as the TUI's PR
 Triage: inline comments with their windowed diff context, review summaries,
@@ -961,7 +961,7 @@ cherry-pick attempts an abort and reports if recovery fails. Changes in the
 companion that are not committed remain there. External Git operations are not
 locked by the preview, so avoid running concurrent operations in the same
 checkouts. An existing PR Triage companion feature (one created from the TUI's
-`New feature...` fix target) offers **Integrate PR #N fixes...** on its feature
+`New feature...` fix target) offers **Integrate fixes…** (the PR number is in its tooltip) on its feature
 page, using the same preview and confirmation. A push updates only the PR's
 recorded head branch on `origin` and is refused when that branch is missing
 (for example a fork PR) or has diverged; a cherry-pick lands on whatever branch

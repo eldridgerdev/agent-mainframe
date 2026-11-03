@@ -13,7 +13,7 @@ but cannot be copied when a User row could lose those fields. Malformed User
 metadata must be repaired externally before authoring; browsing remains tolerant.
 Declarative source editing and export use the separate [scoped file editor](gui-declarative-prompts.md).
 
-An agent composer's **Save as template** opens a new User editor with its current
+An agent composer's `⋯` → **Save as template** opens a new User editor with its current
 unsent text. Saving, cancellation and write failures leave the mounted composer
 unchanged. This action never sends a prompt. Required name/body validation and tag
 normalization use the same domain rules as the TUI.

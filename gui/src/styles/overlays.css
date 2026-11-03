@@ -166,7 +166,8 @@
 .path-input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .path-input-row > input { flex: 1 1 0; min-width: 0; }
 .path-browse { flex: none; height: var(--h-md); }
-.path-browse-error { flex-basis: 100%; margin-top: 0; }
+/* `order` keeps it below the whole row even when a sibling (the plan panel's Attach) follows the button. */
+.path-browse-error { order: 1; flex-basis: 100%; margin-top: 0; }
 
 .segmented {
   display: inline-flex;

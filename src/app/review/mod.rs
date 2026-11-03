@@ -12,7 +12,7 @@ mod tests;
 pub(crate) use checks::ReviewCheckRun;
 pub use comments::resolve_editor_command;
 pub(crate) use comments::{comment_anchor_label, local_suggestion_blocker};
-pub(crate) use headless::CheckOutcome;
+pub(crate) use headless::{CheckOutcome, RoundTally};
 pub(crate) use history::current_review_history_markdown;
 pub(crate) use pr_drafts::{DraftSave, draft_comment_count};
 pub(crate) use pr_submit::pr_ref_for;

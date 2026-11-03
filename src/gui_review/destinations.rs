@@ -1333,7 +1333,8 @@ mod tests {
                     apply_suggestions: 0,
                     handoff_session: Some(target.session_id),
                     handoff_revision: Some(target.revision),
-                    deliver: true
+                    deliver: true,
+                    amf_hidden: false,
                 }
             )
             .is_err()
@@ -1689,7 +1690,8 @@ mod tests {
                     apply_suggestions: 0,
                     handoff_session: Some(shown.session_id.clone()),
                     handoff_revision: Some(shown.revision.clone()),
-                    deliver: true
+                    deliver: true,
+                    amf_hidden: false,
                 }
             )
             .unwrap()

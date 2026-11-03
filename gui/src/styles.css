@@ -250,6 +250,8 @@ kbd {
   color: var(--text-faint);
 }
 .nav-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--text-muted); }
+/* The soft halo alone is nearly invisible; keyboard focus gets a solid ring. */
+.nav-filter:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 .nav-filter input {
   flex: 1;
   min-width: 0;
@@ -619,8 +621,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .btn-warning:not(:disabled):hover, .btn-danger:not(:disabled):hover { filter: brightness(1.08); }
 
 .link-button {
+  /* 24px minimum target without changing how the text sits in a sentence. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
   border: 0;
-  padding: 0;
+  padding: 0 2px;
   background: none;
   color: var(--text-muted);
   font-size: 13px;
@@ -787,6 +793,8 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
    overshoot and grow the frame on every refit. */
 .term-surface { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .term-frame :focus-visible { outline: none; }
+/* xterm's hidden textarea can't show a ring, so the frame says where typing goes. */
+.term-frame:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .term-error {
   margin: -10px -4px 8px -12px;
   padding: 8px 12px;
@@ -826,6 +834,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   max-height: 40vh;
 }
 .composer textarea:focus { outline: none; }
+.composer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .steering-panel {
   margin: 0 8px 8px;
   padding: 8px 12px;
@@ -886,6 +895,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .todo-add:focus-within { border-style: solid; border-color: var(--accent); color: var(--accent); }
 .todo-add input { flex: 1; min-width: 0; border: 0; background: transparent; height: 100%; }
 .todo-add input:focus { outline: none; }
+.todo-add:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 .todo-add input::placeholder { color: var(--text-faint); }
 
 .todo-empty { padding: 10px 16px 16px; color: var(--text-faint); font-size: 13px; }
@@ -967,6 +977,29 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .menu-item-label { flex: 1; }
 .menu-item-hint { font-size: 11.5px; color: var(--text-faint); }
 .menu-item-danger, .menu-item-danger .icon { color: var(--red); }
+.menu:focus { outline: none; }
+.menu-item:focus-visible { background: var(--surface-3); outline: none; }
+.menu-item-shortcut {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.menu-section-label {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.menu-sep { height: 1px; margin: 4px 0; background: var(--border); }
+.menu-trigger-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
 
 /* ── Modal ──────────────────────────────────────────────── */
 
@@ -1060,6 +1093,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+.field input:focus-visible, .field select:focus-visible, .plan-textarea:focus-visible, .attach-row input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.field input[aria-invalid="true"] { border-color: var(--red); }
+.field-error { margin-top: -8px; font-size: 12.5px; color: var(--red); overflow-wrap: anywhere; }
 
 .segmented {
   display: inline-flex;

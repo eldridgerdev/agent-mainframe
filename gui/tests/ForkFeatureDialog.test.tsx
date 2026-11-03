@@ -73,10 +73,10 @@ it("previews the changes, the staging rule and the context, then sends a bound c
   expect(screen.getByText("executable")).toBeTruthy();
   expect(screen.getByText(/staging choices are not copied/)).toBeTruthy();
   expect(screen.getByText(/0123456789/)).toBeTruthy();
-  const context = screen.getByRole("checkbox", { name: /Include the conversation/ }) as HTMLInputElement;
+  const context = screen.getByRole("switch", { name: /Include the conversation/ }) as HTMLInputElement;
   expect(context.checked).toBe(true);
   // Starting an agent is a visible, explicit choice.
-  fireEvent.click(screen.getByRole("checkbox", { name: /Start the agent after forking/ }));
+  fireEvent.click(screen.getByRole("switch", { name: /Start the agent after forking/ }));
 
   fireEvent.click(forkButton());
   expect(await screen.findByText(/Forked 'my-feat-fork'/)).toBeTruthy();
@@ -103,7 +103,7 @@ it.each([
   open();
   await ready();
 
-  const context = screen.getByRole("checkbox", { name: /Include the conversation/ }) as HTMLInputElement;
+  const context = screen.getByRole("switch", { name: /Include the conversation/ }) as HTMLInputElement;
   expect(context.disabled).toBe(true);
   expect(context.checked).toBe(false);
   expect(screen.getByText(message)).toBeTruthy();

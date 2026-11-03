@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { asGuiError } from "./api";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 interface SettingsView {
@@ -89,17 +89,17 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
         it keeps its old values and writes them back when it next saves a setting.</p>
       {!valid && <p role="alert">Use a positive whole token limit or leave it blank. Percentages must be 1–100, with critical greater than warning.</p>}
     </div>}
-    {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">
+    {discard && <ConfirmCallout label="Discard unsaved settings" className="callout callout-warning">
       <p>Discard unsaved settings and {discard === "close" ? "close" : "reload"}?</p>
       <button className="btn btn-secondary" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         setDiscard(null);
       }}>Keep editing</button>
-      <button className="btn btn-warning" disabled={busy} onClick={() => {
+      <button className="btn btn-danger" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         const action = discard; setDiscard(null);
         if (action === "close") onClose(); else void load();
       }}>Discard changes</button>
-    </div>}
+    </ConfirmCallout>}
   </Modal>;
 }

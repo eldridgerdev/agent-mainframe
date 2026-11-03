@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import AgentAvailabilityPanel from "../src/AgentAvailabilityPanel";
+import { getConfirm } from "./confirmCallout";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const initial = { revision: "rev1", settings: { allowed_agents: ["claude", "codex", "opencode", "pi"] } };
@@ -35,7 +36,7 @@ it("retains failed drafts and confirms discard before reload or close", async ()
   expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Global config changed");
   expect(screen.getByLabelText("Claude Code")).toHaveProperty("checked", false);
   expect(onSaved).not.toHaveBeenCalled();
-  click("Cancel"); expect(screen.getByRole("alertdialog")).toBeTruthy();
+  click("Cancel"); expect(getConfirm()).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
   click("Keep editing"); click("Reload settings"); click("Discard changes");
   await waitFor(() => expect(screen.getByLabelText("Claude Code")).toHaveProperty("checked", true));
@@ -98,7 +99,7 @@ it("clears project override explicitly and confirms discard before restoring sav
   await screen.findByLabelText("Codex"); toggle("Use global setting (clear project override)");
   expect(screen.getByLabelText("Claude Code")).toHaveProperty("checked", true);
   expect(screen.getByLabelText("Codex")).toHaveProperty("checked", false);
-  click("Cancel"); expect(screen.getByRole("alertdialog")).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
+  click("Cancel"); expect(getConfirm()).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
   click("Keep editing"); click("Reload settings"); click("Discard changes");
   await waitFor(() => expect(screen.getByLabelText("Codex")).toHaveProperty("checked", true));
   toggle("Use global setting (clear project override)"); click("Save settings");

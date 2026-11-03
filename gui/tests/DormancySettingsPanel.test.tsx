@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import DormancySettingsPanel from "../src/DormancySettingsPanel";
+import { getConfirm } from "./confirmCallout";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const initial = { revision: "rev1", settings: { idle_minutes: 60, unattended_hours: 4 } };
@@ -34,7 +35,7 @@ it("retains failed saves and protects cancellation and reload", async () => {
   expect(screen.getByLabelText("Idle minutes")).toHaveProperty("value", "15");
   expect(onSaved).not.toHaveBeenCalled();
   click("Cancel");
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(getConfirm()).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
   click("Keep editing"); click("Reload settings"); click("Discard changes");
   await screen.findByDisplayValue("60");
@@ -79,7 +80,7 @@ it.each(["Cancel", "Reload settings"])("blocks discard confirmation actions duri
     expect(screen.getByRole("button", { name })).toHaveProperty("disabled", true);
     click(name);
   }
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(getConfirm()).toBeTruthy();
   expect(invoke).toHaveBeenCalledTimes(2);
   expect(onClose).not.toHaveBeenCalled();
   expect(onSaved).not.toHaveBeenCalled();

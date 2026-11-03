@@ -5,7 +5,7 @@ import {
   HARNESS_LABELS, OverrideContext, OverrideRow, OverrideScope, OverridesView, StoredOverride,
   promptOverridesClear, promptOverridesLoad, promptOverridesSave, slotLabel,
 } from "./promptOverridesApi";
-import { EmptyState, Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, EmptyState, Field, Modal, Spinner } from "./ui";
 
 const HARNESSES: AgentSlug[] = ["claude", "opencode", "codex", "pi"];
 const contextKey = (context: OverrideContext) => JSON.stringify(context);
@@ -190,11 +190,11 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
     {view?.project_config_error && <div className="callout callout-warning" role="alert">
       <p><strong>Project overrides are ignored.</strong> {view.project_config_error}</p>
     </div>}
-    {pendingDiscard && <div className="callout callout-warning" role="alertdialog" aria-label="Discard unsaved template">
+    {pendingDiscard && <ConfirmCallout label="Discard unsaved template" className="callout callout-warning">
       <p>Discard your unsaved template changes and {pendingDiscard.label}?</p>
       <button className="btn btn-secondary btn-sm" onClick={() => setPendingDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning btn-sm" onClick={() => { const next = pendingDiscard.run; setPendingDiscard(null); setDraft(null); next(); }}>Discard changes</button>
-    </div>}
+      <button className="btn btn-danger btn-sm" onClick={() => { const next = pendingDiscard.run; setPendingDiscard(null); setDraft(null); next(); }}>Discard changes</button>
+    </ConfirmCallout>}
     <div className="library-browser">
       <div className="library-list" role="group" aria-label="Headless prompts">
         {overrides.isLoading && <p className="muted">Loading prompts…</p>}
@@ -272,13 +272,13 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                 </li>;
               })}
             </ul>
-            {confirmClear && <div className="callout callout-warning" role="alertdialog" aria-label="Confirm clear override">
+            {confirmClear && <ConfirmCallout label="Confirm clear override" className="callout callout-warning">
               <p>Clear the {slotLabel(confirmClear.slot.scope, confirmClear.slot.harness)} override for {row.title}? Only this override is removed; the prompt then uses the next layer that has a template.</p>
               <pre className="library-preview" aria-label="Template to clear">{confirmClear.slot.template}</pre>
               {clearStale && <p role="alert">This prompt’s overrides changed after you chose Clear. Keep it, then review the current template before clearing.</p>}
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setConfirmClear(null)}>Keep it</button>
               <button className="btn btn-danger btn-sm" disabled={busy || clearStale} onClick={() => void clear(confirmClear)}>{busy && <Spinner />}Clear override</button>
-            </div>}
+            </ConfirmCallout>}
             <button className="btn btn-primary" disabled={busy || draft !== null || availableScopes.length === 0} onClick={() => startEdit(row, null)}>New override…</button>
           </>}
         </>}

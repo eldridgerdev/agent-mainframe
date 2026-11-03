@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -229,7 +229,7 @@ try:
     # A suggestion cannot cover a removed line: refused with a reason.
     pick("Select base line 8")
     click("Suggest replacement")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("pr-review-lines-suggestion-refused.png", "A suggestion over a removed base line is refused with the reason, before anything is saved.", ["removed (base-only) line", "Saved line comments (2)"], allow_alert=True)
     # A suggestion on a current line.
     pick("Select line 10")

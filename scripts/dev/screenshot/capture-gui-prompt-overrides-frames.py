@@ -135,7 +135,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)

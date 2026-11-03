@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { reviewDestinationCatalog, reviewDestinationPreview, type AgentSlug, type ModeSlug, type ReviewAction, type ReviewDestinationCatalog, type ReviewDestinationChoice, type ReviewDestinationPreview, type ReviewView } from "./api";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 
 /** Preview and prepare a destination. Editing these fields never creates or starts anything. */
 export default function ReviewFeedbackDestinationDialog({ view, error, onAct, onClose }: {
@@ -71,7 +71,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
     const node = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Feedback destination"]');
     if (!node) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    function root() { return node!.querySelector<HTMLElement>('[role="alertdialog"]') ?? node!; }
+    function root() { return node!.querySelector<HTMLElement>('[data-confirm-callout]') ?? node!; }
     function controls() { return Array.from(root().querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')); }
     function focusInside() { (controls()[0] ?? node!).focus(); }
     function onKey(event: KeyboardEvent) {
@@ -158,7 +158,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
       </section>}
     </>}
     <button className="btn btn-secondary" disabled={busy} onClick={close}>Cancel destination selection</button>
-    {discard && <div role="alertdialog" aria-label="Discard destination choices"><p>Discard these unsaved destination choices? No resources were created by editing them.</p><button className="btn btn-secondary" onClick={() => setDiscard(false)}>Keep editing</button><button className="btn btn-primary" onClick={onClose}>Discard choices</button></div>}
+    {discard && <ConfirmCallout label="Discard destination choices"><p>Discard these unsaved destination choices? No resources were created by editing them.</p><button className="btn btn-secondary" onClick={() => setDiscard(false)}>Keep editing</button><button className="btn btn-danger" onClick={onClose}>Discard choices</button></ConfirmCallout>}
   </Modal>;
 }
 function message(failure: unknown): string { return failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure); }

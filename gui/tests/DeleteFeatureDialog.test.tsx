@@ -15,7 +15,7 @@ it("confirms without a TODO choice until the backend asks for one", () => {
   render(<DeleteFeatureDialog projectName="demo" featureName="my-feat" isWorktree
     unfinished={null} busy={false} onConfirm={onConfirm} onClose={vi.fn()} />);
 
-  expect(screen.getByText(/removes the worktree/)).toBeTruthy();
+  expect(screen.getByText(/deletes its separate checkout folder/)).toBeTruthy();
   expect(screen.queryByRole("radio")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Delete feature" }));
   expect(onConfirm).toHaveBeenCalledWith(null, null);
@@ -26,7 +26,7 @@ it("sends the chosen disposition for unfinished TODOs", () => {
   render(<DeleteFeatureDialog projectName="demo" featureName="my-feat" isWorktree
     unfinished={2} busy={false} onConfirm={onConfirm} onClose={vi.fn()} />);
 
-  expect(screen.getByText("Its worktree has 2 unfinished TODOs.")).toBeTruthy();
+  expect(screen.getByText("This feature's TODO list has 2 unfinished TODOs.")).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Move them to the global list" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete feature" }));
   expect(onConfirm).toHaveBeenCalledWith("move_to_global", null);
@@ -37,14 +37,14 @@ it("keeps the project list on the first survivor by default", () => {
   render(<DeleteFeatureDialog projectName="demo" featureName="my-feat" isWorktree={false}
     unfinished={null} todoHost={todoHost} busy={false} onConfirm={onConfirm} onClose={vi.fn()} />);
 
-  expect((screen.getByRole("radio", { name: "Keep on First feature" }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole("radio", { name: "Move it to First feature" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Delete feature" }));
   expect(onConfirm).toHaveBeenCalledWith(null, { list_id: "project-list", feature_id: "first" });
 });
 
 it.each([
-  { label: "Keep on Second feature", featureId: "second" },
-  { label: "Delete the project list and all of its TODOs", featureId: null },
+  { label: "Move it to Second feature", featureId: "second" },
+  { label: "Delete the project list and all of its TODOs (cannot be undone)", featureId: null },
 ])("submits the explicit project-list choice: $label", ({ label, featureId }) => {
   const onConfirm = vi.fn();
   render(<DeleteFeatureDialog projectName="demo" featureName="my-feat" isWorktree
@@ -65,4 +65,17 @@ it("cancels the host choice without confirming deletion", () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(onClose).toHaveBeenCalledOnce();
   expect(onConfirm).not.toHaveBeenCalled();
+});
+
+it("sets destructive TODO choices apart as danger and explains the shared lists", () => {
+  render(<DeleteFeatureDialog projectName="demo" featureName="my-feat" isWorktree
+    unfinished={2} todoHost={todoHost} busy={false} onConfirm={vi.fn()} onClose={vi.fn()} />);
+
+  expect(screen.getByText(/project list is shared by every feature/)).toBeTruthy();
+  expect(screen.getByText(/stored in\s+this feature/)).toBeTruthy();
+  const danger = (name: string) => screen.getByRole("radio", { name }).closest("label")!.className;
+  expect(danger("Delete them with the feature (cannot be undone)")).toContain("new-session-option-danger");
+  expect(danger("Delete the project list and all of its TODOs (cannot be undone)")).toContain("new-session-option-danger");
+  expect(danger("Move them to the project list")).not.toContain("danger");
+  expect(danger("Move it to First feature")).not.toContain("danger");
 });

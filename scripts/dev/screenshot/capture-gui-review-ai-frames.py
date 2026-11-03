@@ -139,7 +139,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -306,7 +306,7 @@ try:
     with (repo / "invoice.ts").open("a") as source:
         source.write("\n// Externally changed after the preview opened.\n")
     click("Continue AI call")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("008-stale-preview-refused.png", "An externally changed patch is refused again when the pending AI call is confirmed, before the fixture executes.", ["Review changes changed; refresh changes before running AI", "Cancel AI call"], allow_alert=True)
     assert len(calls()) == 4
     click("Cancel AI call")

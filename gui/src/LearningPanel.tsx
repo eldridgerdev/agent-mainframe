@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { AgentSlug, LearningAction, LearningView } from "./api";
 import Markdown from "./Markdown";
-import { Field, Icon, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Icon, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** The question draft stays local across backend polls and navigation. */
@@ -40,11 +40,11 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
     <Modal hidden={hidden} label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
       subtitle="Read code and ask questions. Opening an editing agent is a separate action."
       dismissable={!busy} onClose={() => question.trim() ? setConfirmClose(true) : onClose()}>
-      {confirmClose && <div className="callout callout-warning" role="alert">
+      {confirmClose && <ConfirmCallout label="Discard question and close Learning" className="callout callout-warning">
         <p>Discard this unsent question and close Learning?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep writing</button>
-        <button className="btn btn-warning" disabled={busy} onClick={onClose}>Discard question and close</button>
-      </div>}
+        <button className="btn btn-danger" disabled={busy} onClick={onClose}>Discard question and close</button>
+      </ConfirmCallout>}
       <div className="learning-controls">
         <button className="btn btn-secondary btn-sm" disabled={busy || !view.is_git}
           onClick={() => { setRangeStart(null); void onAct({ kind: "toggle_scope" }); }}>

@@ -3,7 +3,7 @@ import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, Revi
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import ReviewSummaryPanel from "./ReviewSummaryPanel";
-import { Field, FilterField, Icon, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, FilterField, Icon, Modal, Spinner } from "./ui";
 import { SyntaxBadge } from "./SyntaxCode";
 
 type Editor = { kind: "comment" | "reject" | "general" | "line_comment" | "suggestion"; span?: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
@@ -207,22 +207,22 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
       <button className="btn btn-ghost" disabled={busy || pending !== null} onClick={() => request({ kind: "discard" })}>Close without saving</button></div>}
     {pending && (pending !== "cancel" && pending.kind === "apply_suggestion"
-      ? <div className="review-confirm" role="alertdialog" aria-label="Apply suggestion locally">
+      ? <ConfirmCallout label="Apply suggestion locally" className="review-confirm">
         <p>Apply the saved replacement to {pending.path}, {locationLabel(pending.start)} – {locationLabel(pending.end)}? This writes to your checkout, resolves the thread, and refreshes the diff. Review the changed code again before approving.</p>
         <button className="btn btn-primary" disabled={busy} onClick={() => void run(pending)}>Apply replacement</button>
         <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Cancel application</button>
-      </div>
+      </ConfirmCallout>
       : pending !== "cancel" && pending.kind === "discard"
-      ? <div className="review-confirm" role="alertdialog" aria-label="Close review without saving">
+      ? <ConfirmCallout label="Close review without saving" className="review-confirm">
         <p>Close without saving? Review progress since the last successful save is lost. Source changes already applied stay in your checkout.</p>
         <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and close</button>
         <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
-      </div>
-      : <div className="review-confirm" role="alertdialog" aria-label="Discard unsaved review draft">
+      </ConfirmCallout>
+      : <ConfirmCallout label="Discard unsaved review draft" className="review-confirm">
         <p>{ai.running ? "Discard unsaved edits, cancel the running AI request and continue?" : "Discard unsaved edits and continue?"}</p>
         <button className="btn btn-danger" disabled={commandBusy} onClick={() => void run(pending)}>Discard and continue</button>
         <button className="btn btn-secondary" disabled={commandBusy} onClick={() => setPending(null)}>Keep editing</button>
-      </div>)}
+      </ConfirmCallout>)}
     <div className="diff-controls toolbar">
       <div className="toolbar-group">
         <FilterField label="Filter review files" value={filter} onChange={setFilter} />
@@ -235,14 +235,14 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
       </div>
       <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
-    {ai.precall && <section className="review-confirm" role="alertdialog" aria-label="Review AI call">
+    {ai.precall && <ConfirmCallout label="Review AI call" className="review-confirm" as="section">
       <p>Background AI call: {ai.precall.title} · {ai.precall.harness}. This reads your files and uses your agent account's usage.</p>
       {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
       {onEditPrompt && <button className="btn btn-secondary" disabled={commandBusy} onClick={onEditPrompt}>Edit prompt</button>}
       <button className="btn btn-primary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_confirm" })}>Continue AI call</button>
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_cancel" })}>Cancel AI call</button>
-    </section>}
+    </ConfirmCallout>}
     {ai.running && <div role="status"><Spinner /> {ai.question_running ? (ai.comment_draft ? "Checking comment draft context" : "Answering or drafting review question") : ai.co_review_path ? `Co-reviewing ${ai.co_review_path}` : ai.walkthrough_path ? `Generating walkthrough for ${ai.walkthrough_path}` : "Generating changeset overview"}…
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "cancel_ai" })}>Cancel AI request</button>
     </div>}

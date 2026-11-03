@@ -119,7 +119,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -207,7 +207,7 @@ try:
         db.execute("INSERT INTO launched_editors(id,feature_id,session_id,kind,pid,worktree_path,dedicated,command,proc_started_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
             ("editor-new", "billing-retry", None, "vscode", extra_editor.pid, workdir, 1, "code --new-window", "", "2026-10-01T12:00:00Z"))
     click("Close windows")
-    wait("!!document.querySelector('[role=alert]')")
+    wait("!!document.querySelector('[role=alert]:not([data-confirm-callout])')")
     body = evaluate("document.body.innerText")
     assert "Another VS Code window was opened" in body, body
     assert pid_running(owned_pid) and extra_editor.poll() is None and pid_running(foreign_pid)

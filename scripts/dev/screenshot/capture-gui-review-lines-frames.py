@@ -137,7 +137,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -249,13 +249,13 @@ try:
     click("Edit suggestion")
     fill("Suggested replacement", replacement + "\n// Unsaved replacement draft")
     click("Pause review")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     capture("005-unsaved-suggestion-protection.png", "Pausing with an edited replacement asks for explicit discard and keeps the unsaved code in the editor.", ["Discard unsaved edits and continue?", "Keep editing", "Suggested replacement"], 'document.querySelector(".review-editor textarea").value.includes("Unsaved replacement draft")')
     click("Keep editing")
     click("Cancel edit")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     click("Discard and continue")
-    wait('!document.querySelector(".review-editor") && !document.querySelector("[role=alertdialog]")')
+    wait('!document.querySelector(".review-editor") && !document.querySelector("[data-confirm-callout]")')
     click("Resolve thread")
     ready()
     wait('document.body.innerText.includes("Reopen thread")')

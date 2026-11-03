@@ -12,17 +12,17 @@ const view = { target, feature_name: "Ship", current_agent: "claude", running: t
 const props = () => ({ target, hasDrafts: false, sending: false, onClose: vi.fn(), onResync: vi.fn(), onChanged: vi.fn() });
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
 const choose = () => fireEvent.change(screen.getByLabelText("New agent"), { target: { value: "opencode" } });
-const confirm = () => fireEvent.click(screen.getByLabelText("I understand and confirm this agent change"));
+const confirm = () => fireEvent.click(screen.getByLabelText("I understand the conversations will be reset"));
 
 it("selection and Cancel never switch; explicit confirmation binds the loaded observation", async () => {
   const first = props(); vi.mocked(invoke).mockResolvedValue(view);
   const mounted = render(<FeatureHarnessDialog {...first} />);
   await screen.findByLabelText("New agent"); choose();
   expect(screen.getByText(/all its sessions will stop/)).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", true);
   click("Cancel"); expect(first.onClose).toHaveBeenCalledOnce(); expect(invoke).toHaveBeenCalledTimes(1);
   mounted.unmount(); const next = props(); render(<FeatureHarnessDialog {...next} />);
-  await screen.findByLabelText("New agent"); choose(); confirm(); click("Change agent");
+  await screen.findByLabelText("New agent"); choose(); confirm(); click("Switch agent");
   await waitFor(() => expect(next.onChanged).toHaveBeenCalledOnce());
   expect(invoke).toHaveBeenLastCalledWith("feature_harness_apply", { request: { target, revision: "observed", agent: "opencode" } });
   expect(next.onResync).toHaveBeenCalledOnce();
@@ -32,20 +32,20 @@ it("blocks unsent drafts and sends, and selecting another harness clears consent
   const mounted = render(<FeatureHarnessDialog {...base} hasDrafts />);
   await screen.findByLabelText("New agent"); choose(); confirm();
   expect(screen.getByRole("alert").textContent).toContain("unsent agent drafts");
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", true);
   mounted.rerender(<FeatureHarnessDialog {...base} sending />);
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", true);
   mounted.rerender(<FeatureHarnessDialog {...base} />);
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", false);
   fireEvent.change(screen.getByLabelText("New agent"), { target: { value: "claude" } });
-  choose(); expect(screen.getByLabelText("I understand and confirm this agent change")).toHaveProperty("checked", false);
+  choose(); expect(screen.getByLabelText("I understand the conversations will be reset")).toHaveProperty("checked", false);
   expect(invoke).toHaveBeenCalledTimes(1);
 });
 it("single-flights a switch, disables dismissal, resyncs failures and requires fresh reload", async () => {
   let reject!: (error: unknown) => void;
   vi.mocked(invoke).mockResolvedValueOnce(view).mockImplementationOnce(() => new Promise((_, failure) => { reject = failure; })).mockResolvedValue(view);
   const callbacks = props(); render(<FeatureHarnessDialog {...callbacks} />);
-  await screen.findByLabelText("New agent"); choose(); confirm(); click("Change agent"); click("Change agent");
+  await screen.findByLabelText("New agent"); choose(); confirm(); click("Switch agent"); click("Switch agent");
   fireEvent.keyDown(window, { key: "Escape" });
   expect(callbacks.onClose).not.toHaveBeenCalled(); expect(invoke).toHaveBeenCalledTimes(2);
   reject({ kind: "conflict", message: "Checkout changed; nothing stopped" });
@@ -53,7 +53,7 @@ it("single-flights a switch, disables dismissal, resyncs failures and requires f
   expect(callbacks.onResync).toHaveBeenCalledOnce(); expect(callbacks.onChanged).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("New agent")).toBeNull();
   click("Reload"); await screen.findByLabelText("New agent");
-  expect(screen.getByRole("button", { name: "Change agent" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Switch agent" })).toHaveProperty("disabled", true);
 });
 it("states that stopped changes do not launch and reports unavailable choices", async () => {
   vi.mocked(invoke).mockResolvedValue({ ...view, running: false, choices: [view.choices[0], view.choices[2]] });
@@ -61,4 +61,13 @@ it("states that stopped changes do not launch and reports unavailable choices", 
   expect(screen.getByText(/does not launch any sessions/)).toBeTruthy();
   expect(screen.getByText(/No other installed agent/)).toBeTruthy();
   expect(screen.getByRole("option", { name: /Codex/ })).toHaveProperty("disabled", true);
+});
+it("names both agents and the reset sessions, and links an unsent draft to its composer", async () => {
+  vi.mocked(invoke).mockResolvedValue(view); const onOpenComposer = vi.fn();
+  render(<FeatureHarnessDialog {...props()} hasDrafts onOpenComposer={onOpenComposer} />);
+  await screen.findByLabelText("New agent"); choose();
+  expect(screen.getByText(/Switching from Claude to OpenCode starts a fresh conversation in all 2 agent sessions/)).toBeTruthy();
+  expect(screen.getByText(/Terminals and custom sessions are not changed/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
+  expect(onOpenComposer).toHaveBeenCalledOnce();
 });

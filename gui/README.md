@@ -598,17 +598,21 @@ offline input against an isolated database and checkout.
 ### Appearance
 
 Open **Appearance** in the projects sidebar to select a theme. The desktop
-follows the TUI's configured theme by default, checking for changes every three
-seconds. The TUI's Default theme uses the GUI's system appearance. Choosing
-Light, Dark, Follow system, a TUI catalog theme (AMF, Dracula, Nord, Catppuccin
-and Gruvbox variants), or a custom theme creates an independent GUI preference.
-**Follow TUI theme** clears that override. GUI choices never write the TUI's
-`config.json`; they are saved in the desktop webview's local storage, shared
-between its windows and retained across restarts. If storage is unavailable,
-the choice lasts for the current window.
+matches the TUI's configured theme by default (**Match the AMF terminal
+app**), checking for changes every three seconds; the TUI's Default theme uses
+the system appearance. Choosing **Follow system**, Light, Dark, a catalog theme
+or a custom theme creates an independent GUI preference, and choosing **Match
+the AMF terminal app** again clears it. The theme list is grouped into
+automatic choices, built-in Light and Dark, light and dark TUI catalog themes (AMF, Dracula, Nord,
+Catppuccin and Gruvbox variants) and your custom themes. GUI choices never write
+the TUI's `config.json`; they are saved in the desktop webview's local storage,
+shared between its windows and retained across restarts. If storage is
+unavailable, the choice lasts for the current window. Terminal text size is a
+stepper from 11 to 28px; interface size scales the whole window.
 
 Built-in dark mode uses
-raised slate surfaces, stronger borders and brighter secondary text, status
+raised slate surfaces, quiet card borders with stronger control outlines, and
+secondary text that stays a clear step below primary text, plus status
 badges and syntax colors. The terminal shares the dark page background and
 updates its palette live when system appearance changes, keeping its attachment
 and history. ANSI black and bright black remain dark enough for backgrounds;

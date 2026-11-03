@@ -885,7 +885,8 @@ macOS runtime validation remains open.
 
 ### Help and keyboard shortcuts
 
-**Help**, the last item under **Tools** in the projects sidebar, opens
+**Help**, pinned at the bottom of the projects sidebar (outside the
+collapsible **Tools** group, so it is always visible), opens
 **Keyboard shortcuts**, this guide (**Documentation**, in your browser) and
 **Show first-run steps again**, which reopens the welcome steps until you pick
 a project or another page. Press **?** outside terminals, text inputs and

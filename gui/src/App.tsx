@@ -1430,8 +1430,6 @@ export default function App() {
             <button className="nav-item" onClick={() => setShowDebugLog(true)}>
               <Icon name="bug" /><span className="nav-label">Debug log</span>
             </button>
-            <HelpMenu onShortcuts={() => setShowShortcuts(true)} onFirstRun={() => setView({ kind: "welcome" })}
-              onError={reportError} />
           </div>
 
           <div className="nav-tree-toolbar">
@@ -1556,6 +1554,12 @@ export default function App() {
             <span className="plan-pill-open">Open</span>
           </button>
         )}
+        {/* Pinned below the scrolling nav, outside the collapsible Tools
+            group, so Help is always one click away. */}
+        <div className="sidebar-footer">
+          <HelpMenu onShortcuts={() => setShowShortcuts(true)} onFirstRun={() => setView({ kind: "welcome" })}
+            onError={reportError} />
+        </div>
       </ProjectsSidebar>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}

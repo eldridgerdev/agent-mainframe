@@ -130,7 +130,8 @@ it("? opens the keyboard shortcuts outside fields, and Help reopens the first-ru
   fireEvent.keyDown(window, { key: "Escape" });
   expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+  // Help is pinned outside the Tools group, which starts collapsed.
+  expect(screen.getByRole("button", { name: "Tools" }).getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "Help" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Keyboard shortcuts" }));
   expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();

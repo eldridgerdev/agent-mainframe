@@ -175,7 +175,7 @@ try:
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Dormant features")')
     click("Dormant features")
     for _ in range(40):
-        wait(f"!!{panel} && !{panel}.innerText.includes('Checking tmux activity')")
+        wait(f"!!{panel} && !{panel}.innerText.includes('Checking which features are idle')")
         if evaluate(f"{panel}.querySelectorAll('.dormancy-row').length") == 3:
             break
         click("Refresh")
@@ -218,7 +218,7 @@ try:
         "Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Close windows').disabled", allow_error=True)
     click("Back")
     click("Refresh")
-    wait(f"!{panel}.innerText.includes('Checking tmux activity') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Refresh'&&!b.disabled)")
+    wait(f"!{panel}.innerText.includes('Checking which features are idle') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Refresh'&&!b.disabled)")
     click("Close editors")
     wait("document.querySelector('[aria-label=\"Confirmed editor windows\"]').children.length===3")
     capture("004-editor-reconfirm.png",

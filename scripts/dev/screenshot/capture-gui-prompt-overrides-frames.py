@@ -224,13 +224,13 @@ try:
     wait('document.querySelectorAll(".library-item").length===25')
     ready()
     open_prompt("Session summary")
-    capture("001-overrides-list-and-layers.png", "The manager lists every registry prompt with the layer in effect; Session summary shows its placeholders, effective project template and the stored global Codex override.", ["Prompt overrides", "Session summary", "Project (amf.json) · all harnesses", "Global · Codex", "{{recent_lines}}", "PROJECT: one line about", "Context: Invoice API / Round invoice totals"], 'document.querySelectorAll(".library-item").length===25')
+    capture("001-overrides-list-and-layers.png", "The manager lists every registry prompt with the layer in effect; Session summary shows its placeholders, effective project template and the stored global Codex override.", ["Prompt overrides", "Session summary", "Project (amf.json) · all agents", "Global · Codex", "{{recent_lines}}", "PROJECT: one line about", "Context: Invoice API / Round invoice totals"], 'document.querySelectorAll(".library-item").length===25')
 
     click("New override…")
     wait('!!document.querySelector(".overrides-textarea")')
     choose("Agent", "")
     fill("Template", draft)
-    capture("002-editing-feature-override.png", "New override opens the effective template in a local editor. Scope and harness pickers offer only scopes this context allows.", ["Save to scope", "Harness", "Placeholders are not validated", "Save override"], f'document.querySelector(".overrides-textarea").value==={json.dumps(draft)} && document.querySelectorAll(".overrides-editor select")[0].value==="feature" && document.querySelectorAll(".overrides-editor select")[1].value===""')
+    capture("002-editing-feature-override.png", "New override opens the effective template in a local editor. Scope and harness pickers offer only scopes this context allows.", ["Save to scope", "Agent", "Placeholders are not validated", "Save override"], f'document.querySelector(".overrides-textarea").value==={json.dumps(draft)} && document.querySelectorAll(".overrides-editor select")[0].value==="feature" && document.querySelectorAll(".overrides-editor select")[1].value===""')
 
     evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
     wait('!!document.querySelector("[aria-label=\'Discard unsaved template\']")')
@@ -244,11 +244,11 @@ try:
 
     click("Reload current version")
     wait('!Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Reload current version")')
-    wait('document.body.innerText.includes("This replaces the existing Feature · all harnesses override")')
+    wait('document.body.innerText.includes("This replaces the existing Feature · all agents override")')
     click("Save override")
-    wait('document.body.innerText.includes("Saved the Feature · all harnesses override")')
+    wait('document.body.innerText.includes("Saved the Feature · all agents override")')
     ready()
-    capture("005-saved-feature-override.png", "After reloading, the save replaces the externally written feature override and becomes the effective template; project and global layers remain stored.", ["Saved the Feature · all harnesses override for session.summary", "Feature · all harnesses", "in effect", "Lead with failures.", "Project (amf.json) · all harnesses", "Global · Codex"])
+    capture("005-saved-feature-override.png", "After reloading, the save replaces the externally written feature override and becomes the effective template; project and global layers remain stored.", ["Saved the Feature · all agents override for session.summary", "Feature · all agents", "in effect", "Lead with failures.", "Project (amf.json) · all agents", "Global · Codex"])
     assert ("session.summary", "feature", str(repo), None, draft) in overrides(), overrides()
 
     click_label("Clear Global · Codex")
@@ -258,7 +258,7 @@ try:
     click("Clear override")
     wait('document.body.innerText.includes("Cleared the Global · Codex override")')
     ready()
-    capture("007-override-cleared.png", "Only the confirmed global Codex row is removed; the feature and project overrides stay in place.", ["Cleared the Global · Codex override for session.summary", "Feature · all harnesses", "Project (amf.json) · all harnesses"], '!Array.from(document.querySelectorAll("button")).some(b=>b.getAttribute("aria-label")==="Clear Global · Codex")')
+    capture("007-override-cleared.png", "Only the confirmed global Codex row is removed; the feature and project overrides stay in place.", ["Cleared the Global · Codex override for session.summary", "Feature · all agents", "Project (amf.json) · all agents"], '!Array.from(document.querySelectorAll("button")).some(b=>b.getAttribute("aria-label")==="Clear Global · Codex")')
     assert not any(row[1] == "global" for row in overrides()), overrides()
 
     amf_json.write_text("{ \"prompt_overrides\": ")
@@ -286,7 +286,7 @@ try:
     original = textarea_value()
     fill("Template", original.replace("You are helping a reviewer understand", "DEMO OVERRIDE: lead with risks.\nYou are helping a reviewer understand", 1))
     click("Save override")
-    wait('document.body.innerText.includes("Saved the Feature · all harnesses override for review.walkthrough")')
+    wait('document.body.innerText.includes("Saved the Feature · all agents override for review.walkthrough")')
     click("Done")
     wait('!document.querySelector("[aria-label=\'Prompt overrides\']")')
     assert evaluate('document.body.innerText.includes("Continue AI call")')
@@ -296,7 +296,7 @@ try:
     wait('document.body.innerText.includes("Continue AI call")')
     click("View prompt")
     wait('document.body.innerText.includes("DEMO OVERRIDE: lead with risks.")')
-    capture("010-precall-uses-saved-override.png", "The next walkthrough request resolves the saved feature override; the prompt preview shows it and still no AI call has been made.", ["Headless AI call: Final Review: file walkthrough", "DEMO OVERRIDE: lead with risks.", "File: invoice.test.ts", "Continue AI call", "Edit prompt"])
+    capture("010-precall-uses-saved-override.png", "The next walkthrough request resolves the saved feature override; the prompt preview shows it and still no AI call has been made.", ["Background AI call: Final Review: file walkthrough", "DEMO OVERRIDE: lead with risks.", "File: invoice.test.ts", "Continue AI call", "Edit prompt"])
     click("Cancel AI call")
     wait('!document.body.innerText.includes("Continue AI call")')
     assert calls() == [], "The override proof must not launch a harness"

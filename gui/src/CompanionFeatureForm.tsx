@@ -267,6 +267,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
         {finished && operation.state !== "created" && !producedFeature(operation) && <button type="button" className="btn btn-secondary" onClick={again}>Edit and try again</button>}
         <button type="button" className="btn btn-secondary" disabled={busy || running} title={running ? "Cancel the creation first" : undefined} onClick={onClose}>{finished || operationLost ? "Close" : "Cancel"}</button>
       </div>
+      {running && <p className="field-hint">Cancel the creation first to close this form.</p>}
     </section>
   );
 }

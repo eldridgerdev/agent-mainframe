@@ -46,8 +46,9 @@ use crate::ui::list::format_age;
 /// a running TUI receives and keeps in memory, so a stopped agent that
 /// reported only to a TUI is not listed. Worded for a GUI user, who has not
 /// met "hook" or "TUI".
-pub const TUI_ONLY_LIMIT: &str = "Only requests saved by the agent's notification are listed. \
-Answers given in the AMF terminal app, or by a stopped agent, may not appear here.";
+pub const TUI_ONLY_LIMIT: &str = "Only requests an agent's notification saved to disk are listed. \
+A question or finished turn that an agent reported only to a running AMF terminal app is not \
+saved, so it does not appear here, even after that agent stops.";
 
 const MESSAGE_MAX_CHARS: usize = 240;
 

@@ -50,7 +50,7 @@ with GuiFrames.from_argv() as frames:
     wait('!!document.querySelector(`[role=dialog] select`) && !document.querySelector(`[role=dialog] select`).disabled')
     initial_rows, initial_panes = rows(), original_panes()
     assert preference()=='claude' and selected()=='claude'
-    frames.capture('001-project-preference.png','The project preference is a separate action from agent availability and changes only new-feature defaults.', ['Project preferred harness','Existing sessions keep their harness','Nothing starts or stops'])
+    frames.capture('001-project-preference.png','The project preference is a separate action from agent availability and changes only new-feature defaults.', ['Project preferred agent','Existing sessions keep their harness','Nothing starts or stops'])
     select('Preferred agent','opencode'); click('Cancel','[role=dialog]')
     frames.capture('002-unsaved-preference.png','Cancel protects an edited preference; choosing OpenCode alone changes no saved bindings or running panes.', ['Discard unsaved settings','Keep editing','Discard changes'])
     assert preference()=='claude' and rows()==initial_rows and original_panes()==initial_panes
@@ -60,7 +60,7 @@ with GuiFrames.from_argv() as frames:
         db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
     click('Save settings','[role=dialog]')
     action('wait',text='changed. Reload before saving.',scope='[role=dialog]')
-    frames.capture('003-stale-preference.png','A real external SQLite preference edit invalidates the open form without touching any existing session.', ['changed. Reload before saving.','Project preferred harness'],allow_alert=True)
+    frames.capture('003-stale-preference.png','A real external SQLite preference edit invalidates the open form without touching any existing session.', ['changed. Reload before saving.','Project preferred agent'],allow_alert=True)
     assert preference()=='pi' and rows()==initial_rows and original_panes()==initial_panes
     click('Reload settings','[role=dialog]'); click('Discard changes')
     wait('document.querySelector(`[role=dialog] select`)?.value === "pi"')
@@ -73,7 +73,7 @@ with GuiFrames.from_argv() as frames:
     wait('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent"))?.querySelector("select").value === "opencode" && !Array.from(document.querySelectorAll(`[role=dialog] button`)).find(b=>b.textContent.trim()==="Reload agents")?.disabled')
     assert frames.evaluate('Array.from(document.querySelectorAll(`[role=dialog] label`)).find(e=>e.textContent.startsWith("Agent")).querySelector("select").value')=='opencode'
     fill('Branch / feature name','preferred-new-feature')
-    frames.capture('005-ordinary-default.png','An ordinary new feature initializes from the project OpenCode preference rather than the first supported harness.', ['New feature','Branch / feature name','Harness'],
+    frames.capture('005-ordinary-default.png','An ordinary new feature initializes from the project OpenCode preference rather than the first supported harness.', ['New feature','Branch / feature name','Agent'],
         expression='document.querySelector(`[role=dialog] input.mono`).value === "preferred-new-feature"')
     select('Feature preset','0'); fill('Branch / feature name','preferred-new-feature')
     click('Reload agents','[role=dialog]')

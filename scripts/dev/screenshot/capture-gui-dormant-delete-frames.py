@@ -150,7 +150,7 @@ dialog = "document.querySelector('[role=dialog][aria-label=\"Delete feature\"]')
 
 
 def delete_row(name):
-    wait(f"!!{panel} && !{panel}.innerText.includes('Checking tmux activity')")
+    wait(f"!!{panel} && !{panel}.innerText.includes('Checking which features are idle')")
     evaluate(f"{panel}.querySelector('button[aria-label=\"Delete {name}\"]').click()")
     wait(f"!!{dialog}")
 

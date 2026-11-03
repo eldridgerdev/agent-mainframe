@@ -1,0 +1,384 @@
+/* App shell: layout, sidebar navigation and the workspace tree. */
+
+/* ── Layout ─────────────────────────────────────────────── */
+
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+.sidebar {
+  width: clamp(220px, 26vw, 300px);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sidebar-content[hidden] { display: none; }
+.projects-sidebar-toggle { margin-left: auto; flex-shrink: 0; }
+.sidebar.sidebar-collapsed { width: 34px; }
+.sidebar-collapsed .brand { padding: 12px 2px; }
+.sidebar-collapsed .projects-sidebar-toggle { margin: 0; }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 12px;
+}
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 700;
+  font-size: 13px;
+}
+.brand-name { font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Sidebar navigation ─────────────────────────────────── */
+
+.nav { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+/* An expanded Tools group scrolls on its own so it can't push the project
+   tree out of the sidebar on a short window. */
+.nav-tools { max-height: 40vh; overflow-y: auto; }
+
+.nav-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 8px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.nav-note { padding: 4px 10px; font-size: 12.5px; color: var(--text-faint); }
+
+/* The folding "Tools" header: styled as a section label, acts as a button. */
+.nav-section-toggle { padding: 12px 0 2px; }
+.nav-section-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+}
+.nav-section-button:hover { background: var(--surface-3); color: var(--text); }
+.nav-section-actions { display: flex; align-items: center; gap: 2px; }
+
+/* The Projects header and filter stay put while the tree scrolls under them. */
+.nav-tree-toolbar {
+  position: sticky;
+  top: -4px;
+  z-index: 3;
+  margin: 0 -8px;
+  padding: 0 8px 6px;
+  background: var(--bg-sidebar);
+}
+.nav-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 0 8px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-faint);
+}
+.nav-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--text-muted); }
+/* The soft halo alone is nearly invisible; keyboard focus gets a solid ring. */
+.nav-filter:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav-filter input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.nav-filter input::placeholder { color: var(--text-faint); }
+.nav-filter input::-webkit-search-cancel-button { cursor: pointer; }
+.nav-filter-key {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-faint);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+}
+button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color: var(--text); }
+.nav-item-active, .nav-item-active:hover { background: var(--accent-soft) !important; color: var(--text) !important; }
+.nav-item-active .nav-label { font-weight: 550; }
+.nav-group { margin-bottom: 2px; }
+
+.nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-count { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.nav-chevron, .nav-link {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+.nav-chevron { width: 16px; height: 24px; justify-content: center; color: var(--text-faint); margin-left: -2px; }
+.nav-chevron:hover { color: var(--text); }
+.nav-link { flex: 1; min-width: 0; gap: 8px; height: 30px; text-align: left; font-weight: 500; color: var(--text); }
+
+/* Workspace tree: the TUI dashboard tree's rows (SidebarTree.tsx). */
+/* A project's name line and repository line are one click target. */
+.tree-project-head { border-radius: 6px; cursor: pointer; }
+.tree-project-head:hover { background: var(--surface-3); }
+.tree-project-head .nav-item, .tree-project-head div.nav-item:hover { background: transparent !important; }
+.tree-project-head-active, .tree-project-head-active:hover { background: var(--accent-soft); }
+.tree-project-head .nav-label { font-weight: 600; }
+.nav-group + .nav-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.tree-match { background: var(--amber-soft); color: inherit; border-radius: 2px; }
+.tree-project-meta {
+  padding: 0 8px 2px 32px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-empty-hint, .tree-project-plan { margin: 2px 8px 4px 32px; }
+.tree-empty-hint {
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: underline dotted;
+}
+.tree-empty-hint:hover { color: var(--accent); }
+.tree-feature { margin: 1px 0; padding: 3px 6px 4px 14px; border-radius: 6px; cursor: pointer; }
+.tree-sessions, .tree-meta .tree-chip:not(button) { cursor: default; }
+.tree-feature:hover { background: var(--surface-3); }
+.tree-feature-active, .tree-feature-active:hover { background: var(--accent-soft); }
+/* The accent tint costs faint text its margin (built-in light: 4.2:1), so
+   faint text inside an active row steps up to muted. */
+.tree-feature-active, .nav-item-active, .tree-project-head-active { --text-faint: var(--text-muted); }
+/* Same for --surface-3 (built-in light: 4.2:1): chips, tags, pills, code and
+   hover fills step faint text up to muted instead of darkening the global token.
+   A stopped chip is transparent, not surface-3, and its faint text is what
+   reads as "stopped", so it keeps the faint colour it inherits. */
+.tree-chip:not(.tree-chip-stopped), .tag, .chip, .empty-icon, .segmented, .md code, .md pre,
+.nav-item:hover, .tree-feature:hover, .btn-ghost:hover, .menu-item:hover { --text-faint: var(--text-muted); }
+.tree-row { display: flex; align-items: center; gap: 5px; min-height: 24px; }
+.tree-row .nav-chevron { flex-shrink: 0; }
+.tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+}
+.tree-feature-active .tree-name { font-weight: 600; }
+.tree-name-deleting { color: var(--text-faint); text-decoration: line-through; }
+.tree-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.tree-glyph {
+  width: 14px;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.tree-glyph .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+.glyph-worktree_script, .glyph-thinking { color: var(--accent); }
+.glyph-deleting { color: var(--red); }
+.glyph-waiting { color: var(--amber); }
+.glyph-ready { color: var(--green); }
+.tree-pending { flex-shrink: 0; font-weight: 700; color: var(--amber); }
+.tree-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  padding: 2px 0 0 38px;
+}
+/* A collapsed, unselected feature keeps its badges to one line; the rest
+   fade out at the edge and show in full once the row is expanded or open. */
+.tree-feature-compact .tree-meta {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+}
+.tree-feature-compact .tree-chip { flex-shrink: 0; }
+.tree-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-chip-warning { background: var(--amber-soft); color: var(--amber); font-weight: 600; }
+.tree-chip-danger { background: var(--red-soft); color: var(--red); font-weight: 600; }
+.tree-chip-info { background: var(--accent-soft); color: var(--accent); }
+.tree-chip-review { background: var(--green-soft); color: var(--green); }
+.tree-chip-detail { font-family: var(--mono); font-size: 11px; }
+.tree-chip-age { background: transparent; color: var(--amber); padding: 0 2px; }
+.tree-chip-stopped { background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.tree-chip-action:hover { text-decoration: underline; }
+.tree-chip-mode.mode-vibe { background: var(--amber-soft); color: var(--amber); }
+.tree-chip-mode.mode-supervibe {
+  /* Label on a solid surface; the rainbow is only the decorative ring. */
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(90deg, #e5484d, #e0ab3e, #30a46c, #4f5bd5, #8e4ec6) border-box;
+  border: 1.5px solid transparent;
+  color: var(--text);
+  font-weight: 600;
+}
+.tree-pr { font-weight: 600; }
+.tree-pr.pr-open { background: var(--accent-soft); color: var(--accent); }
+.tree-pr.pr-clear { background: var(--green-soft); color: var(--green); }
+.tree-pr.pr-merged { background: var(--purple-soft); color: var(--purple); }
+.tree-pr.pr-closed { background: var(--red-soft); color: var(--red); }
+.tree-summary {
+  padding: 2px 0 0 38px;
+  font-size: 11.5px;
+  color: var(--amber);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-sessions { margin: 3px 0 0 22px; border-left: 1px solid var(--border-strong); padding-left: 6px; }
+.tree-detail {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 0 2px;
+}
+.tree-session { border-radius: 5px; }
+.tree-session-active { background: var(--surface); box-shadow: var(--shadow-sm); }
+.tree-session-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+}
+.tree-session-row:hover { color: var(--accent); }
+.tree-session-stopped .tree-session-label { color: var(--text-faint); }
+.tree-session-state { width: 10px; flex-shrink: 0; display: inline-grid; place-items: center; }
+.tree-kind {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--mono), "AMF Symbols";
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.kind-claude { color: var(--kind-claude); }
+.kind-codex { color: var(--kind-codex); }
+.kind-pi { color: var(--kind-pi); }
+.kind-opencode { color: var(--kind-opencode); }
+.kind-terminal { color: var(--green); }
+.kind-nvim { color: var(--kind-nvim); }
+.kind-vscode { color: var(--kind-vscode); }
+.kind-custom, .kind-todos { color: var(--amber); }
+/* The label truncates first so the context indicator stays readable, but
+   never below a few characters: like the TUI row, the name wins. */
+.tree-session-label { flex: 1 1 0; min-width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-context { flex-shrink: 0; font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.ctx-normal { color: var(--green); }
+.ctx-warning { color: var(--amber); font-weight: 700; }
+.ctx-critical { color: var(--red); font-weight: 700; }
+.ctx-stale { font-style: italic; }
+.ctx-pending { color: var(--text-faint); }
+.tree-session-status {
+  padding: 0 4px 2px 33px;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-pill {
+  margin: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+  color: var(--accent);
+}
+.plan-pill > span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; flex: 1; color: var(--text); font-size: 13px; }
+.plan-pill .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-pill-open { font-size: 12px; font-weight: 600; }
+.plan-pill:hover { border-color: var(--accent); }

@@ -1,4 +1,27 @@
+import { readFileSync, readdirSync } from "node:fs";
 import { expect } from "vitest";
+
+const src = new URL("../src/", import.meta.url);
+
+/** A stylesheet under gui/src, e.g. "styles.css" or "styles/review.css". */
+export function readCss(name: string): string {
+  return readFileSync(new URL(name, src), "utf8");
+}
+
+/** The feature stylesheets in gui/src/styles, in the order main.tsx imports them. */
+export const FEATURE_STYLESHEETS = ["shell", "controls", "pages", "todos", "overlays", "plan", "review", "panels", "tools"]
+  .map((name) => `styles/${name}.css`);
+
+/** styles.css (tokens and base) followed by every feature stylesheet. */
+export function allStyles(): string {
+  return ["styles.css", ...FEATURE_STYLESHEETS].map(readCss).join("\n");
+}
+
+/** Every .css file under gui/src, as paths relative to it. */
+export function cssFiles(dir = ""): string[] {
+  return readdirSync(new URL(dir || ".", src), { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? cssFiles(`${dir}${entry.name}/`) : entry.name.endsWith(".css") ? [`${dir}${entry.name}`] : []);
+}
 
 export type Rgb = [number, number, number];
 

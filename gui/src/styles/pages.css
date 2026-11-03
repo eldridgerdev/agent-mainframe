@@ -1,0 +1,251 @@
+/* Pages, the feature list, tabs, the session view and the composer. */
+
+/* ── Pages ──────────────────────────────────────────────── */
+
+.page { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.page-fill { overflow: hidden; }
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 22px 28px 16px;
+}
+/* The title takes the room; the actions keep their own width and wrap below
+   it as a whole row rather than squeezing the name. */
+.page-title { flex: 1 1 280px; min-width: 0; }
+.page-title-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; min-width: 0; }
+.page-title-row > .badge, .page-title-row > .page-icon { flex: none; }
+.page-title h1 {
+  flex: 0 1 auto;
+  min-width: 8ch;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-actions { display: flex; flex: 0 1 auto; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 4px; margin-left: auto; }
+.page-actions > .btn { flex: none; }
+.page-actions-sep { flex: none; width: 1px; height: 16px; margin: 0 4px; background: var(--border); }
+.page-icon { color: var(--text-faint); }
+.page-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.page-subtitle .icon { color: var(--text-faint); }
+.page-subtitle > .workdir.mono { flex: 1 1 0; min-width: 0; }
+.crumb { margin-bottom: 4px; }
+
+.page-body { padding: 0 28px 28px; }
+.page-narrow { max-width: 760px; width: 100%; }
+
+.project-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .project-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+.panel-header h3 { font-size: 14px; font-weight: 600; }
+.panel-description { margin-top: 2px; font-size: 12.5px; color: var(--text-muted); }
+
+/* ── Feature list ───────────────────────────────────────── */
+
+.feature-list { list-style: none; margin: 0; padding: 0 6px 6px; }
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+  border-radius: var(--radius);
+}
+.feature-row:hover { background: var(--surface-2); }
+.feature-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.feature-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.feature-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feature-meta {
+  display: flex;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.feature-meta .mono { overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Tabs & session ─────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.tabs-spacer { flex: 1; }
+.tab-add { flex: none; align-self: center; margin: 0 0 4px 4px; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+/* Before .tab-active, so the selected tab stays readable even when stopped. */
+.tab-stopped { color: var(--text-faint); }
+.tab-active { color: var(--text); border-bottom-color: var(--accent); }
+
+.tab-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.tab-body > .scroll { overflow-y: auto; padding: 20px 28px 28px; flex: 1; }
+
+.session { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; padding: 14px 20px 20px; gap: 12px; }
+
+.term-frame {
+  flex: 1;
+  min-height: 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 4px 4px 12px;
+  background: var(--terminal-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+/* No padding here: FitAddon sizes the terminal from this element's computed
+   width, which includes padding under border-box, so padding would make it
+   overshoot and grow the frame on every refit. */
+.term-surface { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.term-frame :focus-visible { outline: none; }
+/* xterm's hidden textarea can't show a ring, so the frame says where typing goes. */
+.term-frame:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.term-error {
+  margin: -10px -4px 8px -12px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--red);
+  background: var(--surface);
+  border-left: 3px solid var(--red);
+}
+
+.composer {
+  flex-shrink: 0;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  overflow: hidden;
+}
+.composer-head {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 0 14px;
+  color: var(--accent);
+  min-width: 0;
+}
+.composer-head strong { color: var(--text); font-size: 13px; white-space: nowrap; }
+/* One toolbar row: the helper text gives way first, then hides. */
+.composer-head-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-head > .btn, .composer-head > .icon { flex: none; }
+@media (max-width: 1180px) { .composer-head-note { display: none; } }
+.composer textarea {
+  display: block;
+  width: 100%;
+  border: 0;
+  resize: vertical;
+  padding: 8px 14px;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-height: 40vh;
+}
+.composer textarea:focus { outline: none; }
+.composer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.steering-panel {
+  margin: 0 8px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.steering-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.steering-score { font-weight: 600; font-size: 12.5px; }
+.steering-good { color: var(--green); }
+.steering-warn { color: var(--amber); }
+.steering-bad { color: var(--red); }
+.steering-summary { margin: 8px 0; font-size: 12.5px; }
+.steering-checks, .steering-tips { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.steering-checks li, .steering-tips li { padding: 2px 0; }
+.steering-mark { font-family: var(--mono); margin-right: 6px; }
+.steering-checks li[data-present="true"] .steering-mark { color: var(--green); }
+.steering-checks li[data-present="false"] .steering-mark { color: var(--amber); }
+.steering-subhead { margin: 10px 0 4px; font-size: 12px; }
+.steering-body.is-stale { opacity: 0.55; }
+.steering-stale { margin: 8px 0 0; }
+.composer-foot {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 6px 8px 8px 14px;
+}
+.composer-help { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.composer-shortcuts { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.composer-shortcuts > span { white-space: nowrap; }
+.composer-foot > .btn { margin-left: auto; flex: none; }

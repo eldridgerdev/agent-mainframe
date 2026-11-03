@@ -1,10 +1,9 @@
-import { readdirSync, readFileSync } from "node:fs";
 import { expect, it } from "vitest";
+import { cssFiles, readCss } from "./contrast";
 
 // Colors must be tokens so TUI-derived themes can re-skin them. A hex or
 // rgb()/rgba() literal is allowed only inside a rule whose declarations are
 // custom properties (the palette blocks), or in the allow-list below.
-const dir = new URL("../src/", import.meta.url);
 
 type Allow = { selector: RegExp; property: RegExp; why: string };
 const ALLOWED: Allow[] = [
@@ -35,8 +34,8 @@ const literal = /#[0-9a-fA-F]{3,8}\b|rgba?\(/;
 
 it("keeps hex and rgb literals inside token blocks or the explicit allow-list", () => {
   const offenders: string[] = [];
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".css"))) {
-    for (const { selector, body } of rules(readFileSync(new URL(file, dir), "utf8"))) {
+  for (const file of cssFiles()) {
+    for (const { selector, body } of rules(readCss(file))) {
       const decls = body.split(";").map((d) => d.trim()).filter(Boolean);
       const props = decls.map((d) => d.slice(0, d.indexOf(":")).trim());
       if (props.every((p) => p.startsWith("--") || p === "color-scheme")) continue; // token block
@@ -54,8 +53,8 @@ it("keeps hex and rgb literals inside token blocks or the explicit allow-list", 
 
 it("keeps every px font-size at 11px or larger", () => {
   const offenders: string[] = [];
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".css"))) {
-    for (const { selector, body } of rules(readFileSync(new URL(file, dir), "utf8"))) {
+  for (const file of cssFiles()) {
+    for (const { selector, body } of rules(readCss(file))) {
       for (const m of body.matchAll(/(?:^|[;\s])font-size:\s*([\d.]+)px/g)) {
         if (Number(m[1]) < 11) offenders.push(`${file}: ${selector} { font-size: ${m[1]}px }`);
       }

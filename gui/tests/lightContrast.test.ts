@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { blocks, token, parse, over, contrast, type Rgb } from "./contrast";
+import { allStyles, blocks, token, parse, over, contrast, type Rgb } from "./contrast";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const light = blocks(css).light;
@@ -81,7 +81,7 @@ it("faint text inside a surface-3 container resolves to text-muted", () => {
   const read = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
   const override = /([^{}]+)\{[^{}]*--text-faint:\s*var\(--text-muted\)[^{}]*\}/g;
   const scoped = (f: string) => [...read(f).matchAll(override)].map((m) => m[1]).join(",");
-  const shared = scoped("styles.css");
+  const shared = [...allStyles().matchAll(override)].map((m) => m[1]).join(",");
   for (const sel of [".tree-chip", ".tag", ".chip", ".empty-icon", ".segmented", ".md code", ".md pre", ".nav-item:hover", ".tree-feature:hover", ".btn-ghost:hover", ".menu-item:hover"]) {
     expect(shared, sel).toContain(sel);
   }

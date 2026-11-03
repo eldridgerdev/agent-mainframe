@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the AMF GUI main window. Task 3 shell: no filesystem/shell/process permissions granted yet — those are added per Task 4+ operation as the GUI actually needs them.",
+  "description": "Capabilities for the AMF GUI main window. Task 3 shell: no filesystem/shell/process permissions granted yet — those are added per Task 4+ operation as the GUI actually needs them. dialog:allow-open backs the Browse… path pickers: it returns the chosen path to the page and grants no filesystem access by itself.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:webview:allow-set-webview-zoom"]
+  "permissions": ["core:default", "core:webview:allow-set-webview-zoom", "dialog:allow-open"]
 }

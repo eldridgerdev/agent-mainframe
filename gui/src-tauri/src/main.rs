@@ -2801,6 +2801,9 @@ fn main() {
     agent_mainframe::gui_contract::use_cli_for_session_hooks();
     agent_mainframe::gui_contract::use_configured_tmux_server();
     tauri::Builder::default()
+        // Native folder/file pickers for the Browse… buttons; only
+        // `dialog:allow-open` is granted (capabilities/default.json).
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let db_path = agent_mainframe::project::db_path();
             let gui = GuiHandle::new(db_path)?;

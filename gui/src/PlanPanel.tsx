@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { agentName, PlanAction, PlanInput, PlanView, PrecallView } from "./api";
 import Markdown from "./Markdown";
 import { Icon, IconName, Spinner } from "./ui";
+import { BrowseButton } from "./BrowseButton";
 
 const LOADING_TEXT: Record<string, string> = {
   ai_loading: "Generating follow-up questions…",
@@ -163,6 +164,15 @@ export default function PlanPanel({
                 onChange={(event) => setDocPath(event.target.value)}
                 placeholder="Attach a reference document (path)"
                 aria-label="Reference document path"
+              />
+              <BrowseButton
+                kind="file"
+                label="Browse for reference document"
+                dialogTitle="Choose a reference document"
+                defaultPath={docPath}
+                disabled={busy}
+                // Fills the field; Attach still confirms, as for a typed path.
+                onPick={setDocPath}
               />
               <button
                 className="btn btn-sm btn-secondary"

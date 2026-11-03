@@ -1,0 +1,19 @@
+/* GitHub problems in the PR panels (GUI UX sweep, Epic 6: U-11). Kept apart
+ * from styles.css like firstRun.css, so token work there cannot collide. */
+
+.github-problem-notice { flex-direction: column; gap: 6px; }
+.github-problem-notice a { color: var(--accent); }
+.github-problem-command,
+.github-problem-detail {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.github-problem-command { user-select: all; }
+.github-problem-detail { max-height: 10em; overflow: auto; margin-top: 4px; }
+.github-problem-notice details summary { cursor: pointer; color: var(--text-muted); }

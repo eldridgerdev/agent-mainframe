@@ -339,6 +339,7 @@ pub fn delete(gui: &GuiHandle, todo_id: &str) -> GuiResult<()> {
 
 fn invalid(message: impl Into<String>) -> GuiError {
     GuiError {
+        github: None,
         kind: crate::gui_contract::GuiErrorKind::InvalidInput,
         message: message.into(),
     }
@@ -346,6 +347,7 @@ fn invalid(message: impl Into<String>) -> GuiError {
 
 fn not_found(todo_id: &str) -> GuiError {
     GuiError {
+        github: None,
         kind: crate::gui_contract::GuiErrorKind::NotFound,
         message: format!("TODO '{todo_id}' was not found (it may have been deleted elsewhere)"),
     }

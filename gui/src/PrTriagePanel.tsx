@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentSlug, asGuiError } from "./api";
+import { AgentSlug, type GuiError, asGuiError } from "./api";
+import GithubProblemNotice from "./GithubProblemNotice";
 import Markdown from "./Markdown";
 import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
 import ScreenshotViewer from "./ScreenshotViewer";
@@ -41,7 +42,11 @@ function hunkClass(line: string) {
 export default function PrTriagePanel({ target, onClose, onHandoff, embedded = false, embeddedActive = true, embeddedView, onEmbeddedViewChange, onEmbeddedBusyChange, onRequestClose }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void; embedded?: boolean; embeddedActive?: boolean; embeddedView?: PrTriageView | null; onEmbeddedViewChange?: (view: PrTriageView) => void; onEmbeddedBusyChange?: (busy: boolean) => void; onRequestClose?: (requestClose: () => void) => void }) {
   const [view, setView] = useState<PrTriageView | null>(null);
   const [busy, setBusy] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // The last refusal, kept whole so a GitHub problem can name its fix.
+  const [failure, setFailure] = useState<GuiError | null>(null);
+  const error = failure?.message ?? null;
+  // Bumped by Retry when opening PR Triage itself failed.
+  const [attempt, setAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [numberDraft, setNumberDraft] = useState("");
   const [investigate, setInvestigate] = useState<{ commentId: number; harness: AgentSlug; text: string; followUp: boolean } | null>(null);
@@ -75,10 +80,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     if (embedded) return;
     let live = true;
     prTriageBegin(target).then((next) => { if (live) setView(next); })
-      .catch((err) => { if (live) setError(asGuiError(err).message); })
+      .catch((err) => { if (live) setFailure(asGuiError(err)); })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
-  }, [target.project_id, target.feature_id, embedded, embeddedView?.workflow_id]);
+  }, [target.project_id, target.feature_id, embedded, embeddedView?.workflow_id, attempt]);
 
   useEffect(() => { if (embedded && view) onEmbeddedViewChange?.(view); }, [embedded, view, onEmbeddedViewChange]);
 
@@ -95,7 +100,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         const next = await prTriageSnapshot(workflowId);
         if (live) setView((current) => current?.workflow_id === workflowId && !pending.current ? next : current);
       } catch (err) {
-        if (live) setError(asGuiError(err).message);
+        if (live) setFailure(asGuiError(err));
       } finally {
         // Keep at most one read in flight; GitHub-backed snapshots can take
         // longer than the normal polling interval.
@@ -135,14 +140,14 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     setBusy(true);
     try {
       const next = await prTriageAct(view, action);
-      setError(null);
+      setFailure(null);
       if (next === null) onClose(); else if (next.handoff) {
         onHandoff?.(next.handoff);
         onClose();
       } else setView(next);
       return true;
     } catch (err) {
-      setError(asGuiError(err).message);
+      setFailure(asGuiError(err));
       // A refusal may have changed what is pending; show the current state.
       try { setView(await prTriageSnapshot(view.workflow_id)); } catch { /* keep the last view */ }
       return false;
@@ -183,13 +188,13 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   const dedicatedCreated = useCallback(async (result: PrDestinationPrepared) => {
     const created = result.created_target;
     if (!created || !view) return;
-    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setError(asGuiError(err).message); return; }
+    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setFailure(asGuiError(err)); return; }
     if (dedicatedFor === "batch") setBatchChoice(created.session_id); else setFixChoice(created.session_id);
   }, [view?.workflow_id, dedicatedFor]);
   const companionCreated = useCallback(async (result: PrDestinationPrepared) => {
     const created = result.created_target;
     if (!created || !view) return;
-    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setError(asGuiError(err).message); return; }
+    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setFailure(asGuiError(err)); return; }
     if (companionFor === "batch") setBatchChoice(created.session_id); else setFixChoice(created.session_id);
   }, [view?.workflow_id, companionFor]);
 
@@ -223,6 +228,21 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     if (await act({ kind: "precall_confirm" })) setInvestigate(null);
   }
 
+  // One fixable GitHub problem at a time, from whichever read hit it.
+  const githubProblem = failure?.github ?? view?.picker?.github_problem ?? view?.github_problem ?? null;
+  // Retry re-reads what failed: the list or the open PR, or PR Triage itself
+  // when it never opened. Mid-fetch there is nothing to retry yet.
+  // An open reply, fix or AI call has to be finished first, so Retry is not offered then.
+  const canRetry = view
+    ? view.stage === "pick" || (view.stage === "review" && !view.reply && !view.fix_draft && !view.batch_fix && !view.precall)
+    : !embedded;
+  function retry() {
+    if (view) { void act({ kind: "refresh" }); return; }
+    setFailure(null);
+    setBusy(true);
+    setAttempt((n) => n + 1);
+  }
+
   return (
     <>
     <Modal inline={embedded} label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
@@ -233,8 +253,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
         <button className="btn btn-warning" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
       </div>}
-      {error && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
-      {view?.error && view.error !== error && <div className="callout callout-danger" role="alert"><p>{view.error}</p></div>}
+      {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy || !!view?.picker?.loading}
+        onRetry={canRetry ? retry : undefined} />}
+      {error && !failure?.github && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
+      {view?.error && !view.github_problem && view.error !== error && <div className="callout callout-danger" role="alert"><p>{view.error}</p></div>}
       {view?.notice && <p role="status" className="muted">{view.notice}</p>}
       {!view && busy && <p className="row"><Spinner /> Loading pull requests…</p>}
 
@@ -255,8 +277,15 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             </Field>
             <button className="btn btn-secondary" disabled={busy || !numberDraft}>Open by number</button>
           </form>
+          <button type="button" className="btn btn-secondary" disabled={busy || view.picker.loading}
+            onClick={() => void act({ kind: "refresh" })}>Refresh</button>
         </div>
-        {view.picker.error && <div className="callout callout-warning" role="alert"><p>Could not list pull requests: {view.picker.error}</p></div>}
+        {view.picker.error && !view.picker.github_problem && <div className="callout callout-warning github-problem-notice" role="alert">
+          <p><strong>Could not list pull requests</strong></p>
+          <p>Pull requests are read with the GitHub CLI (gh). If this keeps failing, install it from cli.github.com,
+            run <code>gh auth login</code> in a terminal, then press Refresh.</p>
+          <details className="small"><summary>Details</summary><pre className="github-problem-detail">{view.picker.error}</pre></details>
+        </div>}
         {view.picker.loading && <p className="row"><Spinner /> Loading pull requests…</p>}
         {view.picker.entries.length === 0 && !view.picker.error && !view.picker.loading && <p className="muted">No {view.picker.include_closed ? "" : "open "}pull requests. Open one by number instead.</p>}
         <ul className="pr-list">
@@ -313,7 +342,9 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         </section>}
 
         {view?.write_confirm && <section className="review-confirm" role="alertdialog" aria-label="Confirm GitHub write">
-          <p><strong>{view.write_confirm.destination}</strong>. This writes to GitHub as your <span className="mono">gh</span> account.</p>
+          <p><strong>{view.write_confirm.destination}</strong>. This writes to GitHub as {view.github_user
+            ? <strong>@{view.github_user}</strong>
+            : <>your <span className="mono">gh</span> account</>}.</p>
           {view.write_confirm.body !== null && <pre className="doc pr-posted">{view.write_confirm.body}</pre>}
           <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_write" })}>
             {view.write_confirm.kind === "reply" ? "Post reply to GitHub" : view.write_confirm.kind === "resolve" ? "Resolve thread on GitHub" : "Reopen thread on GitHub"}

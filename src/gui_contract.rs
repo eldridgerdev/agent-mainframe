@@ -37,6 +37,11 @@ pub mod sidebar;
 pub struct GuiError {
     pub kind: GuiErrorKind,
     pub message: String,
+    /// Set when the failure is a GitHub problem the user can fix (no `gh`,
+    /// not signed in, rate limited, offline, no GitHub remote), so a PR panel
+    /// can name the fix and offer Retry instead of showing `gh`'s stderr.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<Box<crate::gui_github_errors::GithubProblem>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -66,6 +71,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::NotFound,
             message: message.into(),
+            github: None,
         }
     }
 
@@ -73,6 +79,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::Conflict,
             message: message.into(),
+            github: None,
         }
     }
 
@@ -80,6 +87,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::NeedsApproval,
             message: message.into(),
+            github: None,
         }
     }
 }
@@ -118,9 +126,19 @@ impl From<anyhow::Error> for GuiError {
         {
             return Self::conflict(err.to_string());
         }
+        // A `gh` failure is shown as its fix; the raw text stays in
+        // `github.detail`.
+        if let Some(problem) = crate::gui_github_errors::github_problem_of(&err) {
+            return Self {
+                kind: GuiErrorKind::Internal,
+                message: format!("{} {}", problem.title, problem.message),
+                github: Some(Box::new(problem)),
+            };
+        }
         Self {
             kind: GuiErrorKind::Internal,
             message: err.to_string(),
+            github: None,
         }
     }
 }
@@ -997,6 +1015,7 @@ impl GuiHandle {
 
     fn stop_failed_recovery(&mut self, tmux_session: &str) -> GuiResult<()> {
         self.app.tmux.kill_session(tmux_session).map_err(|error| GuiError {
+            github: None,
             kind: GuiErrorKind::Internal,
             message: format!(
                 "Recovery could not be saved, and the newly started background session '{tmux_session}' could not be stopped: {error}"
@@ -1036,6 +1055,7 @@ impl GuiHandle {
     /// reason to reach into `App`.
     pub(crate) fn db(&self) -> GuiResult<&crate::db::AmfDb> {
         self.app.db.as_ref().ok_or_else(|| GuiError {
+            github: None,
             kind: GuiErrorKind::Internal,
             message: "No database attached to this session".to_string(),
         })
@@ -1330,12 +1350,14 @@ impl GuiHandle {
         let title = title.trim();
         if title.is_empty() {
             return Err(GuiError {
+                github: None,
                 kind: GuiErrorKind::InvalidInput,
                 message: "A TODO needs a title".to_string(),
             });
         }
         if title.contains(['\n', '\r']) {
             return Err(GuiError {
+                github: None,
                 kind: GuiErrorKind::InvalidInput,
                 message: "Quick capture is one line; add notes by editing the TODO".to_string(),
             });
@@ -2421,6 +2443,22 @@ mod tests {
 
         let other = anyhow::anyhow!("disk full").context("feature was not saved");
         assert_eq!(GuiError::from(other).kind, GuiErrorKind::Internal);
+    }
+
+    #[test]
+    fn a_gh_failure_carries_its_fix_and_keeps_the_raw_text_as_detail() {
+        let missing = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("Failed to run `gh pr view`.");
+        let error = GuiError::from(missing);
+        let problem = error.github.expect("gh spawn failure is typed");
+        assert_eq!(
+            problem.kind,
+            crate::gui_github_errors::GithubProblemKind::CliMissing
+        );
+        assert!(error.message.contains("Install it from cli.github.com"));
+        assert!(problem.detail.contains("Failed to run `gh pr view`."));
+        let json = serde_json::to_value(GuiError::from(anyhow::anyhow!("disk full"))).unwrap();
+        assert!(json.get("github").is_none(), "absent, not null: {json}");
     }
 
     fn store_with_one_feature(status: ProjectStatus) -> ProjectStore {

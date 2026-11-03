@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { asGuiError } from "./api";
+import { type GuiError, asGuiError } from "./api";
+import GithubProblemNotice from "./GithubProblemNotice";
 import { DiffLine, ReviewLocation, ReviewSeverity, ReviewSpan } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
@@ -25,7 +26,11 @@ export type EmbeddedReview = {
 export default function PrReviewPanel({ projectId, onClose, embedded }: { projectId: string; onClose: () => void; embedded?: EmbeddedReview }) {
   const [view, setView] = useState<PrReviewView | null>(null);
   const [busy, setBusy] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // The last refusal, kept whole so a GitHub problem can name its fix.
+  const [failure, setFailure] = useState<GuiError | null>(null);
+  const error = failure?.message ?? null;
+  // Bumped by Retry when PR Review itself could not open.
+  const [attempt, setAttempt] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [summary, setSummary] = useState("");
@@ -38,10 +43,10 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
   useEffect(() => {
     let live = true;
     (embedded ? workspaceReviewOpen(embedded.workflowId, embedded.number) : prReviewBegin(projectId)).then((next) => { if (live) setView(next); })
-      .catch((err) => { if (live) setError(asGuiError(err).message); })
+      .catch((err) => { if (live) setFailure(asGuiError(err)); })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
-  }, [projectId, embedded?.workflowId, embedded?.number]);
+  }, [projectId, embedded?.workflowId, embedded?.number, attempt]);
   // A Files review opens its one PR by itself, so the pick stage is only a wait.
   const waiting = !!view?.loading || !!view?.submission?.posting || (!!embedded && view?.stage === "pick" && !view.pin_error && !view.error);
   useEffect(() => {
@@ -50,7 +55,7 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
     const timer = window.setInterval(() => {
       void prReviewSnapshot(id).then((next) => {
         setView((current) => current?.workflow_id === id && next.revision >= current.revision && !pending.current ? next : current);
-      }).catch((err) => setError(asGuiError(err).message));
+      }).catch((err) => setFailure(asGuiError(err)));
     }, 700);
     return () => window.clearInterval(timer);
   }, [view?.workflow_id, waiting, busy]);
@@ -129,12 +134,12 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
     setBusy(true);
     try {
       const next = await prReviewAct(view, action);
-      setError(null);
+      setFailure(null);
       setDiscard(null);
       if (next) setView(next); else onClose();
       return true;
     } catch (err) {
-      setError(asGuiError(err).message);
+      setFailure(asGuiError(err));
       try {
         const next = await prReviewSnapshot(view.workflow_id);
         // Failed draft writes can leave unpersisted text in the backend snapshot.
@@ -160,8 +165,16 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
       <p>{thread.text}</p>{thread.suggestion !== null && <pre>{thread.suggestion}</pre>}{thread.note && <p className="muted small">{thread.note}</p>}
     </div>)}</div>;
   } : undefined;
+  const githubProblem = failure?.github ?? view?.github_problem ?? null;
+  function reopen() {
+    setFailure(null);
+    setBusy(true);
+    setAttempt((n) => n + 1);
+  }
   const body = <>
-    {(error || view?.error) && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
+    {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy || waiting}
+      onRetry={!view ? (embedded ? undefined : reopen) : view.stage === "pick" && !embedded ? () => void act({ kind: "retry" }) : undefined} />}
+    {(error || view?.error) && !githubProblem && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
     {view?.notice && <p role="status">{view.notice}</p>}
     {discard && <div className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
       <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>
@@ -216,7 +229,7 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
             contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
           {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
             {file.line_comments.map((thread, index) => <div key={index}>
-              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} · {thread.side} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
+              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
               {thread.suggestion !== null && <pre>{thread.suggestion}</pre>}
               {thread.note && <p className="muted small">{thread.note}</p>}
               <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("line_comment", thread)}>Edit line comment</button>
@@ -244,11 +257,12 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
       <h3>Post {view.submission.event.replaceAll("_", " ").toLowerCase()} review to PR #{view.number}</h3>
       <Markdown source={view.submission.body || "No summary."} />
       {view.submission.comments.map((c, i) => <div key={i}>
-        <strong>{c.path}:{c.start_line != null ? `${c.start_line}–${c.line}` : c.line} ({c.side === "LEFT" ? "base" : "current"} · {c.side})</strong>
+        <strong>{c.path}:{c.start_line != null ? `${c.start_line}–${c.line}` : c.line} ({c.side === "LEFT" ? "base" : "current"})</strong>
         <Markdown source={c.body} />
       </div>)}
       {view.submission.file_comments.map((c, i) => <div key={i}><strong>{c.path}</strong><Markdown source={c.body} /></div>)}
-      {view.submission.error && <p role="alert">{view.submission.error}</p>}
+      {view.submission.github_problem ? <GithubProblemNotice problem={view.submission.github_problem} />
+        : view.submission.error && <p role="alert">{view.submission.error}</p>}
       <button className="btn btn-secondary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "cancel_submit" })}>Keep editing</button>
       {view.submission.head_moved ? <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "reopen" })}>Reopen updated PR</button>
         : <button className="btn btn-primary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "confirm_submit" })}>{view.submission.posting ? "Posting…" : "Confirm and post to GitHub"}</button>}

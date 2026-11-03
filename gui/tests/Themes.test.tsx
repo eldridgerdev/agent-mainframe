@@ -28,9 +28,10 @@ beforeEach(() => {
   vi.mocked(invoke).mockResolvedValue(catalog);
 });
 afterEach(() => { cleanup(); client?.clear(); resetThemesForTest(); vi.restoreAllMocks(); });
-it("follows live TUI changes, then retains an independent GUI override until cleared", async () => {
+it("follows live TUI changes by default, then retains an independent GUI override until cleared", async () => {
   mount();
   await screen.findByRole("option", { name: "Nord" });
+  expect((screen.getByLabelText("Theme") as HTMLSelectElement).value).toBe("follow-tui");
   await waitFor(() => expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#88c0d0"));
   act(() => client.setQueryData(["theme-catalog"], { ...catalog, tui_theme: "latte" }));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
@@ -39,10 +40,29 @@ it("follows live TUI changes, then retains an independent GUI override until cle
   act(() => client.setQueryData(["theme-catalog"], { ...catalog, tui_theme: "latte" }));
   expect(document.documentElement.dataset.theme).toBe("dark");
   expect(window.localStorage.getItem("amf.gui.theme")).toBe("nord");
+  // Follow system is an explicit GUI choice, stored like any other.
+  fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "system" } });
+  expect(document.documentElement.dataset.theme).toBeUndefined();
+  expect(window.localStorage.getItem("amf.gui.theme")).toBe("system");
   fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "follow-tui" } });
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(window.localStorage.getItem("amf.gui.theme")).toBeNull();
   expect(vi.mocked(invoke).mock.calls.every(([command]) => command === "theme_catalog")).toBe(true);
+});
+it("groups the theme list into automatic, built-in, light, dark and custom", async () => {
+  mount();
+  await screen.findByRole("option", { name: "Nord" });
+  const groups = Array.from(screen.getByLabelText("Theme").querySelectorAll("optgroup")).map((group) =>
+    [group.label, Array.from(group.querySelectorAll("option")).map((option) => option.value)]);
+  expect(groups).toEqual([
+    ["Automatic", ["follow-tui", "system"]],
+    ["Built-in", ["light", "dark"]],
+    ["Light themes", ["latte"]],
+    ["Dark themes", ["nord"]],
+    ["Your custom themes", ["custom:ocean"]],
+  ]);
+  // Labels match every other form: a bold field label above the control.
+  expect(screen.getByText("Theme", { selector: ".field-label" })).toBeTruthy();
 });
 it("restores a saved choice across initialization and tolerates unavailable storage", () => {
   setThemePreference("custom:ocean"); resetThemesForTest();

@@ -26,7 +26,7 @@ it("applies desktop zoom immediately, restores saved sizes on mount and resets t
   resetSizingForTest();
   mount();
   await waitFor(() => expect(zoom).toHaveBeenLastCalledWith(1.5));
-  expect((screen.getByLabelText("Terminal text size") as HTMLSelectElement).value).toBe("19");
+  expect((screen.getByLabelText("Terminal text size") as HTMLInputElement).value).toBe("19");
   fireEvent.change(screen.getByLabelText("Interface size"), { target: { value: "125" } });
   await waitFor(() => expect(zoom).toHaveBeenLastCalledWith(1.25));
   fireEvent.change(screen.getByLabelText("Terminal text size"), { target: { value: "22" } });
@@ -45,7 +45,7 @@ it("adopts another window's sizing without echoing writes, including storage cle
     key: "amf.gui.sizing", newValue: JSON.stringify({ interfaceScale: 175, terminalFontSize: 21 }),
   })));
   await waitFor(() => expect(zoom).toHaveBeenLastCalledWith(1.75));
-  expect((screen.getByLabelText("Terminal text size") as HTMLSelectElement).value).toBe("21");
+  expect((screen.getByLabelText("Terminal text size") as HTMLInputElement).value).toBe("21");
   expect(setItem).not.toHaveBeenCalled();
   act(() => window.dispatchEvent(new StorageEvent("storage", { key: null })));
   await waitFor(() => expect(zoom).toHaveBeenLastCalledWith(1));
@@ -82,4 +82,27 @@ it("keeps the newest size when native zoom requests are still pending", async ()
   await act(async () => complete());
   await waitFor(() => expect(zoom).toHaveBeenLastCalledWith(2));
   expect(zoom.mock.calls.map(([factor]) => factor)).toEqual([1, 2]);
+});
+
+it("steps the terminal text size within range and keeps a half-typed value", () => {
+  setSizingPreference({ interfaceScale: 100, terminalFontSize: 12 });
+  mount();
+  const field = screen.getByLabelText("Terminal text size") as HTMLInputElement;
+  const smaller = screen.getByRole("button", { name: "Smaller terminal text" });
+  fireEvent.click(smaller);
+  expect(field.value).toBe("11");
+  expect(smaller).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Larger terminal text" }));
+  expect(readSizingPreference().terminalFontSize).toBe(12);
+  // Clearing the field to type a new size must not snap it back mid-edit.
+  fireEvent.change(field, { target: { value: "" } });
+  expect(field.value).toBe("");
+  expect(readSizingPreference().terminalFontSize).toBe(12);
+  fireEvent.change(field, { target: { value: "40" } });
+  expect(readSizingPreference().terminalFontSize).toBe(12);
+  fireEvent.blur(field);
+  expect(field.value).toBe("12");
+  setSizingPreference({ interfaceScale: 100, terminalFontSize: 28 });
+  mount();
+  expect(screen.getAllByRole("button", { name: "Larger terminal text" }).at(-1)).toHaveProperty("disabled", true);
 });

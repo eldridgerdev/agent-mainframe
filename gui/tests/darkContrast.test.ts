@@ -17,16 +17,17 @@ function check(label: string, fg: Rgb, bg: Rgb, minimum = 4.5) {
 it("keeps dark body text, status/context colours and chrome readable on real surfaces", () => {
   failures.length = 0;
   for (const [name, bg] of Object.entries(backgrounds)) {
-    for (const text of ["text", "text-muted", "text-faint", "accent", "green", "amber", "red"]) {
+    // Faint text inside a surface-3 container resolves to text-muted (see
+    // lightContrast.test.ts), so faint is only held to AA on the others.
+    const texts = name === "surface-3" ? ["text", "text-muted"] : ["text", "text-muted", "text-faint"];
+    for (const text of [...texts, "accent", "green", "amber", "red"]) {
       check(`${text} on ${name}`, parse(token(dark, text)).rgb, bg);
     }
-    for (const border of ["border", "border-strong"]) {
-      check(`${border} on ${name}`, parse(token(dark, border)).rgb, bg, 3);
-    }
+    check(`border-strong on ${name}`, parse(token(dark, "border-strong")).rgb, bg, 3);
     for (const colour of ["accent", "green", "amber", "red"]) {
       const tinted = over(token(dark, `${colour}-soft`), bg);
       check(`${colour} badge on ${name}`, parse(token(dark, colour)).rgb, tinted);
-      for (const text of ["text", "text-muted", "text-faint"]) {
+      for (const text of texts) {
         check(`${text} on ${colour}-soft/${name}`, parse(token(dark, text)).rgb, tinted);
       }
     }
@@ -36,6 +37,20 @@ it("keeps dark body text, status/context colours and chrome readable on real sur
   }
   expect(blocks(rulesCss).dark).toContain(".switch::after { background: var(--accent-fg); }");
   expect(failures).toEqual([]);
+});
+
+// --border outlines cards and separates regions; it is decoration, not a
+// control boundary (controls use --border-control), so it should recede.
+// Muted and faint text must stay visibly below primary text.
+it("keeps the dark border quiet and the text hierarchy distinct", () => {
+  const ratio = (fg: string, bg: string) => contrast(parse(token(dark, fg)).rgb, parse(token(dark, bg)).rgb);
+  for (const name of surfaces) {
+    expect(ratio("border", name), `border on ${name}`).toBeGreaterThanOrEqual(1.3);
+    expect(ratio("border", name), `border on ${name}`).toBeLessThan(ratio("border-strong", name));
+    expect(ratio("border-strong", name), `border-strong on ${name}`).toBeLessThan(ratio("border-control", name));
+  }
+  expect(ratio("text", "surface") / ratio("text-muted", "surface")).toBeGreaterThanOrEqual(1.4);
+  expect(ratio("text-muted", "surface")).toBeGreaterThan(ratio("text-faint", "surface"));
 });
 
 it("keeps the new dark control, on-colour and disabled tokens readable in both dark blocks", () => {

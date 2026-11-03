@@ -38,7 +38,7 @@ with GuiFrames.from_argv() as frames:
     click('Test agent')
     action('wait',expression='!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
     action('fill', name='Draft prompt', value='Existing unsent draft. 🦀\nKeep this context.')
-    click('Feature tools'); click('PR Workspace')
+    click('Feature tools'); click('PR workspace')
     action('wait',text='Round invoice totals to cents')
     action('wait',expression='!!Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`))')
     frames.evaluate('Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`)).click()')

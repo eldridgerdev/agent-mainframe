@@ -265,7 +265,7 @@ try:
     x.sync()
     wait(has_button("Round invoice totals"))
     click("Round invoice totals")
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')

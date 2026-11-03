@@ -200,7 +200,7 @@ try:
     window.configure(x=0, y=0, width=1500, height=1100)
     x.sync()
     wait('document.querySelector("h1")?.textContent==="Invoice API"')
-    header_menu("Pull request tools", "PR Review")
+    header_menu("Pull request tools", "Write a review")
     wait('document.querySelectorAll(".pr-entry").length===2')
     evaluate('Array.from(document.querySelectorAll(".pr-entry")).find(b=>b.textContent.includes("#12")).click()')
     wait('document.body.innerText.includes("pinned to head") && document.querySelectorAll(".diff-line-select").length>0')

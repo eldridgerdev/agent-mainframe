@@ -1589,10 +1589,10 @@ export default function App() {
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
-      {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
+      {prReviewProject && <Suspense fallback={<Modal label="Loading Write a review" title="Loading Write a review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
         <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
       </Suspense>}
-      {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
+      {prTriageTarget && <Suspense fallback={<Modal label="Loading review comments" title="Loading review comments" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
       {issueBrowserFor && (() => {
@@ -2245,10 +2245,10 @@ function ProjectView({
               text="Pull request"
               icon={null}
               className="btn btn-ghost btn-sm"
-              title="Triage or review a pull request"
+              title="Read feedback on a pull request, or review one"
               items={[
-                { label: "PR Triage", icon: "gitPullRequest", onSelect: onPrTriage },
-                { label: "PR Review", icon: "gitCompare", onSelect: onPrReview },
+                { label: "Review comments", icon: "gitPullRequest", title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                { label: "Write a review", icon: "gitCompare", title: "Comment on someone else's pull request and post your review (PR Review in the terminal app)", onSelect: onPrReview },
               ]}
             />}
             <Menu
@@ -2552,8 +2552,8 @@ function FeatureView({
                 { label: "Screenshots", icon: "camera", onSelect: () => onScreenshots(null) },
                 ...(project.is_git ? [
                   { section: "Pull request" },
-                  { label: "PR Triage", icon: "gitPullRequest" as const, onSelect: onPrTriage },
-                  { label: "PR Workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", onSelect: onPrWorkspace },
+                  { label: "Review comments", icon: "gitPullRequest" as const, title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                  { label: "PR workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", title: "Files, review threads and AI findings in one page. New and still changing; your GitHub data is not affected.", onSelect: onPrWorkspace },
                 ] : []),
               ]}
             />

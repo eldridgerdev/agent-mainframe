@@ -225,11 +225,11 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
 
   return (
     <>
-    <Modal inline={embedded} label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
-      title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
-      subtitle="Read review feedback, investigate it, prepare or send an agent fix, and reply. GitHub writes and AI calls always ask first.">
-      {confirmClose && <ConfirmCallout label="Discard and close PR Triage" className="callout callout-warning">
-        <p>Discard your unsent fix, reply or investigation text and close PR Triage?</p>
+    <Modal inline={embedded} label="Review comments" size="xl" dismissable={!busy && !currentImage} onClose={close}
+      title={view ? `Review comments · ${view.feature_name}` : "Review comments"}
+      subtitle="Read and reply to feedback on your pull request: investigate a comment, have an agent prepare a fix, and reply. GitHub writes and AI calls always ask first.">
+      {confirmClose && <ConfirmCallout label="Discard and close Review comments" className="callout callout-warning">
+        <p>Discard your unsent fix, reply or investigation text and close Review comments?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
         <button className="btn btn-danger" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
       </ConfirmCallout>}

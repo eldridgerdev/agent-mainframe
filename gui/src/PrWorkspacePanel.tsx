@@ -315,14 +315,14 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     ? Math.max(ai.elapsed_seconds, Math.floor((clockNow - aiLocalStartedAt.current) / 1000))
     : ai?.elapsed_seconds ?? 0;
 
-  return <section className="pr-workspace-page" aria-label="Experimental PR Workspace">
+  return <section className="pr-workspace-page" aria-label="PR workspace">
     <header className="pr-workspace-page-header">
-      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><span className="tag tag-accent">Experimental</span></div>
+      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><span className="tag tag-accent" title="New and still changing. Your GitHub data is not affected.">Experimental</span></div>
       <div className="pr-workspace-page-title-row">
-        <div><h1>Pull request workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place</p></div>
+        <div><h1>PR workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place. Review comments and Write a review do the same jobs one at a time.</p></div>
         <div className="pr-workspace-page-actions">
           {ai?.running && <span className="pr-workspace-running-label"><Spinner /> Reviewing PR #{ai.pr_number}</span>}
-          <button type="button" className="btn btn-secondary" onClick={() => { if (handoffPending.current) { handoffGeneration.current++; setBusy(false); } onReturnToFeature(); }}>Back to feature</button>
+          <button type="button" className="btn btn-secondary" onClick={() => { if (handoffPending.current) { handoffGeneration.current++; setBusy(false); } onReturnToFeature(); }} title="Return to the feature. The workspace stays open in the background.">Back to feature</button>
         </div>
       </div>
     </header>
@@ -372,6 +372,6 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         </section>}
       </section>
     </div>
-    <footer className="pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head.</span><button className="btn btn-ghost btn-sm" disabled={busy || triageBusy || ai?.running || !!ai?.precall || (filesDirty && tab === "files")} onClick={requestClose}>Close workspace</button></footer>
+    <footer className="pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head. Back to feature keeps this workspace open; Close workspace ends it.</span><button className="btn btn-secondary btn-sm" title="End this workspace and return to the feature" disabled={busy || triageBusy || ai?.running || !!ai?.precall || (filesDirty && tab === "files")} onClick={requestClose}>Close workspace</button></footer>
   </section>;
 }

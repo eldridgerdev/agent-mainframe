@@ -902,6 +902,27 @@ export function Field({
   );
 }
 
+/** A compact list filter with a search icon and placeholder, the same
+ * pattern as the sidebar's project filter. The label is visually hidden
+ * but still names the field. */
+export function FilterField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="nav-filter filter-field">
+      <Icon name="search" size={14} />
+      <span className="visually-hidden">{label}</span>
+      <input type="text" placeholder={label} value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
 export function Switch({
   checked,
   onChange,

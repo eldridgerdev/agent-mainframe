@@ -204,7 +204,7 @@ try:
     click("Codex 1")
     wait('!!document.querySelector(".composer textarea")')
     evaluate("(()=>{const el=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,'Existing unsent reminder.');el.dispatchEvent(new Event('input',{bubbles:true}));})()")
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')

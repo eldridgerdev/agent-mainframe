@@ -208,7 +208,7 @@ def git(*args):
 def open_workspace():
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.includes("Round invoice totals"))')
     evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.includes("Round invoice totals")).click()')
-    header_menu("Feature tools", "PR Workspace")
+    header_menu("Feature tools", "PR workspace")
     wait('Array.from(document.querySelectorAll(".pr-entry")).some(b=>b.textContent.includes("#12"))')
     evaluate('Array.from(document.querySelectorAll(".pr-entry")).find(b=>b.textContent.includes("#12")).click()')
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Files" && !b.disabled)')
@@ -220,7 +220,7 @@ try:
     open_workspace()
     click("Files")
     wait('document.body.innerText.includes("pinned to head") && document.querySelectorAll(".diff-line-select").length>0')
-    capture("pr-files-lines-opened.png", "The workspace Files tab is a reviewable diff: every line number is selectable and comments are pinned to the head the workspace loaded.", ["pinned to head", "Comment on selection", "Preview and post in PR Review"], 'document.querySelectorAll(".review-inline-thread").length===0')
+    capture("pr-files-lines-opened.png", "The workspace Files tab is a reviewable diff: every line number is selectable and comments are pinned to the head the workspace loaded.", ["pinned to head", "Comment on selection", "Preview and post in Write a review"], 'document.querySelectorAll(".review-inline-thread").length===0')
     pick("Select line 8")
     pick("Select line 9", True)
     click("Comment on selection")
@@ -255,7 +255,7 @@ try:
     wait('document.querySelectorAll(".review-inline-thread").length===3')
     capture("pr-files-lines-after-tab-switch.png", "Switching to Threads and back reopens the same saved draft; the three threads are still in the diff.", ["Saved line comments (3)"], 'document.querySelectorAll(".review-inline-thread").length===3')
     # Preview and posting stay in the explicit-confirm PR Review dialog.
-    click("Preview and post in PR Review…")
+    click("Preview and post in Write a review…")
     wait('document.querySelectorAll(".pr-entry").length>=1 && !document.querySelector(".pr-workspace-page")')
     evaluate('Array.from(document.querySelectorAll(".pr-entry")).find(b=>b.textContent.includes("#12")).click()')
     wait('document.body.innerText.includes("Saved line comments (3)")')

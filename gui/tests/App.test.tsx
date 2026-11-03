@@ -327,7 +327,7 @@ describe("feature header", () => {
     expect(header().querySelector("h1")?.getAttribute("title")).toBe("my-feat");
     expect(Array.from(header().querySelectorAll(".btn-primary")).map((b) => b.textContent?.trim())).toEqual(["Start"]);
     expect(headerButtons()).toEqual(["demo", "Quick TODO", "Changes", "Feature tools", "Start", "More feature actions"]);
-    for (const moved of ["New session", "Learning", "Final Review", "Screenshots", "Session screenshots", "PR Triage", "Stop session", "Plan"]) {
+    for (const moved of ["New session", "Learning", "Final Review", "Screenshots", "Session screenshots", "Review comments", "Stop session", "Plan"]) {
       expect(within(header()).queryByRole("button", { name: moved, exact: true })).toBeNull();
     }
     fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
@@ -336,9 +336,9 @@ describe("feature header", () => {
       .getAllByRole("menuitem").map((item) => item.querySelector(".menu-item-label")?.textContent);
     expect(labels("Plan")).toEqual(["Plan interview", "Quick Plan"]);
     expect(labels("Review")).toEqual(["Learning", "Final Review", "Screenshots"]);
-    expect(labels("Pull request")).toEqual(["PR Triage", "PR Workspace"]);
+    expect(labels("Pull request")).toEqual(["Review comments", "PR workspace"]);
     // The hint describes the item without becoming part of its name.
-    const workspace = within(tools).getByRole("menuitem", { name: "PR Workspace" });
+    const workspace = within(tools).getByRole("menuitem", { name: "PR workspace" });
     expect(document.getElementById(workspace.getAttribute("aria-describedby")!)?.textContent).toBe("Experimental");
     fireEvent.keyDown(tools, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
@@ -375,7 +375,7 @@ describe("project header", () => {
       .toEqual(["Issues", "Pull request tools", "Project settings", "New feature"]);
     expect(Array.from(header.querySelectorAll(".btn-primary")).map((b) => b.textContent?.trim())).toEqual(["New feature"]);
     fireEvent.click(screen.getByRole("button", { name: "Pull request tools" }));
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["PR Triage", "PR Review"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Review comments", "Write a review"]);
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Agent availability", "Preferred agent"]);
@@ -389,7 +389,7 @@ it("offers Changes only for Git projects", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Feature tools" }));
   const tools = screen.getByRole("menu", { name: "Feature tools" });
   expect(within(tools).queryByRole("menuitem", { name: "Final Review" })).toBeNull();
-  expect(within(tools).queryByRole("menuitem", { name: "PR Triage" })).toBeNull();
+  expect(within(tools).queryByRole("menuitem", { name: "Review comments" })).toBeNull();
   expect(within(tools).queryByRole("group", { name: "Pull request" })).toBeNull();
   expect(within(tools).getByRole("menuitem", { name: "Learning" })).toBeTruthy();
   client.clear();
@@ -888,7 +888,7 @@ it("opens dormant features from navigation and hands Open to the feature page wi
   client.clear();
 });
 
-it("opens PR Triage from a Git feature without starting it and closes through its workflow", async () => {
+it("opens Review comments from a Git feature without starting it and closes through its workflow", async () => {
   const client = await openFeature([], [], "stopped", true);
   const original = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation((command, args, options) => {
@@ -901,12 +901,12 @@ it("opens PR Triage from a Git feature without starting it and closes through it
     if (command === "pr_triage_act") return Promise.resolve(null);
     return original(command, args, options);
   });
-  fireEvent.click(featureTool("PR Triage"));
+  fireEvent.click(featureTool("Review comments"));
   // The PR reader loads its Markdown dependencies on first use.
   await screen.findByText(/No open pull requests/, {}, { timeout: 5000 });
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_begin", { target: { project_id: "project", feature_id: "feature" } });
-  fireEvent.click(within(screen.getByRole("dialog", { name: "PR Triage" })).getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Review comments" })).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Review comments" })).toBeNull());
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_act", { workflowId: "triage-id", revision: 2, action: { kind: "close" } });
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
   client.clear();
@@ -1064,9 +1064,9 @@ it("hands a PR fix to the chosen agent composer once while preserving both sessi
     if (command === "pr_triage_act") return Promise.resolve({ ...view, handoff: { target, draft_prompt: "Fix rounding" } });
     return original(command, args, options);
   });
-  fireEvent.click(featureTool("PR Triage"));
+  fireEvent.click(featureTool("Review comments"));
   fireEvent.click(await screen.findByRole("button", { name: "Open in agent composer" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Review comments" })).toBeNull());
   expect(draftInput().value).toBe("Codex reminder\n\nFix rounding");
   expect(document.activeElement).toBe(draftInput());
   fireEvent.click(screen.getByRole("tab", { name: /Claude/ }));
@@ -1093,7 +1093,7 @@ it("opens debug history from workspace navigation and preserves the session draf
   client.clear();
 });
 
-it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a feature", async (label) => {
+it.each(["Review comments", "Write a review"])("opens %s from a project without choosing a feature", async (label) => {
   const client = await openFeature([], [], "stopped", true);
   const original = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation((command, args, options) => {
@@ -1114,8 +1114,8 @@ it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a 
   fireEvent.click(menuItem("Pull request tools", label));
   expect(await screen.findByRole("dialog", { name: label })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Choose a pull request" })).toBeTruthy();
-  expect(vi.mocked(invoke)).toHaveBeenCalledWith(label === "PR Triage" ? "pr_triage_begin" : "pr_review_begin",
-    label === "PR Triage" ? { target: { project_id: "project" } } : { projectId: "project" });
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith(label === "Review comments" ? "pr_triage_begin" : "pr_review_begin",
+    label === "Review comments" ? { target: { project_id: "project" } } : { projectId: "project" });
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "review_begin")).toBe(false);
   client.clear();
 });
@@ -1123,8 +1123,8 @@ it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a 
 it("hides project PR actions for ordinary directories", async () => {
   const client = await openFeature([]);
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
-  expect(screen.queryByRole("button", { name: "PR Triage" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "PR Review" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Review comments" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Write a review" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Pull request tools" })).toBeNull();
   client.clear();
 });
@@ -1642,7 +1642,7 @@ describe("icon vocabulary", () => {
   it("uses one icon per meaning in the feature menus", async () => {
     await openFeature([session("Shell")], [], "stopped", true, true);
     const icons = (menu: string, labels: string[]) => labels.map((label) => iconOf(menuItem(menu, label)));
-    expect(icons("Feature tools", ["Learning", "Final Review", "Screenshots", "PR Triage", "PR Workspace"]))
+    expect(icons("Feature tools", ["Learning", "Final Review", "Screenshots", "Review comments", "PR workspace"]))
       .toEqual(["bookOpen", "clipboardCheck", "camera", "gitPullRequest", "gitPullRequestDraft"]);
     fireEvent.keyDown(screen.getByRole("menu", { name: "Feature tools" }), { key: "Escape" });
     expect(iconOf(menuItem("More feature actions", "Rename, ready and summary…"))).toBe("pencil");

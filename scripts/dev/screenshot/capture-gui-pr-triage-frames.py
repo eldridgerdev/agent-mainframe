@@ -201,9 +201,9 @@ try:
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Round invoice totals")')
     click("Round invoice totals")
     wait('document.body.innerText.includes("Stopped") && !!document.querySelector(`[aria-label="Feature tools"]`)')
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
-    capture("001-pr-list.png", "PR Triage opens on the repository's open pull requests. The branch's own PR is marked, drafts are labelled, and a PR can also be opened by number. Nothing has been fetched beyond the list.", ["PR Triage · Round invoice totals", "#12", "Round invoice totals to cents", "This branch", "Yours", "Draft", "Include closed and merged", "Open by number"], '!document.body.innerText.includes("Initial invoice API")')
+    capture("001-pr-list.png", "PR Triage opens on the repository's open pull requests. The branch's own PR is marked, drafts are labelled, and a PR can also be opened by number. Nothing has been fetched beyond the list.", ["Review comments · Round invoice totals", "#12", "Round invoice totals to cents", "This branch", "Yours", "Draft", "Include closed and merged", "Open by number"], '!document.body.innerText.includes("Initial invoice API")')
     assert ai_calls() == [] and gh_writes() == []
 
     evaluate('document.querySelector(".pr-entry").click()')

@@ -6,14 +6,14 @@ import { invoke } from "@tauri-apps/api/core";
 import DiffPanel, { Hunk } from "../src/DiffPanel";
 import LearningPanel from "../src/LearningPanel";
 import ReviewPanel from "../src/ReviewPanel";
-import { SyntaxBadge } from "../src/SyntaxCode";
+import { SyntaxBadge, resetSyntaxOffersForTest } from "../src/SyntaxCode";
 import type { DiffFile, DiffHunk, DiffView, LearningView, ReviewView } from "../src/api";
 import type { SyntaxInfo, SyntaxInstallView } from "../src/syntaxApi";
 import { queryConfirm } from "./confirmCallout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const clients: QueryClient[] = [];
-afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); resetSyntaxOffersForTest(); clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); vi.useRealTimers(); });
 
 const rust: SyntaxInfo = { language: "Rust", language_key: "rust", status: "highlighted" };
 // A removed line inside a block comment that opened outside the hunk is
@@ -217,4 +217,23 @@ it("keeps a Learning question mounted while the language manager owns Escape", a
   rerender(<LearningPanel {...props} />);
   expect(screen.getByRole("textbox", { name: "Question" })).toBe(question);
   expect(question).toHaveProperty("value", "Keep my unsent parser question");
+});
+
+it("offers an install once per language until the reader hides it", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "syntax_install_status") return idle;
+    throw new Error(`unexpected ${command}`);
+  });
+  const python: SyntaxInfo = { language: "Python", language_key: "python", status: "not_installed" };
+  const first = render(<SyntaxBadge info={python} />);
+  expect(screen.getByRole("button", { name: "Manage syntax languages" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Hide the Python parser offer" }));
+  expect(screen.queryByRole("button", { name: "Install Python parser…" })).toBeNull();
+  expect(screen.getByText(/Plain text/).getAttribute("title")).toContain("Install it from Manage syntax languages");
+  first.unmount();
+  // Another Python diff stays quiet; another language still gets its offer.
+  render(<><SyntaxBadge info={python} /><SyntaxBadge info={{ language: "Go", language_key: "go", status: "not_installed" }} /></>);
+  expect(screen.queryByRole("button", { name: "Install Python parser…" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Install Go parser…" })).toBeTruthy();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("syntax_install_status"));
 });

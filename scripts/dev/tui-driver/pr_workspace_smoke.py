@@ -118,7 +118,7 @@ def main():
         call({"op": "automation", "action": "create-project", "request": {
             "path": str(repo), "project_name": "Workspace fixture", "dry_run": False}})
         batch(wait("Workspace fixture"), keys("C-Space", "G"), wait("choose a PR"),
-              wait("Workspace offline fixture"), keys("Enter"), wait("PR Workspace (experimental) · #7"))
+              wait("Workspace offline fixture"), keys("Enter"), wait("#7  Workspace offline fixture"), wait("Your review"))
         batch(keys("2"), wait("Handle lifetime fixture"), wait("after"),
               keys("Tab", "Tab", "z"), wait("Handle lifetime fixture"), keys("Escape"),
               wait("GitHub threads"), keys("1"), wait("Your review"), keys("m"))
@@ -134,10 +134,10 @@ def main():
         require(git("rev-parse", "HEAD") == base, "Workspace changed the checked-out revision")
         require(git("status", "--porcelain") == "", "Workspace changed source files")
         batch(keys("C-Space", "G"), wait("choose a PR"), wait("Workspace offline fixture"), keys("Enter"),
-              wait("PR Workspace (experimental) · #7"), wait("Native workspace draft"),
+              wait("#7  Workspace offline fixture"), wait("Your review"), wait("Native workspace draft"),
               keys("q", "C-Space", "U"), wait("Review"))
         snapshot = call({"op": "snapshot", "text_limit": 2400})
-        require("PR Workspace (experimental)" not in driver.encode(snapshot), "Legacy leader+U opened experimental workspace")
+        require("1 Files     2 Threads" not in driver.encode(snapshot), "Legacy leader+U opened experimental workspace")
     except Exception as error:
         snapshot = driver.call(session, {"op": "snapshot", "text_limit": 2000})
         raise RuntimeError(driver.encode({"error": str(error), "session": str(session), "snapshot": snapshot})) from error

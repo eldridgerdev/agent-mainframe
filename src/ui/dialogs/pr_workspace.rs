@@ -265,18 +265,128 @@ fn hint_line(
     )];
     for (i, (key, label)) in hints.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" │ ", muted));
+            spans.push(Span::styled(HINT_DIVIDER, muted));
         }
-        spans.push(Span::styled(
+        spans.extend(key_hint(key, label, theme));
+    }
+    Line::from(spans)
+}
+
+const HINT_DIVIDER: &str = " │ ";
+
+/// A key badge followed by its label, as drawn in the footer.
+fn key_hint(key: &str, label: &str, theme: &Theme) -> [Span<'static>; 2] {
+    [
+        Span::styled(
             format!(" {key} "),
             Style::default()
                 .fg(theme.shortcut_text.to_color())
                 .bg(theme.shortcut_background.to_color())
                 .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(format!(" {label}")));
+        ),
+        Span::raw(format!(" {label}")),
+    ]
+}
+
+/// One group of related keys in the "Your review" pane.
+struct KeyGroup {
+    label: &'static str,
+    color: ratatui::style::Color,
+    hints: Vec<(&'static str, &'static str)>,
+}
+
+/// The review keys that apply to the Files tab right now, grouped by what
+/// they act on. Line-cursor keys only appear while the cursor is on, because
+/// only then do `Enter`, `S` and `v` act on a line.
+fn review_key_groups(state: &crate::app::DiffViewerState, theme: &Theme) -> Vec<KeyGroup> {
+    let mut groups = Vec::new();
+    if state.comment_cursor.is_some() {
+        groups.push(KeyGroup {
+            label: "Line",
+            color: theme.info.to_color(),
+            hints: vec![
+                ("Enter", "comment"),
+                ("S", "suggest"),
+                (
+                    "v",
+                    if state.comment_anchor.is_some() {
+                        "clear range"
+                    } else {
+                        "select range"
+                    },
+                ),
+                ("R", "resolve"),
+                ("c", "exit cursor"),
+            ],
+        });
+        groups.push(KeyGroup {
+            label: "Comment",
+            color: theme.info.to_color(),
+            hints: vec![("m", "file comment"), ("f", "review summary")],
+        });
+    } else {
+        groups.push(KeyGroup {
+            label: "Comment",
+            color: theme.info.to_color(),
+            hints: vec![
+                ("c", "line cursor"),
+                ("m", "file comment"),
+                ("f", "review summary"),
+            ],
+        });
     }
-    Line::from(spans)
+    groups.push(KeyGroup {
+        label: "Verdict",
+        color: theme.success.to_color(),
+        hints: vec![("a", "approve"), ("r", "request changes"), ("s", "skip")],
+    });
+    groups.push(KeyGroup {
+        label: "Submit",
+        color: theme.primary.to_color(),
+        hints: vec![("p", "preview and submit")],
+    });
+    groups
+}
+
+/// Lays key groups out in `width` columns: a coloured group label, then the
+/// footer's badge pairs split by dim dividers. A pair that would run past the
+/// edge starts a new row indented under the first pair, so no badge is cut
+/// in half and nothing needs horizontal scrolling.
+fn key_group_lines(groups: &[KeyGroup], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    const LABEL_WIDTH: usize = 9; // " " + 7-wide label + " "
+    let divider = HINT_DIVIDER.chars().count();
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let mut lines = Vec::new();
+    for group in groups {
+        let mut spans = vec![Span::styled(
+            format!(" {:<7} ", group.label),
+            Style::default()
+                .fg(group.color)
+                .add_modifier(Modifier::BOLD),
+        )];
+        let mut used = LABEL_WIDTH;
+        let mut first_on_row = true;
+        for (key, label) in &group.hints {
+            // " key " + " label"
+            let pair = key.chars().count() + 2 + 1 + label.chars().count();
+            if !first_on_row && used + divider + pair > width {
+                lines.push(Line::from(std::mem::take(&mut spans)));
+                spans.push(Span::raw(" ".repeat(LABEL_WIDTH)));
+                used = LABEL_WIDTH;
+                first_on_row = true;
+            }
+            if first_on_row {
+                used += pair;
+            } else {
+                spans.push(Span::styled(HINT_DIVIDER, muted));
+                used += divider + pair;
+            }
+            spans.extend(key_hint(key, label, theme));
+            first_on_row = false;
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 /// `Clear` resets cells to the terminal default, which drops the theme
@@ -527,7 +637,10 @@ fn draw_pane(
                 } else if let Some(layout) = files.narrow_layout_restore.take() {
                     files.layout = layout;
                 }
-                super::diff::draw_patch(frame, area, files, theme);
+                // The same narrow pane wraps every long line, so a second
+                // column of line numbers on each row costs more code width
+                // than it is worth here; one column keeps the code wider.
+                super::diff::draw_patch_with_gutter(frame, area, files, theme, area.width < 110);
             }
         }
         return;
@@ -662,24 +775,11 @@ fn draw_manual_context(
             .fg(theme.warning.to_color())
             .add_modifier(Modifier::BOLD),
     ));
-    for (key, label) in [
-        ("c", "line cursor"),
-        ("Enter", "comment on line"),
-        ("m", "file comment"),
-        ("f", "review summary"),
-        ("p", "preview and submit"),
-    ] {
-        rendered.lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {key:<5} "),
-                Style::default()
-                    .fg(theme.shortcut_text.to_color())
-                    .bg(theme.shortcut_background.to_color())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" {label}")),
-        ]));
-    }
+    rendered.lines.extend(key_group_lines(
+        &review_key_groups(state, theme),
+        inner.width as usize,
+        theme,
+    ));
     state.notes_rendered_lines = rendered.lines.len();
     state.notes_view_height = inner.height as usize;
     state.notes_scroll = state.notes_scroll.min(
@@ -768,4 +868,97 @@ fn draw_help(frame: &mut Frame, theme: &Theme, scroll: u16) {
         theme,
         scroll,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    fn groups(theme: &Theme) -> Vec<KeyGroup> {
+        vec![
+            KeyGroup {
+                label: "Verdict",
+                color: theme.success.to_color(),
+                hints: vec![("a", "approve"), ("r", "request changes"), ("s", "skip")],
+            },
+            KeyGroup {
+                label: "Submit",
+                color: theme.primary.to_color(),
+                hints: vec![("p", "preview and submit")],
+            },
+        ]
+    }
+
+    #[test]
+    fn key_groups_get_a_coloured_label_badges_and_dividers() {
+        let theme = Theme::default();
+        let lines = key_group_lines(&groups(&theme), 80, &theme);
+        assert_eq!(lines.len(), 2, "one row per group when it fits");
+        assert_eq!(
+            text(&lines[0]),
+            " Verdict  a  approve │  r  request changes │  s  skip"
+        );
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme.success.to_color()));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme.primary.to_color()));
+        let badge = &lines[0].spans[1];
+        assert_eq!(badge.content, " a ");
+        assert_eq!(badge.style.bg, Some(theme.shortcut_background.to_color()));
+    }
+
+    #[test]
+    fn a_narrow_pane_wraps_whole_pairs_under_the_first_one() {
+        let theme = Theme::default();
+        let width = 32;
+        let lines = key_group_lines(&groups(&theme), width, &theme);
+        let rows: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(
+            rows,
+            [
+                " Verdict  a  approve",
+                "          r  request changes",
+                "          s  skip",
+                " Submit   p  preview and submit",
+            ]
+        );
+        for row in &rows {
+            assert!(row.chars().count() <= width, "{row:?} overflows {width}");
+        }
+    }
+
+    #[test]
+    fn line_cursor_keys_appear_only_while_the_cursor_is_on() {
+        let theme = Theme::default();
+        let mut state = crate::app::DiffViewerState::new(
+            crate::app::ViewState::new(
+                "project".into(),
+                "feature".into(),
+                "amf-feature".into(),
+                "claude".into(),
+                "Claude".into(),
+                crate::project::SessionKind::Claude,
+                crate::project::VibeMode::default(),
+                false,
+            ),
+            std::path::PathBuf::from("unused"),
+        );
+        let keys = |state: &crate::app::DiffViewerState| -> Vec<&'static str> {
+            review_key_groups(state, &theme)
+                .into_iter()
+                .flat_map(|group| group.hints.into_iter().map(|(key, _)| key))
+                .collect()
+        };
+        let off = keys(&state);
+        assert!(off.contains(&"c") && !off.contains(&"Enter"), "{off:?}");
+        state.comment_cursor = Some(0);
+        let on = keys(&state);
+        assert!(on.contains(&"Enter") && on.contains(&"S"), "{on:?}");
+        assert!(on.contains(&"p") && on.contains(&"a"), "{on:?}");
+    }
 }

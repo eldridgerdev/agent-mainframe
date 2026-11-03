@@ -963,3 +963,58 @@ fn m_on_the_threads_tab_opens_the_add_to_memory_dialog() {
     assert_eq!(app.pr_review_memory_add_view(), None);
     assert!(matches!(&app.mode, AppMode::PrReview(_)));
 }
+
+fn rendered_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(width as usize)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn files_review_pane_groups_its_keys_and_follows_the_line_cursor() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    let rows = rendered_rows(app, 160, 40);
+    let row = |rows: &[String], needle: &str| {
+        rows.iter()
+            .find(|row| row.contains(needle))
+            .cloned()
+            .unwrap_or_else(|| panic!("no row with {needle:?}:\n{}", rows.join("\n")))
+    };
+    assert!(row(&rows, " Verdict ").contains(" a  approve │ "));
+    assert!(row(&rows, " Submit ").contains(" p  preview and submit"));
+    assert!(row(&rows, " Comment ").contains(" c  line cursor"));
+    assert!(!rows.iter().any(|row| row.contains(" Line ")));
+
+    press(app, KeyCode::Tab);
+    press(app, KeyCode::Char('c'));
+    assert!(files(app).comment_cursor.is_some());
+    let rows = rendered_rows(app, 160, 40);
+    assert!(row(&rows, " Line ").contains(" Enter  comment │ "));
+    assert!(!row(&rows, " Comment ").contains("line cursor"));
+}
+
+#[test]
+fn the_narrow_code_pane_uses_one_line_number_column() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    // Three panes: the code pane is well under the side-by-side width.
+    let rows = rendered_rows(app, 160, 40);
+    assert!(
+        rows.iter().any(|row| row.contains("│2 │ +after")),
+        "compact gutter expected:\n{}",
+        rows.join("\n")
+    );
+    assert!(!rows.iter().any(|row| row.contains("  2 │ +after")));
+    // Expanded on a wide terminal, the full two-column layout returns.
+    press(app, KeyCode::Tab);
+    press(app, KeyCode::Char('z'));
+    let rows = rendered_rows(app, 160, 40);
+    assert!(!rows.iter().any(|row| row.contains("│2 │ +after")));
+}

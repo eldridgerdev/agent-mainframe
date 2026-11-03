@@ -347,7 +347,6 @@
   }
   .pr-workspace-context > p { margin: 0; }
   .pr-workspace-context-heading { order: -1; min-height: 0; }
-  .pr-workspace-context-heading .btn { display: none; }
   .pr-workspace-context-badge { margin-top: 0; writing-mode: horizontal-tb; transform: none; }
 }
 /* Narrow (<640): one column everywhere. */

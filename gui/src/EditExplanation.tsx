@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError, FeatureTarget } from "./api";
-import { Spinner } from "./ui";
+import { ConfirmCallout, Spinner } from "./ui";
 import {
   ExplanationView, explanationPrepare, explanationStart, explanationPoll, explanationCancel,
 } from "./supervisedEditExplanationsApi";
@@ -123,7 +123,7 @@ export function EditExplanation({ explanation: state, disabled }: { explanation:
       onClick={() => void state.prepare()}>{state.busy && <Spinner />}Explain this edit</button>
     {state.error && <p role="alert">{state.error}</p>}
     {state.notice && <p role="status">{state.notice}</p>}
-    {state.view?.state === "precall" && <div role="alertdialog" aria-label="Explanation AI call" className="callout callout-warning supervised-confirm">
+    {state.view?.state === "precall" && <ConfirmCallout label="Explanation AI call" className="callout callout-warning supervised-confirm">
       <p><strong>Call Claude to explain this edit?</strong> This starts a separate AI call with no file or repository tools. It does not answer the waiting agent.</p>
       <p>Model: {state.view.model ?? "Claude default"} · Reasoning: {state.view.reasoning ?? "Claude default"}</p>
       <details><summary>Exact prompt</summary><pre className="supervised-snippet">{state.view.prompt}</pre></details>
@@ -132,7 +132,7 @@ export function EditExplanation({ explanation: state, disabled }: { explanation:
         <button className="btn btn-ghost" disabled={state.busy} onClick={() => void state.cancelCall().catch(() => {})}>Cancel explanation</button>
         <button className="btn btn-primary" disabled={state.busy} onClick={() => void state.start(Boolean(state.approval))}>{state.approval ? "Continue anyway" : "Continue explanation"}</button>
       </div>
-    </div>}
+    </ConfirmCallout>}
     {state.view?.state === "running" && <p role="status"><Spinner /> Explaining this edit… <button className="btn btn-ghost btn-sm" onClick={() => void state.cancelCall().catch(() => {})}>Cancel explanation</button></p>}
     {state.view?.state === "failed" && <p role="alert">{state.view.message}</p>}
     {(state.view?.state === "complete" || state.view?.state === "saved_note") && <div className="callout callout-accent">

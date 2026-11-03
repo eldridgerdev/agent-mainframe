@@ -67,10 +67,11 @@ it("keeps a chosen state through narrow-window resizes and storage failure", () 
 });
 
 
-it.each(["dialog", "alertdialog"])("blocks only visible %s instances, including a minimized planning wrapper", (role) => {
+it.each(["dialog", "confirm callout"])("blocks only visible %s instances, including a minimized planning wrapper", (kind) => {
+  const attrs = kind === "dialog" ? { role: "dialog" } : { role: "alert", "data-confirm-callout": "" };
   const frame = (hidden: boolean, otherDialog = false) => <>
     <Layout />
-    <div hidden={hidden}><div role={role}>Plan interview</div></div>
+    <div hidden={hidden}><div {...attrs}>Plan interview</div></div>
     {otherDialog && <div role="dialog">Visible confirmation</div>}
   </>;
   const view = render(frame(true));

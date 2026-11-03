@@ -165,7 +165,7 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
     {view?.notice && <p role="status">{view.notice}</p>}
     {discard && <div className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
       <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning" onClick={() => void act({ kind: discard })}>Discard and leave</button>
+      <button className="btn btn-danger" onClick={() => void act({ kind: discard })}>Discard and leave</button>
     </div>}
     {(!view || waiting) && <p role="status"><Spinner /> Loading pull requests…</p>}
     {embedded && !view && error && embedded.fallback}

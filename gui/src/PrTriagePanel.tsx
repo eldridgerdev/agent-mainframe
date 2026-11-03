@@ -7,7 +7,7 @@ import type { ImageData } from "./screenshotsApi";
 import {
   PrComment, PrTriageTarget, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import FixDestinationPicker, { resolveTarget, targetKey } from "./FixDestinationPicker";
 import DestinationPicker from "./DestinationPicker";
 import DedicatedSessionForm from "./DedicatedSessionForm";
@@ -231,7 +231,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
       {confirmClose && <div className="callout callout-warning" role="alert">
         <p>Discard your unsent fix, reply or investigation text and close PR Triage?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
-        <button className="btn btn-warning" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
+        <button className="btn btn-danger" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
       </div>}
       {error && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
       {view?.error && view.error !== error && <div className="callout callout-danger" role="alert"><p>{view.error}</p></div>}
@@ -304,22 +304,22 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
         {view && <PrDescription key={imageIdentity} workflowId={view.workflow_id} identity={imageIdentity} onOpenImage={showImage} />}
         {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
 
-        {view?.precall && <section className="review-confirm" role="alertdialog" aria-label="Investigation AI call">
+        {view?.precall && <ConfirmCallout label="Investigation AI call" className="review-confirm" as="section">
           <p>Background AI call: {view.precall.title} · {view.precall.harness}. It only reads your files but uses your agent account's usage.</p>
           {view.precall.viewing && <pre className="doc doc-mono">{view.precall.preview}</pre>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_toggle_view" })}>{view.precall.viewing ? "Hide prompt" : "View prompt"}</button>
           <button className="btn btn-primary" disabled={busy} onClick={() => void confirmInvestigation()}>Continue AI call</button>
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_cancel" })}>Cancel AI call</button>
-        </section>}
+        </ConfirmCallout>}
 
-        {view?.write_confirm && <section className="review-confirm" role="alertdialog" aria-label="Confirm GitHub write">
+        {view?.write_confirm && <ConfirmCallout label="Confirm GitHub write" className="review-confirm" as="section">
           <p><strong>{view.write_confirm.destination}</strong>. This writes to GitHub as your <span className="mono">gh</span> account.</p>
           {view.write_confirm.body !== null && <pre className="doc pr-posted">{view.write_confirm.body}</pre>}
           <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_write" })}>
             {view.write_confirm.kind === "reply" ? "Post reply to GitHub" : view.write_confirm.kind === "resolve" ? "Resolve thread on GitHub" : "Reopen thread on GitHub"}
           </button>
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_write" })}>Cancel</button>
-        </section>}
+        </ConfirmCallout>}
 
         {view?.fix_draft && fixPrompt && <section className="review-editor" aria-label="Fix draft" ref={reveal}>
           <p>Prepare a fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
@@ -330,21 +330,21 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             onClick={() => void act({ kind: "confirm_fix_draft", prompt: fixPrompt.text })}>Open in agent composer</button>
           {!view.fix_draft.submission_prompt && <button className="btn btn-secondary" disabled={busy || !fixPrompt.text.trim()}
             onClick={() => void act({ kind: "prepare_fix_submission", prompt: fixPrompt.text })}>Preview send to agent…</button>}
-          {view.fix_draft.submission_prompt && <div role="alertdialog" aria-label="Send fix to agent" className="review-confirm">
+          {view.fix_draft.submission_prompt && <ConfirmCallout label="Send fix to agent" className="review-confirm">
             <p>Send this exact prompt to the selected running agent and mark the comment Fixing? This clears its terminal input line. It asks the agent to return a reply draft; nothing posts to GitHub.</p>
             <pre className="doc pr-posted">{view.fix_draft.submission_prompt}</pre>
             <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_fix_submission" })}>Send fix to agent</button>
             <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_fix_submission" })}>Back to fix prompt</button>
-          </div>}
+          </ConfirmCallout>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => {
             if (fixPrompt.text !== fixPrompt.seed) setConfirmDiscardFix(true);
             else void act({ kind: "cancel_fix_draft" });
           }}>Cancel fix draft</button>
-          {confirmDiscardFix && <div role="alertdialog" aria-label="Discard edited fix prompt" className="callout callout-warning">
+          {confirmDiscardFix && <ConfirmCallout label="Discard edited fix prompt" className="callout callout-warning">
             <p>Discard your edited fix prompt?</p>
             <button className="btn btn-secondary" onClick={() => setConfirmDiscardFix(false)}>Keep editing</button>
-            <button className="btn btn-warning" disabled={busy} onClick={() => { setConfirmDiscardFix(false); void act({ kind: "cancel_fix_draft" }); }}>Discard fix prompt</button>
-          </div>}
+            <button className="btn btn-danger" disabled={busy} onClick={() => { setConfirmDiscardFix(false); void act({ kind: "cancel_fix_draft" }); }}>Discard fix prompt</button>
+          </ConfirmCallout>}
         </section>}
 
         {view?.batch_fix && batchPrompt && <section className="review-editor" aria-label="Batch fix" ref={reveal}>
@@ -355,7 +355,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             onChange={(event) => setBatchPrompt({ ...batchPrompt, text: event.target.value })} /></Field>
           {!view.batch_fix.submission_prompt && <button className="btn btn-primary" disabled={busy || !batchPrompt.text.trim()}
             onClick={() => void act({ kind: "prepare_batch_submission", prompt: batchPrompt.text, digest: view.batch_fix!.digest })}>Preview send to agent…</button>}
-          {view.batch_fix.submission_prompt && <div role="alertdialog" aria-label="Send batch fix to agent" className="review-confirm">
+          {view.batch_fix.submission_prompt && <ConfirmCallout label="Send batch fix to agent" className="review-confirm">
             <p>Send this exact prompt to the selected running agent and mark {view.batch_fix.comment_ids.length} comments Fixing? This clears its terminal input line. It asks the agent to return one reply draft per comment; nothing posts to GitHub.</p>
             <pre className="doc pr-posted">{view.batch_fix.submission_prompt}</pre>
             <button className="btn btn-primary" disabled={busy}
@@ -364,16 +364,16 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
               if (batchPrompt && batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
               else void act({ kind: "cancel_batch_fix" });
             }}>Cancel batch fix</button>
-          </div>}
+          </ConfirmCallout>}
           {!view.batch_fix.submission_prompt && <button className="btn btn-secondary" disabled={busy} onClick={() => {
             if (batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
             else void act({ kind: "cancel_batch_fix" });
           }}>Cancel batch fix</button>}
-          {confirmDiscardBatch && <div role="alertdialog" aria-label="Discard edited batch prompt" className="callout callout-warning">
+          {confirmDiscardBatch && <ConfirmCallout label="Discard edited batch prompt" className="callout callout-warning">
             <p>Discard your edited batch fix prompt?</p>
             <button className="btn btn-secondary" onClick={() => setConfirmDiscardBatch(false)}>Keep editing</button>
-            <button className="btn btn-warning" disabled={busy} onClick={() => { setConfirmDiscardBatch(false); void act({ kind: "cancel_batch_fix" }); }}>Discard batch prompt</button>
-          </div>}
+            <button className="btn btn-danger" disabled={busy} onClick={() => { setConfirmDiscardBatch(false); void act({ kind: "cancel_batch_fix" }); }}>Discard batch prompt</button>
+          </ConfirmCallout>}
         </section>}
 
         {review.investigating != null && <div className="callout callout-accent" role="status">

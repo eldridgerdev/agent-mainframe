@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import {
+  ApprovalDialog,
+  ConfirmCallout,
   Menu,
   MenuEntry,
   Modal,
@@ -393,4 +395,50 @@ it("releases the page when an open dialog's wrapper is hidden (a minimized dialo
   fireEvent.click(screen.getByRole("button", { name: "Restore" }));
   await act(async () => { await Promise.resolve(); });
   expect(main.hasAttribute("inert")).toBe(true);
+});
+
+/** A page whose button opens an inline confirm callout. */
+function InlineConfirm({ destructive = false }: { destructive?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return <div>
+    <button onClick={() => setOpen(true)}>Ask</button>
+    {open && <ConfirmCallout label="Discard draft">
+      <p>Discard it?</p>
+      {destructive
+        ? <><button className="btn btn-danger" onClick={() => setOpen(false)}>Discard</button>
+          <button className="btn btn-secondary" onClick={() => setOpen(false)}>Keep editing</button></>
+        : <><button className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button>
+          <button className="btn btn-primary" onClick={() => setOpen(false)}>Continue</button></>}
+    </ConfirmCallout>}
+  </div>;
+}
+
+it("renders an inline confirmation as a named alert, focuses its confirm and returns focus", () => {
+  render(<InlineConfirm />);
+  const ask = screen.getByRole("button", { name: "Ask" });
+  ask.focus();
+  fireEvent.click(ask);
+  const callout = screen.getByRole("alert", { name: "Discard draft" });
+  expect(callout.hasAttribute("data-confirm-callout")).toBe(true);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(document.activeElement).toBe(ask);
+});
+
+it("lands on the safe choice when the only strong button is destructive", () => {
+  render(<InlineConfirm destructive />);
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Keep editing" }));
+});
+
+it("styles a destructive approval as danger and a resource approval as warning", () => {
+  const view = render(<ApprovalDialog label="Close session" title="Close it?" message="Ends it." confirmLabel="Close session"
+    tone="danger" onConfirm={() => {}} onCancel={() => {}} />);
+  expect(screen.getByRole("button", { name: "Close session" }).className).toContain("btn-danger");
+  view.unmount();
+  render(<ApprovalDialog label="Approve" title="Start?" message="Busy." confirmLabel="Start anyway"
+    onConfirm={() => {}} onCancel={() => {}} />);
+  expect(screen.getByRole("button", { name: "Start anyway" }).className).toContain("btn-warning");
 });

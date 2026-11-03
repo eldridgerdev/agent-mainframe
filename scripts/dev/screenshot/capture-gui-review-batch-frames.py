@@ -134,7 +134,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -224,7 +224,7 @@ def filter_files(value):
 
 def begin_batch():
     click("Apply pending suggestions")
-    wait('document.querySelector("[role=alertdialog]")?.getAttribute("aria-label")==="Apply pending suggestions locally"')
+    wait('document.querySelector("[data-confirm-callout]")?.getAttribute("aria-label")==="Apply pending suggestions locally"')
 
 
 def verdict_is(path, verdict):
@@ -271,7 +271,7 @@ try:
     begin_batch()
     capture("003-batch-confirmation.png", "Batch application explicitly confirms checkout writes, successful-thread resolution and approval invalidation without finishing or sending feedback.", ["Apply 3 saved replacement(s)", "Blocked suggestions stay open", "Apply batch locally", "Cancel batch application"])
     click("Cancel batch application")
-    wait('!document.querySelector("[role=alertdialog]")')
+    wait('!document.querySelector("[data-confirm-callout]")')
     assert source_path.read_text() == original_source
     assert progress_path.read_bytes() == saved_before
     no_completion()
@@ -281,7 +281,7 @@ try:
     begin_batch()
     click("Apply batch locally")
     ready()
-    stale_alert = f'Array.from(document.querySelectorAll("[role=alert]")).some(a=>a.textContent==={json.dumps(stale_refusal)})'
+    stale_alert = f'Array.from(document.querySelectorAll("[role=alert]:not([data-confirm-callout])")).some(a=>a.textContent==={json.dumps(stale_refusal)})'
     wait(stale_alert)
     capture("004-changed-patch-refuses-entire-batch.png", "An external patch edit refuses the whole batch before any source is written; saved replacements and external text survive.", [stale_refusal, "3 open suggestion(s)", "0 applied locally", "Apply batch locally"], stale_alert, allow_alert=True)
     assert source_path.read_text() == changed_source

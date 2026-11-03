@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import DormancyPanel, { humanize } from "../src/DormancyPanel";
 import type { DormancyStopResult, DormancyView, DormantFeatureView } from "../src/api";
+import { getConfirm } from "./confirmCallout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const clients: QueryClient[] = [];
@@ -58,7 +59,7 @@ it("explains why each feature is listed and stops nothing until the user confirm
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Retry webhooks" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Docs refresh" }));
   fireEvent.click(button("Stop selected (2)"));
-  const confirm = within(screen.getByRole("alertdialog", { name: "Confirm stopping dormant features" }));
+  const confirm = within(screen.getByRole("alert", { name: "Confirm stopping dormant features" }));
   expect(confirm.getByText("Retry webhooks")).toBeTruthy();
   expect(confirm.getByText("(amf-docs)")).toBeTruthy();
   expect(confirm.getByText(/Editor windows AMF opened for these features are closed too/)).toBeTruthy();
@@ -189,7 +190,7 @@ it("keeps the confirmation and selection when the stop request fails", async () 
   fireEvent.click(await screen.findByRole("checkbox", { name: "Select Retry webhooks" }));
   fireEvent.click(button("Stop selected (1)"));
   fireEvent.click(button("Stop 1 feature"));
-  expect((await screen.findByRole("alert")).textContent).toContain("database is locked");
+  expect((await screen.findByText("database is locked", { exact: false })).closest("[role=alert]")).not.toBeNull();
   expect(button("Stop 1 feature").disabled).toBe(false);
 });
 
@@ -263,7 +264,7 @@ it("confirms the listed editor identities while preserving feature sessions and 
   const { onClose } = mount();
   fireEvent.click(await screen.findByRole("checkbox", { name: "Select Retry webhooks" }));
   fireEvent.click(button("Close editors for Retry webhooks"));
-  expect(screen.getByRole("alertdialog", { name: "Confirm closing dormant editors" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Confirm closing dormant editors" })).toBeTruthy();
   expect(screen.getByText(/The feature and its sessions keep running/)).toBeTruthy();
   expect(screen.getByText(/Unsaved changes in closed windows are lost/)).toBeTruthy();
   expect(screen.getByText(/Not AMF's — left running/)).toBeTruthy();
@@ -275,7 +276,7 @@ it("confirms the listed editor identities while preserving feature sessions and 
   fireEvent.click(button("Close windows"));
   expect(attemptedDismiss).toBe(true);
   expect(onClose).not.toHaveBeenCalled();
-  expect(screen.getByRole("alertdialog", { name: "Confirm closing dormant editors" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Confirm closing dormant editors" })).toBeTruthy();
   expect(editorCalls()).toHaveLength(1);
   expect(editorCalls()[0][1]).toEqual({ target: retry.observation.target, seen: ["owned", "foreign"] });
   expect(button("Close windows").disabled).toBe(true);
@@ -302,8 +303,8 @@ it("retains an editor refusal until returning to refresh and confirm the new lis
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Close editors for Retry webhooks" }));
   fireEvent.click(button("Close windows"));
-  expect((await screen.findByRole("alert")).textContent).toContain("Another VS Code window");
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect((await screen.findByText("Another VS Code window", { exact: false })).closest("[role=alert]")).not.toBeNull();
+  expect(getConfirm()).toBeTruthy();
   expect(button("Close windows").disabled).toBe(true);
   fireEvent.click(button("Back"));
   expect(button("Close editors for Retry webhooks").disabled).toBe(true);

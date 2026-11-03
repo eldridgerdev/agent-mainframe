@@ -137,7 +137,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -278,11 +278,11 @@ try:
     assert runs() == 0
 
     click("Run project check")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     capture("002-explicit-command-confirmation.png", "A separate confirmation previews the exact shell command and explains its effects before any process starts.", ["may write build or test artifacts", command, "Run check now", "Cancel check launch"])
     assert runs() == 0
     click("Cancel check launch")
-    wait('!document.querySelector("[role=alertdialog]")')
+    wait('!document.querySelector("[data-confirm-callout]")')
     assert runs() == 0, "Cancelling confirmation launched a check"
 
     run_check()

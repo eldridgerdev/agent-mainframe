@@ -457,7 +457,68 @@ export function Modal({
   );
 }
 
-/** Confirmation for AMF's resource gate ("needs_approval" responses). */
+// ── Button tones ──────────────────────────────────────────
+// One rule for what a confirm button's color means:
+// - `btn-danger`: deletes or discards something the user made or kept
+//   (a draft, an edit, a list, a session, files). Also "Close session".
+// - `btn-warning`: proceed past a warning without losing data — resource
+//   approvals ("Start anyway") and ending work that stays resumable.
+// - `btn-primary`: the ordinary, reversible confirm.
+// The safe choice ("Keep editing", "Cancel") is `btn-secondary`/`btn-ghost`.
+
+/** Marks a callout as an inline confirmation (see {@link ConfirmCallout}). */
+export const CONFIRM_CALLOUT_SELECTOR = "[data-confirm-callout]";
+
+/** An inline confirmation inside a page or dialog: a `role="alert"` region
+ * (announced when it appears, not a second modal) that moves focus into
+ * itself on mount. Focus lands on `[data-autofocus]`, else the primary
+ * button, else the first control that is not `btn-danger` — for a discard
+ * prompt that is the safe "Keep editing" choice, so Enter never destroys
+ * work by accident. */
+export function ConfirmCallout({
+  label,
+  className,
+  as = "div",
+  children,
+}: {
+  label: string;
+  className?: string;
+  as?: "div" | "section";
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const opener = document.activeElement;
+    if (!root.contains(opener)) {
+      const controls = focusableWithin(root);
+      const target = [root.querySelector("[data-autofocus]"), root.querySelector(".btn-primary")].find(canFocus)
+        ?? controls.find((el) => !el.classList.contains("btn-danger")) ?? controls[0];
+      target?.focus();
+    }
+    return () => {
+      // Answering removes the callout and drops focus to the body; hand it
+      // back to whatever had it before, as Modal does.
+      const focused = document.activeElement;
+      const lost = !focused || focused === document.body || !focused.isConnected;
+      if (lost && opener !== root && canFocus(opener)) opener.focus();
+    };
+  }, []);
+  const props = {
+    ref: (el: HTMLElement | null) => { ref.current = el; },
+    role: "alert",
+    "aria-label": label,
+    "data-confirm-callout": "",
+    className,
+    children,
+  };
+  return as === "section" ? <section {...props} /> : <div {...props} />;
+}
+
+/** Confirmation for AMF's resource gate ("needs_approval" responses), and
+ * for other single-step confirms. `tone="danger"` when confirming loses
+ * something (see the button-tone rule above). */
 export function ApprovalDialog({
   label,
   title,
@@ -465,6 +526,7 @@ export function ApprovalDialog({
   confirmLabel,
   cancelLabel = "Cancel",
   busy,
+  tone = "warning",
   onConfirm,
   onCancel,
 }: {
@@ -474,6 +536,7 @@ export function ApprovalDialog({
   confirmLabel: string;
   cancelLabel?: string;
   busy?: boolean;
+  tone?: "warning" | "danger";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -486,7 +549,7 @@ export function ApprovalDialog({
       footer={
         <>
           <button className="btn btn-ghost" onClick={onCancel}>{cancelLabel}</button>
-          <button className="btn btn-warning" disabled={busy} onClick={onConfirm}>
+          <button className={`btn btn-${tone}`} disabled={busy} onClick={onConfirm}>
             {busy && <Spinner />}
             {confirmLabel}
           </button>

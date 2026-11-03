@@ -116,7 +116,7 @@ def capture(name, note, expects, expression=None):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    assert not evaluate('!!document.querySelector("[role=alert]")'), body
+    assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -195,7 +195,7 @@ try:
         check(name)
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Stop selected (3)")')
     click("Stop selected (3)")
-    wait("!!document.querySelector('[role=alertdialog]')")
+    wait("!!document.querySelector('[data-confirm-callout]')")
     assert all(tmux_alive(f"amf-{name}") for name in ["billing-retry", "docs-refresh", "search-index", "checkout-flow"])
     capture(
         "002-confirm-stop.png",

@@ -43,7 +43,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
       {confirmClose && <div className="callout callout-warning" role="alert">
         <p>Discard this unsent question and close Learning?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep writing</button>
-        <button className="btn btn-warning" disabled={busy} onClick={onClose}>Discard question and close</button>
+        <button className="btn btn-danger" disabled={busy} onClick={onClose}>Discard question and close</button>
       </div>}
       <div className="learning-controls">
         <button className="btn btn-secondary btn-sm" disabled={busy || !view.is_git}

@@ -1362,6 +1362,12 @@ export default function App() {
       : { kind: "project", projectId: first.project.id });
   };
   const createFeatureProject = projects.find((project) => project.id === createFeatureFor);
+  // The first agent session of the Switch-agent target holding an unsent draft.
+  const harnessDraftSession = harnessTarget ? projects.flatMap((project) => project.features)
+    .filter((feature) => feature.id === harnessTarget.feature_id)
+    .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+    .find((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)
+    : undefined;
 
   return (
     <div className="app">
@@ -2004,6 +2010,7 @@ export default function App() {
             ? "Close ends this session and removes it from the list. It is the feature's last running session, so the feature stops too."
             : "Close ends this session and removes it from the list."}
           confirmLabel="Close session"
+          tone="danger"
           busy={removeSessionMutation.isPending}
           onConfirm={() => requestRemoveSession(closeSessionDialog.target)}
           onCancel={() => setCloseSessionDialog(null)}
@@ -2013,11 +2020,15 @@ export default function App() {
       {harnessTarget && <FeatureHarnessDialog
         key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
         target={harnessTarget}
-        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
-          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
-          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        hasDrafts={harnessDraftSession !== undefined}
         sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
         onClose={() => setHarnessTarget(null)}
+        onOpenComposer={harnessDraftSession && (() => {
+          const featureId = harnessTarget.feature_id;
+          setHarnessTarget(null);
+          setView({ kind: "feature", projectId: harnessTarget.project_id, featureId });
+          setTabByFeature((current) => ({ ...current, [featureId]: harnessDraftSession.id }));
+        })}
         onChanged={() => {
           setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
           pushToast({ tone: "info", title: "Agent changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
@@ -2586,7 +2597,7 @@ function FeatureView({
                 { section: "Feature" },
                 // While edits wait, the header's counted button is the way in.
                 ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "shieldCheck" as const, onSelect: onSupervisedEdits }] : []),
-                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Switch agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Rename, ready and summary…", icon: "pencil" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",

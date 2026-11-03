@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -188,7 +188,7 @@ try:
     wait('!document.querySelector("[role=dialog]")')
     header_menu("Pull request tools", "PR Review")
     wait('document.querySelectorAll(".pr-entry").length===2')
-    capture("project-pr-review-picker.png", "PR Review opens the project's list of open PRs without opening the checkout's current PR.", ["PR Review · Invoice API", "#12", "Round invoice totals to cents", "#11", "Add Euro formatting", "Refresh pull requests", "Draft PR"], '!document.querySelector("[role=alert]")')
+    capture("project-pr-review-picker.png", "PR Review opens the project's list of open PRs without opening the checkout's current PR.", ["PR Review · Invoice API", "#12", "Round invoice totals to cents", "#11", "Add Euro formatting", "Refresh pull requests", "Draft PR"], '!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     gh_calls=[json.loads(line) for line in (state / "calls.jsonl").read_text().splitlines()]
     assert not any(call[:2]==["pr", "view"] for call in gh_calls), gh_calls
     assert ai_calls()==[] and gh_writes()==[]

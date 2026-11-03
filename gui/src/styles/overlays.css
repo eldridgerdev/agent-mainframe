@@ -107,6 +107,10 @@
 .new-session-option { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
 .new-session-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
 .delete-feature-todos { grid-template-columns: 1fr; margin: 16px 0 0; }
+.delete-feature-todos .field-hint { margin: 0; }
+/* A destructive choice sits apart from the keep options and reads as danger. */
+.new-session-option-danger { margin-top: 8px; color: var(--red); border-color: var(--red); }
+.new-session-option-danger:has(input:checked) { border-color: var(--red); background: var(--red-soft); }
 .tab-group { display: inline-flex; align-items: center; }
 .tab-stopped { font-style: italic; }
 .tab-close { visibility: hidden; margin: 0 4px 0 -8px; }

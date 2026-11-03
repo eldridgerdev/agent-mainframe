@@ -367,3 +367,30 @@ it("keeps error toasts longer, pauses on hover and focus, and announces politely
   expect(onDismiss).toHaveBeenCalledWith(2);
   expect(error).toBeTruthy();
 });
+
+it("releases the page when an open dialog's wrapper is hidden (a minimized dialog)", async () => {
+  const onClose = vi.fn();
+  function Minimizable() {
+    const [minimized, setMinimized] = useState(false);
+    return (
+      <div>
+        <main><button onClick={() => setMinimized(false)}>Restore</button></main>
+        <div hidden={minimized}>
+          <Modal label="Plan" title="Plan" dismissable={false} onClose={onClose}
+            footer={<button onClick={() => setMinimized(true)}>Minimize</button>}>
+            <p>Interview</p>
+          </Modal>
+        </div>
+      </div>
+    );
+  }
+  render(<Minimizable />);
+  const main = document.querySelector("main")!;
+  expect(main.hasAttribute("inert")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Minimize" }));
+  await act(async () => { await Promise.resolve(); });
+  expect(main.hasAttribute("inert")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+  await act(async () => { await Promise.resolve(); });
+  expect(main.hasAttribute("inert")).toBe(true);
+});

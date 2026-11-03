@@ -1880,6 +1880,7 @@ export default function App() {
       {activePlan && (
         <div hidden={planMinimized}>
           <Modal
+            hidden={planMinimized}
             label="Plan interview"
             title={activePlan.kind === "quick" ? "Quick Plan" : "Plan interview"}
             subtitle={activePlan.feature_name}

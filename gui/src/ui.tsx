@@ -148,7 +148,9 @@ export function focusableWithin(root: HTMLElement): HTMLElement[] {
 function topLayer(modalOnly = false): OverlayLayer | undefined {
   let top: OverlayLayer | undefined;
   for (const layer of layers) {
-    if (!layer.el.isConnected || (modalOnly && !layer.modal)) continue;
+    // A layer inside a `hidden` ancestor (a minimized dialog's wrapper) is
+    // not shown, so it neither owns keys nor makes the page inert.
+    if (!layer.el.isConnected || (modalOnly && !layer.modal) || layer.el.closest("[hidden]")) continue;
     if (!top || top.el.compareDocumentPosition(layer.el) & Node.DOCUMENT_POSITION_FOLLOWING) top = layer;
   }
   return top;
@@ -214,15 +216,29 @@ function onLayerKey(event: KeyboardEvent) {
   }
 }
 
+// Showing or hiding an ancestor of an open layer changes which layer is in
+// front without any layer registering, so re-derive inertness then too.
+let hiddenObserver: MutationObserver | null = null;
+
 /** Registers an open overlay; returns its unregister function. */
 function registerLayer(layer: OverlayLayer): () => void {
-  if (layers.length === 0) window.addEventListener("keydown", onLayerKey);
+  if (layers.length === 0) {
+    window.addEventListener("keydown", onLayerKey);
+    if (typeof MutationObserver !== "undefined") {
+      hiddenObserver = new MutationObserver(applyInert);
+      hiddenObserver.observe(document.body, { attributes: true, attributeFilter: ["hidden"], subtree: true });
+    }
+  }
   layers.push(layer);
   applyInert();
   return () => {
     const index = layers.indexOf(layer);
     if (index >= 0) layers.splice(index, 1);
-    if (layers.length === 0) window.removeEventListener("keydown", onLayerKey);
+    if (layers.length === 0) {
+      window.removeEventListener("keydown", onLayerKey);
+      hiddenObserver?.disconnect();
+      hiddenObserver = null;
+    }
     applyInert();
   };
 }

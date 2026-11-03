@@ -21,8 +21,8 @@
 .page-title h1 {
   flex: 0 1 auto;
   min-width: 8ch;
-  font-size: 20px;
-  font-weight: 650;
+  font-size: var(--fs-xl);
+  font-weight: 600;
   letter-spacing: -0.015em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -38,7 +38,7 @@
   gap: 6px;
   margin-top: 6px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -63,7 +63,7 @@
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
@@ -75,8 +75,8 @@
   gap: 12px;
   padding: 14px 16px 10px;
 }
-.panel-header h3 { font-size: 14px; font-weight: 600; }
-.panel-description { margin-top: 2px; font-size: 12.5px; color: var(--text-muted); }
+.panel-header h3 { font-size: var(--fs-base); font-weight: 600; }
+.panel-description { margin-top: 2px; font-size: var(--fs-sm); color: var(--text-muted); }
 
 /* ── Feature list ───────────────────────────────────────── */
 
@@ -86,7 +86,7 @@
   align-items: center;
   gap: 8px;
   padding-right: 8px;
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
 }
 .feature-row:hover { background: var(--surface-2); }
 .feature-open {
@@ -101,11 +101,11 @@
   text-align: left;
 }
 .feature-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
-.feature-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feature-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feature-meta {
   display: flex;
   align-items: center;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -129,7 +129,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 36px;
+  height: var(--h-lg);
   padding: 0 12px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -137,7 +137,7 @@
   background: transparent;
   color: var(--text-muted);
   font-weight: 500;
-  font-size: 13.5px;
+  font-size: var(--fs-md);
   white-space: nowrap;
 }
 .tab:hover { color: var(--text); }
@@ -159,7 +159,7 @@
   padding: 10px 4px 4px 12px;
   background: var(--terminal-bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 /* No padding here: FitAddon sizes the terminal from this element's computed
@@ -172,7 +172,7 @@
 .term-error {
   margin: -10px -4px 8px -12px;
   padding: 8px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--red);
   background: var(--surface);
   border-left: 3px solid var(--red);
@@ -182,7 +182,7 @@
   flex-shrink: 0;
   background: var(--surface);
   border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-lg);
   box-shadow: 0 0 0 3px var(--accent-soft);
   overflow: hidden;
 }
@@ -195,7 +195,7 @@
   color: var(--accent);
   min-width: 0;
 }
-.composer-head strong { color: var(--text); font-size: 13px; white-space: nowrap; }
+.composer-head strong { color: var(--text); font-size: var(--fs-md); white-space: nowrap; }
 /* One toolbar row: the helper text gives way first, then hides. */
 .composer-head-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-head > .btn, .composer-head > .icon { flex: none; }
@@ -208,7 +208,7 @@
   padding: 8px 14px;
   background: transparent;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   max-height: 40vh;
 }
@@ -218,23 +218,23 @@
   margin: 0 8px 8px;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
   background: var(--bg);
   max-height: 32vh;
   overflow-y: auto;
 }
 .steering-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.steering-score { font-weight: 600; font-size: 12.5px; }
+.steering-score { font-weight: 600; font-size: var(--fs-sm); }
 .steering-good { color: var(--green); }
 .steering-warn { color: var(--amber); }
 .steering-bad { color: var(--red); }
-.steering-summary { margin: 8px 0; font-size: 12.5px; }
-.steering-checks, .steering-tips { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.steering-summary { margin: 8px 0; font-size: var(--fs-sm); }
+.steering-checks, .steering-tips { margin: 0; padding: 0; list-style: none; font-size: var(--fs-sm); }
 .steering-checks li, .steering-tips li { padding: 2px 0; }
 .steering-mark { font-family: var(--mono); margin-right: 6px; }
 .steering-checks li[data-present="true"] .steering-mark { color: var(--green); }
 .steering-checks li[data-present="false"] .steering-mark { color: var(--amber); }
-.steering-subhead { margin: 10px 0 4px; font-size: 12px; }
+.steering-subhead { margin: 10px 0 4px; font-size: var(--fs-sm); }
 .steering-body.is-stale { opacity: 0.55; }
 .steering-stale { margin: 8px 0 0; }
 .composer-foot {

@@ -162,6 +162,11 @@
 }
 .field input[aria-invalid="true"] { border-color: var(--red); }
 .field-error { margin-top: -8px; font-size: var(--fs-sm); color: var(--red); overflow-wrap: anywhere; }
+/* A path input with its Browse… button (BrowseButton.tsx); a picker failure wraps under the row. */
+.path-input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.path-input-row > input { flex: 1 1 0; min-width: 0; }
+.path-browse { flex: none; height: var(--h-md); }
+.path-browse-error { flex-basis: 100%; margin-top: 0; }
 
 .segmented {
   display: inline-flex;

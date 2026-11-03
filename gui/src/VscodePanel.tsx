@@ -77,11 +77,11 @@ export default function VscodePanel({
     <div className="vscode-panel">
       <div className="vscode-panel-actions">
         <button className="btn btn-secondary" onClick={onOpen} disabled={opening}>
-          {opening ? <Spinner /> : <Icon name="plus" size={12} />} Open another VS Code window
+          {opening ? <Spinner /> : <Icon name="plus" size={14} />} Open another VS Code window
         </button>
         <button className="btn btn-secondary" disabled={closable.length === 0 || closing || confirming !== null}
           onClick={() => { setReport(null); setConfirming(editors.map((editor) => editor.id)); }}>
-          <Icon name="x" size={12} /> Close windows AMF opened
+          <Icon name="x" size={14} /> Close windows AMF opened
         </button>
       </div>
 
@@ -111,7 +111,7 @@ export default function VscodePanel({
       )}
 
       {editors.length === 0 ? (
-        <EmptyState icon="file" title="No tracked VS Code window for this feature">
+        <EmptyState icon="appWindow" title="No tracked VS Code window for this feature">
           Opens <span className="mono">{workdir}</span> with <span className="mono">code --new-window</span>.
         </EmptyState>
       ) : (

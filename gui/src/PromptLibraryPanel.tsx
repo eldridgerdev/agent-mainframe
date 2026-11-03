@@ -160,7 +160,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     <div className="library-browser">
       <div className="library-list" role="group" aria-label="Prompt library entries">
         {library.isLoading && <p className="muted">Loading prompts…</p>}
-        {library.data?.entries.length === 0 && <EmptyState icon="file" title={search ? "No matching prompts" : "No saved prompts"}>
+        {library.data?.entries.length === 0 && <EmptyState icon="book" title={search ? "No matching prompts" : "No saved prompts"}>
           {search ? "Try a different search or library scope." : "Create a User template here, or configure declarative templates in amf.json."}
         </EmptyState>}
         {library.data?.entries.map((entry) => <button key={entry.key} disabled={busy || authorBusy}
@@ -173,7 +173,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       </div>
       <div className="library-detail">
         {notice && <p role="status" className="muted">{notice}</p>}
-        {!selected && <EmptyState icon="file" title="Select a prompt">Preview its text and customize any placeholders before adding it.</EmptyState>}
+        {!selected && <EmptyState icon="book" title="Select a prompt">Preview its text and customize any placeholders before adding it.</EmptyState>}
         {selected && <>
           <div className="library-actions">
             <button className="btn btn-secondary btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("duplicate")}>Duplicate to User</button>

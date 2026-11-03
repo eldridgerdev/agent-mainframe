@@ -74,7 +74,7 @@ export function NextTodoDialog({
           )}
           {candidate && canStart && (
             <button className="btn btn-primary" onClick={() => onStart(candidate)}>
-              <Icon name="play" size={12} />
+              <Icon name="play" size={14} />
               {data?.outcome === "started" ? "Start another agent…" : "Start…"}
             </button>
           )}

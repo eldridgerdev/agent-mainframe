@@ -59,7 +59,7 @@ export function SessionStartStopButton({
       aria-label={`Stop session ${label}`}
       title="Stop this session and keep it listed"
     >
-      {stopping ? <Spinner /> : <Icon name="stop" size={12} />}
+      {stopping ? <Spinner /> : <Icon name="stop" size={14} />}
       {stopping ? "Stopping…" : "Stop session"}
     </button>
   ) : (
@@ -69,7 +69,7 @@ export function SessionStartStopButton({
       disabled={starting}
       aria-label={`Start session ${label}`}
     >
-      {starting ? <Spinner /> : <Icon name="play" size={12} />}
+      {starting ? <Spinner /> : <Icon name="play" size={14} />}
       {starting ? "Starting…" : "Start session"}
     </button>
   );

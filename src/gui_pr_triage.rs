@@ -28,8 +28,9 @@ use crate::app::pr_review::{
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
 use crate::editor::TextEditor;
-use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread};
+use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread, redact_secrets};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
+use crate::gui_github_errors::{GithubProblem, github_problem};
 use crate::gui_plans::PrecallView;
 use crate::project::AgentKind;
 
@@ -379,6 +380,8 @@ pub struct PrPickerView {
     pub entries: Vec<PrEntryView>,
     pub include_closed: bool,
     pub error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    pub github_problem: Option<GithubProblem>,
     pub branch_pr: Option<u32>,
     /// The list is still being read; poll for it.
     pub loading: bool,
@@ -500,6 +503,10 @@ pub struct PrTriageView {
     pub harnesses: Vec<AgentKind>,
     pub default_harness: Option<AgentKind>,
     pub error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    pub github_problem: Option<GithubProblem>,
+    /// The GitHub account `gh` writes as, when it could be read.
+    pub github_user: Option<String>,
     pub notice: Option<String>,
 }
 
@@ -701,7 +708,7 @@ fn open_picker(
     let list_pending = entries.is_none();
     let (entries, list_error) = match entries {
         Some(Ok(entries)) => (entries, None),
-        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        Some(Err(e)) => (Vec::new(), Some(redact_secrets(&format!("{e:#}")))),
         None => (Vec::new(), None),
     };
     let selected = branch_pr
@@ -810,7 +817,7 @@ pub fn begin_prefetched(
         match reads.resolve_pr(&workdir) {
             Ok(PrResolution::Found(pr)) => (Some(pr.number), None),
             Ok(PrResolution::NoPrForBranch) => (None, None),
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => (None, Some(redact_secrets(&format!("{e:#}")))),
         }
     };
     let current_user = reads.current_user(&workdir).ok();
@@ -986,7 +993,7 @@ fn snapshot(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<PrTr
                 };
                 fetch_failure = Some(match failure {
                     PrFetchFailure::Failed(e) => {
-                        format!("Could not load PR #{number} comments: {e}")
+                        redact_secrets(&format!("Could not load PR #{number} comments: {e:#}"))
                     }
                     PrFetchFailure::Disconnected => {
                         format!("Loading PR #{number} comments failed unexpectedly")
@@ -1111,6 +1118,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
                 .collect(),
             include_closed: state.include_closed,
             error: state.error.clone(),
+            github_problem: state.error.as_deref().and_then(github_problem),
             branch_pr,
             loading: list_pending,
         }),
@@ -1189,6 +1197,8 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         handoff,
         harnesses,
         default_harness,
+        github_problem: error.as_deref().and_then(github_problem),
+        github_user: current_user,
         error,
         notice,
     })
@@ -2189,6 +2199,10 @@ pub fn plan_act(
             pr: Some(*number),
             ..ReadPlan::default()
         },
+        A::Refresh if matches!(app.mode, AppMode::PrPicker(_)) => ReadPlan {
+            list: Some(include_closed),
+            ..ReadPlan::default()
+        },
         A::Refresh => ReadPlan {
             pr: number,
             ..ReadPlan::default()
@@ -2355,6 +2369,11 @@ fn apply(
                     "Wait for or cancel the running investigation first",
                 ));
             }
+            let entries = reads.list_prs(&workdir, include_closed);
+            open_picker(gui, include_closed, Some(entries), None)
+        }
+        A::Refresh if matches!(gui.app_for_workflow().mode, AppMode::PrPicker(_)) => {
+            // Re-read the pull request list, e.g. after signing `gh` in.
             let entries = reads.list_prs(&workdir, include_closed);
             open_picker(gui, include_closed, Some(entries), None)
         }
@@ -4094,6 +4113,48 @@ mod tests {
         let listed = act(&mut gui, &opened, PrTriageAction::BackToList);
         let picker = listed.picker.as_ref().unwrap();
         assert!(picker.include_closed && picker.entries.len() == 2);
+    }
+
+    #[test]
+    fn a_github_sign_in_failure_is_typed_and_the_list_can_be_refreshed() {
+        let (_dir, mut gui, target) = fixture();
+        let fake = github();
+        fake.state().fail_fetch = Some("`gh api graphql` failed: HTTP 401: Bad credentials".into());
+        gui.app_for_workflow()
+            .pr_review_work
+            .set_github_for_test(std::sync::Arc::new(fake.clone()));
+        let picked = begin(&mut gui, target).unwrap();
+        let loading = act(&mut gui, &picked, PrTriageAction::Open { number: 7 });
+        let mut failed = loading;
+        while failed.stage == "loading" {
+            std::thread::sleep(Duration::from_millis(10));
+            failed = poll(&mut gui, &failed.workflow_id).unwrap();
+        }
+        let view = settle(&mut gui, failed);
+        let problem = view
+            .github_problem
+            .as_ref()
+            .expect("a typed GitHub problem");
+        assert_eq!(
+            problem.kind,
+            crate::gui_github_errors::GithubProblemKind::NotSignedIn
+        );
+        assert_eq!(problem.command, Some("gh auth login"));
+        // The raw text is kept for Details.
+        assert!(view.error.as_deref().unwrap().contains("Bad credentials"));
+
+        // A list that could not be read is re-read by Refresh on the picker.
+        fake.state().fail_reads = true;
+        let unread = act(&mut gui, &view, PrTriageAction::Refresh);
+        let picker = unread.picker.as_ref().unwrap();
+        assert!(picker.error.is_some() && picker.entries.is_empty());
+        // An unrecognised failure stays raw rather than being guessed at.
+        assert!(picker.github_problem.is_none());
+        fake.state().fail_reads = false;
+        let listed = act(&mut gui, &unread, PrTriageAction::Refresh);
+        let picker = listed.picker.as_ref().unwrap();
+        assert!(picker.error.is_none() && !picker.entries.is_empty());
+        assert!(listed.github_problem.is_none() && listed.error.is_none());
     }
 
     #[test]

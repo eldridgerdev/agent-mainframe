@@ -384,3 +384,21 @@
   .pr-reader { grid-template-columns: 1fr; height: auto; }
   .pr-comments { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
+
+/* GitHub problems in the PR panels (U-11): what is wrong, the fix, Retry. */
+.github-problem-notice { flex-direction: column; gap: 6px; }
+.github-problem-notice a { color: var(--accent); }
+.github-problem-command,
+.github-problem-detail {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.github-problem-command { user-select: all; }
+.github-problem-detail { max-height: 10em; overflow: auto; margin-top: 4px; }
+.github-problem-notice details summary { cursor: pointer; color: var(--text-muted); }

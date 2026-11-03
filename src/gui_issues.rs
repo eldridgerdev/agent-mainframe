@@ -208,7 +208,10 @@ pub fn explain_github_error(error: &anyhow::Error) -> String {
 }
 
 fn gh_failure(error: anyhow::Error) -> GuiError {
-    GuiError::conflict(explain_github_error(&error))
+    GuiError {
+        github: crate::gui_github_errors::github_problem_of(&error).map(Box::new),
+        ..GuiError::conflict(explain_github_error(&error))
+    }
 }
 
 fn labels_of(issue: &GithubIssue) -> Vec<String> {

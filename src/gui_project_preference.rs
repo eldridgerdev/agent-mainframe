@@ -206,6 +206,7 @@ fn save_at(
     snapshot(&mut gui, project_id, global_path)
         .and_then(|saved| view(&saved, &installed))
         .map_err(|error| GuiError {
+            github: None,
             kind: error.kind,
             message: format!(
                 "Preference was saved, but refreshing choices failed: {}",

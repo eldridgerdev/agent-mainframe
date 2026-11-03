@@ -628,6 +628,7 @@ fn advance_error(error: PlanInterviewAdvanceError) -> GuiError {
         PlanInterviewAdvanceError::AnswerRequired => "This question requires an answer",
     };
     GuiError {
+        github: None,
         kind: GuiErrorKind::Internal,
         message: message.into(),
     }
@@ -825,6 +826,7 @@ pub fn act(
                 && !state.save_plan_edit()
             {
                 return Err(GuiError {
+                    github: None,
                     kind: GuiErrorKind::Internal,
                     message: "Plan markdown cannot be empty".into(),
                 });
@@ -896,6 +898,7 @@ pub fn act(
                 state
                     .attach_doc(Path::new(&path.text))
                     .map_err(|error| GuiError {
+                        github: None,
                         kind: GuiErrorKind::Internal,
                         message: error.to_string(),
                     })?;
@@ -951,6 +954,7 @@ pub fn act(
             // same work during the save/start sequence.
             if let Some(todo_id) = &todo_plan_id {
                 let db = app.db.as_ref().ok_or_else(|| GuiError {
+                    github: None,
                     kind: GuiErrorKind::Internal,
                     message: "No TODO database attached".into(),
                 })?;
@@ -979,6 +983,7 @@ pub fn act(
                     let Some(session_id) = associated else {
                         let _ = db.rollback_reserved_todo_agent_launch(todo_id, None);
                         return Err(GuiError {
+                            github: None,
                             kind: GuiErrorKind::Internal,
                             message: "Plan saved, but its TODO agent did not start".into(),
                         });

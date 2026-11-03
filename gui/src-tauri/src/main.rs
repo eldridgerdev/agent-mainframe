@@ -687,6 +687,7 @@ fn terminal_key(target: &SessionTarget) -> String {
 
 fn not_found(message: impl Into<String>) -> GuiError {
     GuiError {
+        github: None,
         kind: GuiErrorKind::NotFound,
         message: message.into(),
     }
@@ -2042,6 +2043,7 @@ impl CompanionOperation {
             .expect("operation mutex poisoned");
         if !operations.is_empty() {
             return Err(GuiError {
+                github: None,
                 kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
                 message: "Another companion integration operation is already running".into(),
             });
@@ -2086,6 +2088,7 @@ async fn companion_integration_preview(
         )?;
         if current != binding {
             return Err(GuiError {
+                github: None,
                 kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
                 message: "Companion or source changed; refresh the preview".into(),
             });
@@ -2115,6 +2118,7 @@ async fn companion_integration_confirm(
                 .map_err(GuiError::from)?;
             if plan.revision != revision {
                 return Err(GuiError {
+                    github: None,
                     kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
                     message: "Integration changed; refresh the preview".into(),
                 });
@@ -2125,6 +2129,7 @@ async fn companion_integration_confirm(
             )?;
             if current != binding {
                 return Err(GuiError {
+                    github: None,
                     kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
                     message: "Companion or source changed; refresh the preview".into(),
                 });

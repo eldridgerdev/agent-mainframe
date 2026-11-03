@@ -142,9 +142,29 @@ export function setCollapsed(target: CollapseTarget, collapsed: boolean): Promis
 
 export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "invalid_input" | "internal";
 
+/** A GitHub failure the user can fix themselves, classified by the backend
+ * (`src/gui_github_errors.rs`) from `gh`'s text. */
+export type GithubProblemKind = "cli_missing" | "not_signed_in" | "rate_limited" | "offline" | "no_remote";
+
+export interface GithubProblem {
+  kind: GithubProblemKind;
+  /** What is wrong, in one line. */
+  title: string;
+  /** What to do about it. */
+  message: string;
+  /** A command to run in a terminal, when there is one. */
+  command: string | null;
+  /** Where to get the missing tool or help. */
+  link: string | null;
+  /** The original failure, credentials removed. */
+  detail: string;
+}
+
 export interface GuiError {
   kind: GuiErrorKind;
   message: string;
+  /** Set when the failure is a fixable GitHub problem. */
+  github?: GithubProblem;
 }
 
 /** Type guard: Tauri command rejections are the exact `GuiError` JSON value

@@ -446,7 +446,7 @@ function StartTodoDialog({
         <>
           <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
           <button className="btn btn-primary" onClick={() => onConfirm(where, effectiveHow)}>
-            {effectiveHow === "plan" ? <Icon name="sparkles" /> : <Icon name="play" size={14} />}
+            {effectiveHow === "plan" ? <Icon name="sparkles" size={14} /> : <Icon name="play" size={14} />}
             {effectiveHow === "plan" ? "Start planning" : "Start agent"}
           </button>
         </>

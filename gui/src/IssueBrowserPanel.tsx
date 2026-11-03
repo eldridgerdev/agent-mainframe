@@ -341,19 +341,18 @@ function IssueFixForm({
           <Field label="Branch">
             <input className="mono" value={branch} onChange={(event) => { edited.current.branch = true; setBranch(event.target.value); }} disabled={busy} />
           </Field>
-          <div className="form-row">
+          <div className="form-row creation-agent-mode">
             <Field label="Agent">
               <select value={agent} onChange={(event) => setAgent(event.target.value as AgentSlug)} disabled={busy}>
                 {agents.map((a) => <option key={a.slug} value={a.slug}>{a.display_name}</option>)}
               </select>
             </Field>
-            <Field label="Mode">
+            <Field label="Mode" hint={modeInfo?.description}>
               <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)} disabled={busy}>
                 {modes.map((m) => <option key={m.slug} value={m.slug}>{m.display_name}</option>)}
               </select>
             </Field>
           </div>
-          {modeInfo?.description && <p className="field-hint mode-hint">{modeInfo.description}</p>}
           {isGit && (
             <Switch checked={useWorktree} onChange={setUseWorktree} disabled={busy}
               label="Use a separate checkout (worktree)" hint="Gives the feature its own folder and branch so agents don't collide." />

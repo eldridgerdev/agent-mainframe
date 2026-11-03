@@ -159,7 +159,7 @@ it("blocks loading, empty harnesses and a deleted destination without falling ba
   const { onSubmit, rerender, client } = mount({ projects });
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true); await ready();
   vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices([]) : name === "feature_presets_choices" ? [] : null);
-  await client.invalidateQueries({ queryKey: ["project-harness-choices"] }); await screen.findByText(/No allowed, installed agents/);
+  await client.invalidateQueries({ queryKey: ["project-harness-choices"] }); await screen.findByText("No agent is available yet.");
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   rerender({ projects: [projects[1]] }); await screen.findByText(/Choose an available git project/);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();

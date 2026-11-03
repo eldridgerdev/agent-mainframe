@@ -208,6 +208,8 @@ export interface CreateProjectResponse {
   ok: boolean;
   project_id: string | null;
   project_path: string;
+  /** Whether the path is inside a git repository (`project_path` is its root). */
+  is_git: boolean;
   message: string;
 }
 

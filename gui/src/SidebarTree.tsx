@@ -289,7 +289,7 @@ function ProjectNode({ project, entry, ...props }: SidebarTreeProps & { project:
             onClick={() => props.onSelectProject(project.id)}
           >
             <span className="nav-label"><Highlight text={project.name} query={props.filter} /></span>
-            <span className="nav-count">
+            <span className="nav-count" title={`${project.features.length} feature${project.features.length === 1 ? "" : "s"}`}>
               {entry.features.length === project.features.length
                 ? project.features.length : `${entry.features.length}/${project.features.length}`}
             </span>

@@ -808,9 +808,14 @@ fn create_project(
     state: State<AppState>,
     request: CreateProjectRequest,
 ) -> Result<CreateProjectResponse, GuiError> {
+    let dry_run = request.dry_run;
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.create_project(request)?;
-    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    // A dry run (the Add project form checks the path on blur) changes
+    // nothing, so it must not trigger a workspace-wide refresh.
+    if !dry_run {
+        emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    }
     Ok(response)
 }
 

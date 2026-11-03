@@ -361,8 +361,6 @@
   .pr-ai-summary > .md { padding-left: 0; }
   .pr-ai-batch-toolbar { align-items: stretch; flex-direction: column; }
   .pr-ai-batch-actions { justify-content: space-between; margin-left: 0; }
-  .pr-reader { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .pr-comments { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
 /* The page itself cannot query its own container, so its padding follows the window. */
 @media (max-width: 760px) {
@@ -432,6 +430,11 @@
 .pr-posted { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow: auto; }
 @media (max-width: 760px) {
   .pr-reader { grid-template-columns: 1fr; height: auto; }
+  .pr-comments { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--border); }
+}
+/* In a narrow PR workspace the thread list sits above the selected thread. */
+@container prws (width < 640px) {
+  .pr-reader { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .pr-comments { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
 

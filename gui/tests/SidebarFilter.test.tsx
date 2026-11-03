@@ -43,6 +43,7 @@ async function renderWorkspace() {
       case "supported_harnesses": return [{ slug: "claude", display_name: "Claude" }];
       case "supported_modes": return [{ slug: "vibeless", display_name: "Vibeless", description: "" }];
       case "plan_snapshot": return { active: null, draft: null };
+      case "allowed_harnesses": return [{ slug: "claude", display_name: "Claude" }];
       case "set_collapsed": {
         const { target, collapsed } = args as { target: CollapseTarget; collapsed: boolean };
         writes.push(target);
@@ -113,4 +114,33 @@ it("runs one collapse-all at a time", async () => {
   // Only Docs needed a write, and the second click started no second loop.
   expect(writes).toEqual([{ project_id: "docs", feature_id: null }]);
   expect((screen.getByRole("button", { name: "Expand all projects" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("? opens the keyboard shortcuts outside fields, and Help reopens the first-run steps", async () => {
+  const { filter } = await renderWorkspace();
+  fireEvent.keyDown(filter, { key: "?" });
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+  filter.blur();
+  expect(fireEvent.keyDown(document.body, { key: "?", shiftKey: true })).toBe(false);
+  const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+  expect(dialog.querySelector("[data-shortcut-id='sidebar.filter.focus']")).toBeTruthy();
+  // With the dialog open, "/" no longer jumps to the sidebar filter.
+  fireEvent.keyDown(document.body, { key: "/" });
+  expect(document.activeElement).not.toBe(filter);
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+
+  // Help is pinned outside the Tools group, which starts collapsed.
+  expect(screen.getByRole("button", { name: "Tools" }).getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Help" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Keyboard shortcuts" }));
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  fireEvent.keyDown(window, { key: "Escape" });
+
+  fireEvent.click(screen.getByRole("button", { name: "Help" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Show first-run steps again" }));
+  expect(await screen.findByRole("heading", { name: "Welcome to AMF" })).toBeTruthy();
+  // Choosing a project leaves the steps.
+  fireEvent.click(screen.getByText("/docs"));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Welcome to AMF" })).toBeNull());
 });

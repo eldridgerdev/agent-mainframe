@@ -1607,3 +1607,42 @@ it("opens the rename, ready and summary panel from the feature and session menus
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command.startsWith("feature_summary"))).toBe(false);
   client.clear();
 });
+
+describe("icon vocabulary", () => {
+  const iconOf = (element: Element) => element.querySelector("svg[data-icon]")?.getAttribute("data-icon");
+
+  it("gives every sidebar destination and tool its own icon", async () => {
+    await openFeature([session("Shell")], [], "stopped", true, true);
+    await toolButton("Appearance");
+    const nav = screen.getByRole("navigation", { name: "Workspace" });
+    const items = Array.from(nav.querySelectorAll(".nav-item"))
+      .map((item) => [item.querySelector(".nav-label")?.textContent, iconOf(item)] as const)
+      .filter(([label]) => label);
+    expect(Object.fromEntries(items)).toMatchObject({
+      "Needs attention": "bell",
+      "Global TODOs": "checkList",
+      Appearance: "palette",
+      "Prompt library": "book",
+      "Prompt overrides": "sliders",
+      "Validation screenshots": "camera",
+      "Feature presets": "layers",
+      "Context settings": "gauge",
+      "Syntax languages": "code",
+      "Agent availability": "plug",
+      "Dormant features": "moon",
+      "Session bookmarks": "bookmark",
+      "Debug log": "bug",
+    });
+    const icons = items.map(([, icon]) => icon);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
+  it("uses one icon per meaning in the feature menus", async () => {
+    await openFeature([session("Shell")], [], "stopped", true, true);
+    const icons = (menu: string, labels: string[]) => labels.map((label) => iconOf(menuItem(menu, label)));
+    expect(icons("Feature tools", ["Learning", "Final Review", "Screenshots", "PR Triage", "PR Workspace"]))
+      .toEqual(["bookOpen", "clipboardCheck", "camera", "gitPullRequest", "gitPullRequestDraft"]);
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Feature tools" }), { key: "Escape" });
+    expect(iconOf(menuItem("More feature actions", "Rename, ready and summary…"))).toBe("pencil");
+  });
+});

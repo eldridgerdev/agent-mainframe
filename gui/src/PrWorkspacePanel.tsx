@@ -3,7 +3,7 @@ import { asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
 import PrReviewPanel from "./PrReviewPanel";
 import Markdown from "./Markdown";
-import { Spinner } from "./ui";
+import { Icon, Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import DedicatedSessionForm from "./DedicatedSessionForm";
 import CompanionFeatureForm from "./CompanionFeatureForm";
@@ -331,7 +331,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
       <aside className={`pr-workspace-context${sidebarOpen ? "" : " pr-workspace-context-collapsed"}`} aria-label="Pull request context">
         <div className="pr-workspace-context-heading">
           {sidebarOpen && <strong>{review ? `PR #${review.number}` : "Pull requests"}</strong>}
-          <button type="button" className="btn btn-icon btn-ghost btn-sm" aria-label={sidebarOpen ? "Collapse PR sidebar" : "Expand PR sidebar"} aria-expanded={sidebarOpen} title={sidebarOpen ? "Collapse PR sidebar" : "Expand PR sidebar"} onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? "‹" : "›"}</button>
+          <button type="button" className="btn btn-icon btn-ghost btn-sm" aria-label={sidebarOpen ? "Collapse PR sidebar" : "Expand PR sidebar"} aria-expanded={sidebarOpen} title={sidebarOpen ? "Collapse PR sidebar" : "Expand PR sidebar"} onClick={() => setSidebarOpen((open) => !open)}><Icon name={sidebarOpen ? "chevronLeft" : "chevronRight"} size={14} /></button>
         </div>
         {sidebarOpen && review && <><p className="small muted">{review.head_ref} · {review.head_sha.slice(0, 7)}</p><p className="small">{review.open_count} open of {review.total} review items</p><p className="small muted">Fetched {review.fetched_at}</p><button className="btn btn-secondary btn-sm" disabled={busy || triageBusy} onClick={() => void switchTab("threads")}>Review threads</button></>}
         {sidebarOpen && !review && <p className="muted small">Choose a PR in Threads to load its files and AI review.</p>}

@@ -212,7 +212,7 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
         </button>)}
       </div>
       <div className="library-detail">
-        {!row && !overrides.isLoading && <EmptyState icon="file" title="Select a prompt">Choose a prompt to see its effective template.</EmptyState>}
+        {!row && !overrides.isLoading && <EmptyState icon="sliders" title="Select a prompt">Choose a prompt to see its effective template.</EmptyState>}
         {row && <>
           <h3>{row.title}</h3>
           <p className="muted">{row.summary} <code>{row.id}</code></p>

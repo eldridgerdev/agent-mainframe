@@ -44,8 +44,8 @@ export default function PromptComposer({
         <strong>Compose prompt</strong>
         <span className="muted small composer-head-note">Draft here, then send to the agent.</span>
         <span className="tabs-spacer" />
-        {onSteeringChange && <button className="btn btn-sm btn-ghost" aria-pressed={steeringOpen} onClick={() => onSteeringChange(!steeringOpen)}><Icon name="check" />Steering coach</button>}
-        <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="file" />Prompt library</button>
+        {onSteeringChange && <button className="btn btn-sm btn-ghost" aria-pressed={steeringOpen} onClick={() => onSteeringChange(!steeringOpen)}><Icon name="compass" />Steering coach</button>}
+        <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="book" />Prompt library</button>
         <button className="btn btn-sm btn-ghost" disabled={sending || !text} onClick={onClear}>
           Clear
         </button>
@@ -54,7 +54,7 @@ export default function PromptComposer({
           className="btn btn-ghost btn-icon btn-sm"
           items={[{
             label: "Save as template",
-            icon: "file",
+            icon: "book",
             disabled: sending || !text.trim(),
             hint: !text.trim() ? "Write a draft first" : undefined,
             onSelect: onSaveTemplate,

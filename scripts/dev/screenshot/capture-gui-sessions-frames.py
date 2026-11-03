@@ -133,7 +133,7 @@ def capture(name, note, expects, expression=None, alert=False):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    assert alert == evaluate('!!document.querySelector("[role=alert]")'), body
+    assert alert == evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.4)
@@ -225,7 +225,7 @@ try:
 
     choose("Database")
     create_session()
-    wait(f"!!{dialog}.querySelector('[role=alert]')")
+    wait(f"!!{dialog}.querySelector('[role=alert]:not([data-confirm-callout])')")
     assert custom_sessions() == [], custom_sessions()
     capture(
         "002-pre-check-failed.png",
@@ -236,7 +236,7 @@ try:
     )
 
     choose("Dev server")
-    wait(f"!{dialog}.querySelector('[role=alert]')")
+    wait(f"!{dialog}.querySelector('[role=alert]:not([data-confirm-callout])')")
     create_session()
     wait(f"!{dialog}")
     wait('Array.from(document.querySelectorAll("[role=tab]")).some(t=>t.textContent.includes("Dev server")&&t.getAttribute("aria-selected")==="true")')
@@ -274,7 +274,7 @@ try:
     )
 
     click("Close windows AMF opened")
-    wait("!!document.querySelector('.vscode-panel [role=alert]')")
+    wait("!!document.querySelector('.vscode-panel [role=alert]:not([data-confirm-callout])')")
     assert standin_windows(), "nothing closes before confirmation"
     capture(
         "005-vscode-close-confirm.png",

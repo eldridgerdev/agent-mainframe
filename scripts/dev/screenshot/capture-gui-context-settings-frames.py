@@ -28,13 +28,13 @@ with gui:
     assert values() == ["500000", "70", "85"]
     capture("001-context-settings-loaded.png", "Loaded global context limit and warning/critical thresholds share the TUI settings; a blank token limit restores harness defaults.", ["Context settings", "Context size (tokens)", "Warn at (% full)", "Critical at (% full)", "Leave blank to restore harness defaults."])
     fill("Warn at (% full)", "90")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("002-context-invalid-order.png", "Critical must exceed warning; the invalid order blocks Save without writing configuration.", ["Percentages must be 1–100, with critical greater than warning."], 'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Save settings").disabled', allow_alert=True)
     assert json.loads(config_path.read_text())["context_warning_percent"] == 70
     fill("Warn at (% full)", "70")
     fill("Context size (tokens)", "18446744073709551615")
     click("Cancel")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     capture("003-context-discard-guard.png", "Cancel protects the unsaved full-width token-limit draft until explicit discard.", ["Discard unsaved settings and close?", "Keep editing", "Discard changes"])
     click("Keep editing")
     saved = json.loads(config_path.read_text())
@@ -49,9 +49,9 @@ with gui:
     capture("004-context-stale-save-refused.png", "An external edit refuses a stale save and retains the complete token-limit draft.", ["Global config changed. Reload settings before saving.", "Reload settings"], allow_alert=True)
     assert json.loads(config_path.read_text())["context_window_override"] == 300000
     click("Reload settings")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     click("Discard changes")
-    wait('!document.querySelector("[role=alertdialog]") && !document.body.innerText.includes("Loading or saving settings…")')
+    wait('!document.querySelector("[data-confirm-callout]") && !document.body.innerText.includes("Loading or saving settings…")')
     assert values() == ["300000", "60", "90"]
     fill("Context size (tokens)", "18446744073709551615")
     click("Save settings")

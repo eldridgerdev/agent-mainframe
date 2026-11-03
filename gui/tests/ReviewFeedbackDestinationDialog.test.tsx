@@ -32,7 +32,7 @@ it("keeps companion edits behind discard confirmation without creating resources
   fireEvent.change(screen.getByRole("combobox", { name: "Destination type" }), { target: { value: "companion" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Companion branch" }), { target: { value: "my-fixes" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel destination selection" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard destination choices" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard destination choices" })).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled(); expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   expect((screen.getByRole("textbox", { name: "Companion branch" }) as HTMLInputElement).value).toBe("my-fixes");

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError, FeatureTarget } from "./api";
 import { EvidenceListing, EvidenceOwner, screenshotCleanup, screenshotCleanupScopes, screenshotImage, screenshotsChanged, screenshotsList } from "./screenshotsApi";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 import ScreenshotViewer, { ScreenshotImage } from "./ScreenshotViewer";
 
 export default function ScreenshotsPanel({ target = null, sessionId = null, onClose }: { target?: FeatureTarget | null; sessionId?: string | null; onClose: () => void }) {
@@ -100,8 +100,8 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
         {!cleanup.length && <p>No screenshot scopes to clean up.</p>}
         {cleanup.map(([owner, retired]) => <div key={owner.scope_id} className="screenshot-cleanup-row">
           <span>{owner.project_name} / {owner.feature_name} · {owner.session_label} · {owner.scope_id}{retired ? " (retired; removal can be retried)" : ""}</span>
-          <button className="btn btn-warning" disabled={busyScope !== null} onClick={() => setConfirmScope(owner.scope_id)}>Clean up this scope…</button>
-          {confirmScope === owner.scope_id && <div role="alertdialog" aria-label="Confirm screenshot cleanup"><p>Delete this scope’s screenshot files at {owner.workdir}?</p><button disabled={busyScope !== null} onClick={() => void clean(owner.scope_id)}>{busyScope === owner.scope_id ? "Cleaning…" : "Delete screenshots"}</button><button onClick={() => setConfirmScope(null)}>Cancel</button></div>}
+          <button className="btn btn-secondary" disabled={busyScope !== null} onClick={() => setConfirmScope(owner.scope_id)}>Clean up this scope…</button>
+          {confirmScope === owner.scope_id && <ConfirmCallout label="Confirm screenshot cleanup"><p>Delete this scope’s screenshot files at {owner.workdir}?</p><button className="btn btn-danger" disabled={busyScope !== null} onClick={() => void clean(owner.scope_id)}>{busyScope === owner.scope_id ? "Cleaning…" : "Delete screenshots"}</button><button className="btn btn-secondary" onClick={() => setConfirmScope(null)}>Cancel</button></ConfirmCallout>}
         </div>)}
       </section>}
     </>}

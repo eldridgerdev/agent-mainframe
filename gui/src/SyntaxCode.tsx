@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
 import { SyntaxInfo, SyntaxInstallView, SyntaxSpan, syntaxInstall, syntaxInstallStatus,
   openSyntaxLanguages, syntaxOperationStarted, SYNTAX_OPERATION_STARTED, SYNTAX_LANGUAGES_CHANGED } from "./syntaxApi";
-import { Spinner } from "./ui";
+import { Icon, Spinner } from "./ui";
 import "./syntax.css";
 
 /**
@@ -72,6 +72,12 @@ const PLAIN_REASON: Partial<Record<SyntaxInfo["status"], (language: string | nul
   over_budget: () => "too many changes to highlight every file",
 };
 
+/** Languages whose install offer the reader dismissed, for this app session:
+ * the offer would otherwise repeat in every diff of that language. */
+const dismissedOffers = new Set<string>();
+/** Forget dismissed offers (tests reset module state between cases). */
+export function resetSyntaxOffersForTest() { dismissedOffers.clear(); }
+
 /**
  * Says how the shown file is coloured and, when its parser is missing or
  * broken, offers the install the TUI's syntax-language picker performs,
@@ -85,6 +91,8 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [, setDismissals] = useState(0);
+  const offerDismissed = !!info?.language_key && dismissedOffers.has(info.language_key);
   const seen = useRef<number | null>(null);
   const installed = useRef(onInstalled);
   installed.current = onInstalled;
@@ -155,10 +163,15 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
   return <span className="syntax-badge">
     {info.status === "highlighted"
       ? <span className="syntax-chip syntax-chip-on" title="Syntax highlighting uses the parser installed for AMF">{info.language}</span>
-      : <span className="syntax-chip" title={reason ? `Shown as plain text: ${reason}` : undefined}>Plain text{reason ? ` · ${reason}` : ""}</span>}
-    <button type="button" className="btn btn-ghost btn-sm" onClick={openSyntaxLanguages}>Manage syntax languages</button>
-    {installable && !running && !confirming && <button type="button" className="btn btn-ghost btn-sm"
-      onClick={() => { setError(null); setConfirming(true); }}>{verb} {info.language} parser…</button>}
+      : <span className="syntax-chip" title={reason ? `Shown as plain text: ${reason}${installable && offerDismissed ? `. ${verb} it from Manage syntax languages.` : ""}` : undefined}>Plain text{reason ? ` · ${reason}` : ""}</span>}
+    <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Manage syntax languages" title="Manage syntax languages" onClick={openSyntaxLanguages}><Icon name="code" size={14} /></button>
+    {installable && !running && !confirming && !offerDismissed && <span className="syntax-offer">
+      <button type="button" className="btn btn-secondary btn-sm"
+        onClick={() => { setError(null); setConfirming(true); }}>{verb} {info.language} parser…</button>
+      <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`Hide the ${info.language} parser offer`}
+        title={`Hide this offer for ${info.language} files until AMF restarts`}
+        onClick={() => { dismissedOffers.add(info.language_key!); setDismissals((n) => n + 1); }}><Icon name="x" size={14} /></button>
+    </span>}
     {installable && confirming && !running && <span className="syntax-install callout callout-warning" role="group" aria-label={`${verb} ${info.language} parser`}>
       <p>{verb} the {info.language} parser? AMF clones its tree-sitter grammar from GitHub and compiles it with your C compiler (<code>cc</code>) into AMF's config directory. AMF's terminal app uses the same parser.</p>
       <button type="button" className="btn btn-secondary btn-sm" disabled={requesting} onClick={() => setConfirming(false)}>Cancel</button>

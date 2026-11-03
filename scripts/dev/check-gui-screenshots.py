@@ -532,7 +532,7 @@ export function formatTotal(total: number): string {
         )
         escape()
         wait("!document.querySelector('.screenshot-grid')")
-        feature_tool("PR Triage")
+        feature_tool("Review comments")
         wait("!!document.querySelector('.pr-entry')")
         evaluate("document.querySelector('.pr-entry').click()")
         wait("!!document.querySelector('.pr-detail')")

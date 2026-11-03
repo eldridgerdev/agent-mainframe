@@ -1371,6 +1371,12 @@ export default function App() {
       : { kind: "project", projectId: first.project.id });
   };
   const createFeatureProject = projects.find((project) => project.id === createFeatureFor);
+  // The first agent session of the Switch-agent target holding an unsent draft.
+  const harnessDraftSession = harnessTarget ? projects.flatMap((project) => project.features)
+    .filter((feature) => feature.id === harnessTarget.feature_id)
+    .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+    .find((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)
+    : undefined;
 
   return (
     <div className="app">
@@ -1598,10 +1604,10 @@ export default function App() {
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
-      {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
+      {prReviewProject && <Suspense fallback={<Modal label="Loading Write a review" title="Loading Write a review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
         <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
       </Suspense>}
-      {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
+      {prTriageTarget && <Suspense fallback={<Modal label="Loading review comments" title="Loading review comments" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
       {issueBrowserFor && (() => {
@@ -1644,7 +1650,7 @@ export default function App() {
       <main className="main">
         {prWorkspaceTarget && !showPrWorkspace && <section className={`pr-workspace-background-banner${prWorkspaceStatus.running ? " is-running" : ""}`} aria-live="polite">
           {prWorkspaceStatus.running ? <Spinner /> : <span className="pr-workspace-background-check">{prWorkspaceStatus.completed ? "✓" : "↗"}</span>}
-          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR Workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
+          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setView({ kind: "feature", projectId: prWorkspaceTarget.project_id, featureId: prWorkspaceTarget.feature_id }); setPrWorkspaceVisible(true); }}>Return to PR workspace</button>
         </section>}
         {prWorkspaceTarget && <div className="pr-workspace-host" hidden={!showPrWorkspace}>
@@ -2024,6 +2030,7 @@ export default function App() {
             ? "Close ends this session and removes it from the list. It is the feature's last running session, so the feature stops too."
             : "Close ends this session and removes it from the list."}
           confirmLabel="Close session"
+          tone="danger"
           busy={removeSessionMutation.isPending}
           onConfirm={() => requestRemoveSession(closeSessionDialog.target)}
           onCancel={() => setCloseSessionDialog(null)}
@@ -2033,11 +2040,15 @@ export default function App() {
       {harnessTarget && <FeatureHarnessDialog
         key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
         target={harnessTarget}
-        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
-          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
-          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        hasDrafts={harnessDraftSession !== undefined}
         sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
         onClose={() => setHarnessTarget(null)}
+        onOpenComposer={harnessDraftSession && (() => {
+          const featureId = harnessTarget.feature_id;
+          setHarnessTarget(null);
+          setView({ kind: "feature", projectId: harnessTarget.project_id, featureId });
+          setTabByFeature((current) => ({ ...current, [featureId]: harnessDraftSession.id }));
+        })}
         onChanged={() => {
           setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
           pushToast({ tone: "info", title: "Agent changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
@@ -2265,10 +2276,10 @@ function ProjectView({
               text="Pull request"
               icon={null}
               className="btn btn-ghost btn-sm"
-              title="Triage or review a pull request"
+              title="Read feedback on a pull request, or review one"
               items={[
-                { label: "PR Triage", icon: "gitPullRequest", onSelect: onPrTriage },
-                { label: "PR Review", icon: "gitCompare", onSelect: onPrReview },
+                { label: "Review comments", icon: "gitPullRequest", title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                { label: "Write a review", icon: "gitCompare", title: "Comment on someone else's pull request and post your review (PR Review in the terminal app)", onSelect: onPrReview },
               ]}
             />}
             <Menu
@@ -2572,8 +2583,8 @@ function FeatureView({
                 { label: "Screenshots", icon: "camera", onSelect: () => onScreenshots(null) },
                 ...(project.is_git ? [
                   { section: "Pull request" },
-                  { label: "PR Triage", icon: "gitPullRequest" as const, onSelect: onPrTriage },
-                  { label: "PR Workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", onSelect: onPrWorkspace },
+                  { label: "Review comments", icon: "gitPullRequest" as const, title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                  { label: "PR workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", title: "Files, review threads and AI findings in one page. New and still changing; your GitHub data is not affected.", onSelect: onPrWorkspace },
                 ] : []),
               ]}
             />
@@ -2607,7 +2618,7 @@ function FeatureView({
                 { section: "Feature" },
                 // While edits wait, the header's counted button is the way in.
                 ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "shieldCheck" as const, onSelect: onSupervisedEdits }] : []),
-                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Switch agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Rename or mark ready…", icon: "pencil" as const, title: "Rename the feature or its sessions, mark it ready, or write a summary", onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",

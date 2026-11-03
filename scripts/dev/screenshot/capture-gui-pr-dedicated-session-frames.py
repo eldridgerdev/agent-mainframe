@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -224,7 +224,7 @@ try:
     x.sync()
     wait(has_button("Round invoice totals"))
     click("Round invoice totals")
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')
@@ -254,7 +254,7 @@ try:
     assert rows() == after
     capture("004-reuses-existing-session.png", "Reopening the form finds the labelled session and says so: it is reused, nothing new is created, and the button changes to Use existing session.", ["already exists", "Use existing session"])
     select("Agent", "codex")
-    wait(f'!!document.querySelector("[role=alert]") && {form()}.innerText.includes("already runs Claude")')
+    wait(f'!!document.querySelector("[role=alert]:not([data-confirm-callout])") && {form()}.innerText.includes("already runs Claude")')
     capture("005-other-harness-conflict.png", "Asking for Codex under the same name is a conflict, not a silent reuse: the PR Triage label already runs Claude. No session is created.", ["already runs Claude"], allow_alert=True)
     assert rows() == after
     assert gh_writes() == [] and ai_calls() == []

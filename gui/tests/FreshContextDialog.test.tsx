@@ -31,7 +31,7 @@ it("protects edited text on cancellation without starting", async () => {
   const handlers = mount();
   fireEvent.change(await screen.findByRole("textbox"), { target: { value: "My work" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard continuation draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard continuation draft" })).toBeTruthy();
   expect(handlers.onClose).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("My work");
@@ -67,7 +67,7 @@ it("requires resource approval and blocks repeated pending starts", async () => 
   const handlers = mount();
   await screen.findByRole("textbox");
   fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
-  await screen.findByRole("alertdialog", { name: "Resource warning" });
+  await screen.findByRole("alert", { name: "Resource warning" });
   fireEvent.click(screen.getByRole("button", { name: "Start anyway" }));
   fireEvent.click(screen.getByRole("button", { name: "Start anyway" }));
   expect(launches).toBe(2);

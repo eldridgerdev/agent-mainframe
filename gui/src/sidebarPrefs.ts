@@ -64,7 +64,7 @@ export function resetSidebarPrefsForTest() {
 }
 
 function hasVisibleDialog(): boolean {
-  return Array.from(document.querySelectorAll("[role='dialog'], [role='alertdialog']")).some((dialog) => {
+  return Array.from(document.querySelectorAll("[role='dialog'], [data-confirm-callout]")).some((dialog) => {
     // Planning keeps its modal mounted under a hidden wrapper when minimized.
     if (dialog.closest("[hidden]")) return false;
     const visibility = window.getComputedStyle(dialog).visibility;

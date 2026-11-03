@@ -117,7 +117,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -198,7 +198,7 @@ try:
     set_start(False)
     wait(fork_button_enabled())
     click("Fork feature")
-    wait("!!document.querySelector('[role=dialog] [role=alert]')")
+    wait("!!document.querySelector('[role=dialog] [role=alert]:not([data-confirm-callout])')")
     capture("003-stale-refused.png",
             "The source changed after the preview, so the confirmation is refused and the form gives way to Try again. No worktree, branch or feature was created.",
             ["prepare the fork again", "Try again"],

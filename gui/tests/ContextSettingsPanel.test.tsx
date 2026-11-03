@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import ContextSettingsPanel from "../src/ContextSettingsPanel";
+import { getConfirm } from "./confirmCallout";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const initial = { revision: "rev1", settings: { window_limit: "500000", warning_percent: "70", critical_percent: "85" } };
@@ -49,7 +50,7 @@ it("retains stale-save drafts and confirms discard before close or reload", asyn
   expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Global config changed");
   expect(screen.getByLabelText("Warn at (% full)")).toHaveProperty("value", "60");
   expect(onSaved).not.toHaveBeenCalled();
-  click("Cancel"); expect(screen.getByRole("alertdialog")).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
+  click("Cancel"); expect(getConfirm()).toBeTruthy(); expect(onClose).not.toHaveBeenCalled();
   click("Keep editing"); click("Reload settings"); click("Discard changes");
   await waitFor(() => expect(screen.getByLabelText("Warn at (% full)")).toHaveProperty("value", "70"));
   change("Warn at (% full)", "55"); click("Save settings");

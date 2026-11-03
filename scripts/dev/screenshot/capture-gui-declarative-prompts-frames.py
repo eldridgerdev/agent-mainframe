@@ -124,7 +124,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -221,7 +221,7 @@ try:
     click('Cancel');capture('002-unsaved-edits-protected.png','Closing a changed declarative editor asks before discarding. Keep editing preserves all local fields.',['Discard unsaved prompt edits?','Keep editing'])
     click('Keep editing')
     project['external_edit']='kept';legacy.write_text(json.dumps(project,indent=1));legacy_bytes=legacy.read_bytes()
-    click('Save template');wait('!!document.querySelector("[role=alert]")')
+    click('Save template');wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture('003-stale-project-save-keeps-draft.png','A legacy source edited outside the dialog refuses saving and keeps the locally revised name/body/tags.',['Edit declarative prompt','Keep your draft and reload before saving.'],'document.querySelector(\'[role=dialog][aria-label="Declarative prompt editor"] textarea\').value==="Revised {{area}}."',allow_alert=True)
     assert not project_path.exists() and legacy.read_bytes()==legacy_bytes
     click('Reload template');click('Discard changes');wait('document.querySelector(\'[role=dialog][aria-label="Declarative prompt editor"] textarea\')?.value==="Repair {{area}}."')
@@ -241,10 +241,10 @@ try:
     click('Export template…');field('Export destination',json.dumps({'kind':'project','project_id':'shot-project'},separators=(',',':')));click('Refresh export preview');wait('document.body.innerText.includes("Replace the same-name destination template")')
     capture('007-explicit-replacement-preview.png','Export copies the full User template into an explicit Project path and requires same-name replacement confirmation.',['Export prompt template','Replace the same-name destination template','User repair {{area}}.'],'document.querySelector(\'[role=dialog] input[type=checkbox]\')?.checked===false')
     destination=json.loads(project_path.read_text());destination['external_destination']='kept';project_path.write_text(json.dumps(destination))
-    evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!!document.querySelector("[role=alert]")')
+    evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture('008-stale-export-refused.png','An external destination edit invalidates the preview. Replacement confirmation resets; the source and unsent composer remain intact.',['Export prompt template','Refresh the export preview before confirming.'],allow_alert=True)
     assert json.loads(project_path.read_text())==destination
-    click('Refresh export preview');wait('!document.querySelector("[role=alert]")');evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')')
+    click('Refresh export preview');wait('!document.querySelector("[role=alert]:not([data-confirm-callout])")');evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')')
     value=json.loads(project_path.read_text());assert value['external_destination']=='kept';assert value['prompt_templates'][0]['body']=='User repair {{area}}.';assert value['prompt_templates'][0]['opaque_template']==template['opaque_template'];assert value['prompt_templates'][0]['placeholders']==definitions;assert value['prompt_templates'][1]==sibling
     evaluate('Array.from(document.querySelectorAll(".library-item")).find(b=>b.querySelector("strong")?.textContent==="Invoice repair revised"&&b.querySelector(".badge")?.textContent==="Project").click()')
     click('Export template…');field('Export destination',json.dumps({'kind':'project','project_id':'shot-project'},separators=(',',':')));click('Refresh export preview');wait('document.body.innerText.includes("No file will be written.")')

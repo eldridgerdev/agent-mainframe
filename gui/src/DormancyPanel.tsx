@@ -13,7 +13,7 @@ import {
   dormancyLoad,
   dormancyStop,
 } from "./api";
-import { EmptyState, Icon, Modal, Spinner } from "./ui";
+import { ConfirmCallout, EmptyState, Icon, Modal, Spinner } from "./ui";
 
 export const DORMANCY_KEY = ["dormancy"];
 
@@ -246,14 +246,14 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
       <p>Could not check dormancy: {asGuiError(query.error).message}</p>
     </div>}
 
-    {editorConfirm ? <section role="alertdialog" aria-label="Confirm closing dormant editors">
+    {editorConfirm ? <ConfirmCallout label="Confirm closing dormant editors" as="section">
       <p>Close editor windows for <strong>{editorConfirm.observation.feature_name}</strong>?</p>
       <p>The feature and its sessions keep running. Unsaved changes in closed windows are lost.</p>
       <ul aria-label="Confirmed editor windows">{editorConfirm.editors.map((editor) => <li key={editor.id}>
         {editor.name} · {editor.state === "not_owned" ? "Not AMF's — left running" : editor.state === "opening" ? "Still opening" : "AMF opened this window"} · launched {when(editor.started_at)}
       </li>)}</ul>
       <p>A window AMF did not open, one whose process now belongs to something else, or one sharing its VS Code instance with other windows is left running and reported. A newly opened window requires a fresh list and confirmation.</p>
-    </section> : editorResult ? <section aria-label="Editor close results">
+    </ConfirmCallout> : editorResult ? <section aria-label="Editor close results">
       <p><strong>{editorResult.name}</strong>: the feature and its sessions keep running.</p>
       <p>{editorResult.response.message}</p>
       <EditorReport editors={editorResult.response.editors} />
@@ -270,13 +270,13 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature,
           </div>
         </li>)}
       </ul>
-    </section> : confirming && view ? <section role="alertdialog" aria-label="Confirm stopping dormant features" className="dormancy-confirm">
+    </section> : confirming && view ? <ConfirmCallout label="Confirm stopping dormant features" className="dormancy-confirm" as="section">
       <p>Stop {chosen.length} dormant feature{chosen.length === 1 ? "" : "s"}? Each feature's running sessions end; saved conversations stay resumable and nothing is deleted.</p>
       <ul>{chosen.map((observation) => <li key={key(observation)}><strong>{observation.feature_name}</strong>{" "}
         <span className="muted">({observation.tmux_session})</span></li>)}</ul>
       <p>{editorPolicy(view)}</p>
       <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its running sessions, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
-    </section> : view && (!view.enabled
+    </ConfirmCallout> : view && (!view.enabled
       ? <EmptyState icon="alert" title="Dormancy detection is off"
           action={<button className="btn btn-primary btn-sm" onClick={() => setShowSettings(true)}>Turn on…</button>}>
           It lists features that are idle and unopened. Setting either threshold to 0 turns it off; set both above 0 to turn it on.

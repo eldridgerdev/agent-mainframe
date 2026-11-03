@@ -121,7 +121,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector(`[role=alert]`)'), body
+        assert not evaluate('!!document.querySelector(`[role=alert]:not([data-confirm-callout])`)'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -202,7 +202,7 @@ try:
     capture('001-project-agent-loaded.png', 'The project override is distinct from global Claude Code/Codex choices and edits the tracked project config.', ['Project agent availability','Use project override','Use global setting (clear project override)','Global choices: Claude Code, Codex'])
 
     toggle('Pi'); click('Cancel')
-    wait('!!document.querySelector(`[role=alertdialog]`)')
+    wait('!!document.querySelector(`[data-confirm-callout]`)')
     capture('002-project-agent-discard.png','Unsaved project choices require explicit discard; the existing agent composer draft stays cached.', ['Discard unsaved settings and close?','Keep editing','Discard changes'])
     click('Keep editing')
     external = dict(original); external['future_setting'] = 43
@@ -212,8 +212,8 @@ try:
     assert checked() == ['Codex','Pi']
     assert json.loads(project_path.read_text()) == external
     capture('003-project-agent-stale.png','An external project edit refuses stale saving while retaining the local Codex/Pi draft.', ['Project or agent settings changed. Reload settings before saving.','Reload settings'],allow_alert=True)
-    click('Reload settings'); wait('!!document.querySelector(`[role=alertdialog]`)'); click('Discard changes')
-    wait('!document.querySelector(`[role=alertdialog]`) && !document.body.innerText.includes("Loading or saving settings…")')
+    click('Reload settings'); wait('!!document.querySelector(`[data-confirm-callout]`)'); click('Discard changes')
+    wait('!document.querySelector(`[data-confirm-callout]`) && !document.body.innerText.includes("Loading or saving settings…")')
     assert checked() == ['Codex']
     toggle('Pi'); click('Save settings')
     wait('!document.querySelector(`[role=dialog]`)')

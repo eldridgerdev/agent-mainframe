@@ -3,7 +3,7 @@ import { asGuiError } from "./api";
 import { DiffLine, ReviewLocation, ReviewSeverity, ReviewSpan } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import { workspaceReviewOpen } from "./prWorkspaceApi";
 import { PrReviewAction, PrReviewThread, PrReviewView, prReviewAct, prReviewBegin, prReviewSnapshot } from "./prReviewApi";
 
@@ -163,10 +163,10 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
   const body = <>
     {(error || view?.error) && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
     {view?.notice && <p role="status">{view.notice}</p>}
-    {discard && <div className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
+    {discard && <ConfirmCallout label="Discard unsaved editor text" className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
       <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning" onClick={() => void act({ kind: discard })}>Discard and leave</button>
-    </div>}
+      <button className="btn btn-danger" onClick={() => void act({ kind: discard })}>Discard and leave</button>
+    </ConfirmCallout>}
     {(!view || waiting) && <p role="status"><Spinner /> Loading pull requests…</p>}
     {embedded && !view && error && embedded.fallback}
     {embedded && view?.pin_error && <p className="callout callout-danger" role="alert">{view.pin_error}</p>}
@@ -229,8 +229,8 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
       </div>
       {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>
         <button className="btn btn-secondary" disabled={locked || comment === file.comment} onClick={() => void act({ kind: "file_comment", path: file.diff.path, text: comment })}>Save file comment</button></>}
-      {embedded ? <div className="row"><p className="muted small">Comments save to the shared PR review draft, the same one PR Review and AMF's terminal app use. The summary, preview and posting stay in PR Review.</p>
-        <button className="btn btn-secondary" disabled={locked || dirty} onClick={embedded.onOpenReview}>Preview and post in PR Review…</button></div> : <>
+      {embedded ? <div className="row"><p className="muted small">Comments save to the shared review draft, the same one Write a review and AMF's terminal app use. Write the summary, preview and post from Write a review.</p>
+        <button className="btn btn-secondary" disabled={locked || dirty} onClick={embedded.onOpenReview}>Preview and post in Write a review…</button></div> : <>
       <Field label="Review summary"><textarea value={summary} disabled={locked} onChange={(e) => setSummary(e.target.value)} /></Field>
       <button className="btn btn-secondary" disabled={locked || summary === view.summary} onClick={() => void act({ kind: "summary", text: summary })}>Save summary</button>
       <Field label="Review event"><select value={event} disabled={locked} onChange={(e) => setEvent(e.target.value)}>
@@ -255,6 +255,7 @@ export default function PrReviewPanel({ projectId, onClose, embedded }: { projec
     </section>}
   </>;
   if (embedded) return <section className="pr-review-embedded" aria-label="PR Files review">{body}</section>;
-  return <Modal label="PR Review" title={`PR Review${view ? ` · ${view.project_name}` : ""}`} size="xl"
+  return <Modal label="Write a review" title={`Write a review${view ? ` · ${view.project_name}` : ""}`} size="xl"
+    subtitle="Comment on someone else's pull request, then preview and post your review to GitHub."
     dismissable={!locked} onClose={() => leave("close")}>{body}</Modal>;
 }

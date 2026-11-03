@@ -131,7 +131,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -216,8 +216,8 @@ def edit_ready(name):
 
 
 def confirm_open():
-    wait('!!document.querySelector(`[role=alertdialog][aria-label="Confirm answer"]`)')
-    evaluate('document.querySelector(`[role=alertdialog][aria-label="Confirm answer"]`).scrollIntoView({block:"nearest"})')
+    wait('!!document.querySelector(`[data-confirm-callout][aria-label="Confirm answer"]`)')
+    evaluate('document.querySelector(`[data-confirm-callout][aria-label="Confirm answer"]`).scrollIntoView({block:"nearest"})')
 
 
 def finish(hook, result):
@@ -308,7 +308,7 @@ try:
     confirm_open()
     pathlib.Path(stale_request['proposed_file']).write_text('def changed_after_review():\n    return False\n')
     click('Send approval')
-    wait('document.querySelector(`[role=alert]`)?.textContent.includes("changed after you reviewed")')
+    wait('document.querySelector(`[role=alert]:not([data-confirm-callout])`)?.textContent.includes("changed after you reviewed")')
     still_blocked(stale,stale_request)
     capture('008-changed-captured-diff-refused.png',
             f'Changing the hook’s captured proposal after confirmation refuses the stale answer. Inside the {auto_allow_secs:g} seconds before the plugin lets an unanswered write through, the live hook is still blocked, its source is unchanged and no proceed signal is written.',
@@ -336,7 +336,7 @@ try:
     remaining=sorted(path.name for path in abandon_dir.iterdir())
     assert abandon_file.exists() and 'waiter.json' in remaining
     click('Send approval')
-    wait('document.querySelector(`[role=alert]`)?.textContent.includes("The agent is no longer waiting for this edit")')
+    wait('document.querySelector(`[role=alert]:not([data-confirm-callout])`)?.textContent.includes("The agent is no longer waiting for this edit")')
     capture('009-abandoned-hook-refused.png',
             'An approval sent after the request-owning OpenCode process is killed is refused: its remaining files cannot authorize an answer. Native review marks it unanswerable and disables all decisions rather than recreating its reply paths.',
             ['The agent is no longer waiting for this edit', 'Not answerable', 'abandon.py'],

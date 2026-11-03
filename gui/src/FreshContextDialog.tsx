@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { asGuiError, type SessionTarget } from "./api";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 
 interface Preview { revision: string; prompt: string; label: string }
 interface Result { target: SessionTarget; draft_prompt: string }
@@ -58,16 +58,16 @@ export default function FreshContextDialog({ target, onCreated, onClose }: {
       {error && <p role="alert">{error}</p>}
       {(error || preview.error) && <button className="btn btn-secondary" disabled={pending || preview.isFetching}
         onClick={() => { setApproval(null); setError(null); void preview.refetch(); }}>Reload context (keep draft)</button>}
-      {approval && <div role="alertdialog" aria-label="Resource warning">
+      {approval && <ConfirmCallout label="Resource warning">
         <p>{approval}</p>
         <button className="btn btn-primary" disabled={pending || discard} onClick={() => void start(true)}>Start anyway</button>
         <button className="btn btn-secondary" disabled={pending} onClick={() => setApproval(null)}>Keep editing</button>
-      </div>}
-      {discard && <div role="alertdialog" aria-label="Discard continuation draft">
+      </ConfirmCallout>}
+      {discard && <ConfirmCallout label="Discard continuation draft">
         <p>Discard your edited continuation prompt?</p>
         <button className="btn btn-danger" disabled={pending} onClick={() => { if (!busy.current) onClose(); }}>Discard draft</button>
         <button className="btn btn-secondary" disabled={pending} onClick={() => setDiscard(false)}>Keep editing</button>
-      </div>}
+      </ConfirmCallout>}
     </div>
   </Modal>;
 }

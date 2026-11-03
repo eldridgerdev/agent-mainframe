@@ -111,7 +111,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.4)
@@ -174,7 +174,7 @@ try:
             db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
     shared_write("UPDATE features SET agent='codex' WHERE id='f-round'")
     button('Start new session')
-    wait("document.querySelector('[role=alert]')?.innerText.includes('source changed')")
+    wait("document.querySelector('[role=alert]:not([data-confirm-callout])')?.innerText.includes('source changed')")
     assert db_value("SELECT COUNT(*) FROM feature_sessions WHERE feature_id='f-round'") == 2
     capture('004-stale-source-refused.png',
         'Switching the feature harness through the shared database is refused before launch. The edited prompt remains for reload and review.',

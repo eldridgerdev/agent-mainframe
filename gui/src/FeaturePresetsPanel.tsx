@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { asGuiError, FeaturePreset, featurePresetsLoad, featurePresetsSave, PresetRow, PresetsView } from "./api";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import { SHARED_WITH_TERMINAL } from "./terminalNote";
 import { CHROME_HINT, REVIEW_HINT } from "./creationCopy";
 
@@ -109,14 +109,14 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
       {blocking.some((item) => item !== row) && <p role="alert">Fix the Codex + Vibeless combination in: {
         blocking.filter((item) => item !== row).map((item) => item.preset.name || "Unnamed preset").join(", ")}.</p>}
     </div>}
-    {discard && <div role="alertdialog" aria-label="Discard unsaved presets" className="callout callout-warning">
+    {discard && <ConfirmCallout label="Discard unsaved presets" className="callout callout-warning">
       <p>Discard unsaved presets and {discard === "close" ? "close" : "reload"}?</p>
       <button className="btn btn-secondary" disabled={busy} onClick={() => setDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning" disabled={busy} onClick={() => {
+      <button className="btn btn-danger" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         const action = discard; setDiscard(null);
         if (action === "close") onClose(); else void load();
       }}>Discard changes</button>
-    </div>}
+    </ConfirmCallout>}
   </Modal>;
 }

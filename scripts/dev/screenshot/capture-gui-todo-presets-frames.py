@@ -124,7 +124,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('Array.from(document.querySelectorAll("[role=alert]")).some(e=>e.offsetParent!==null)'), body
+        assert not evaluate('Array.from(document.querySelectorAll("[role=alert]:not([data-confirm-callout])")).some(e=>e.offsetParent!==null)'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -269,7 +269,7 @@ try:
             ['Discard unsaved TODO feature settings?','Keep editing','Discard changes'])
     click('Keep editing')
     evaluate('Array.from(document.querySelectorAll("input[type=checkbox]")).find(e=>e.closest("label").textContent.trim().startsWith("Remote Control")).click()')
-    wait('!document.querySelector(`[role=alert]`)')
+    wait('!document.querySelector(`[role=alert]:not([data-confirm-callout])`)')
     capture('004-explicit-opt-out.png', 'The user explicitly clears Remote Control. The edited branch remains, and Quick Plan can now start; no feature, hook or TODO reservation has happened yet.',
             ['Plan in a new feature','Quick Plan','Choose fixture stack','Start Quick Plan'],
             '!Array.from(document.querySelectorAll("button")).find(e=>e.textContent.trim()==="Start Quick Plan").disabled && Array.from(document.querySelectorAll("input")).some(e=>e.value==="custom/preserve-quota")')

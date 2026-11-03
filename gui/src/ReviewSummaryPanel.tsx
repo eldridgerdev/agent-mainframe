@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReviewAction, ReviewView } from "./api";
 import ReviewFeedbackDestinationDialog from "./ReviewFeedbackDestinationDialog";
+import { ConfirmCallout } from "./ui";
 
 export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = null, onDestinationOpenChange }: {
   view: ReviewView; busy: boolean; dirty: boolean; error?: string | null; onDestinationOpenChange?: (open: boolean) => void; onAct: (action: ReviewAction) => Promise<boolean>;
@@ -70,22 +71,22 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
     </div>}
     <p>{summary.pending_suggestions} open suggestion(s) · {view.applied_suggestions.length} applied locally</p>
     <button className="btn btn-primary" disabled={blocked || summary.pending_suggestions === 0 || confirm || checkConfirm !== null} onClick={() => setConfirm(true)}>Apply pending suggestions</button>
-    {confirm && <div className="review-confirm" role="alertdialog" aria-label="Apply pending suggestions locally">
+    {confirm && <ConfirmCallout label="Apply pending suggestions locally" className="review-confirm">
       <p>Apply {summary.pending_suggestions} saved replacement(s) to your checkout? This writes source files, resolves successful threads, and refreshes the diff. Blocked suggestions stay open. Changed files lose approval and must be reviewed again. This does not finish the review or send feedback.</p>
       <button className="btn btn-primary" disabled={blocked} onClick={() => void apply()}>Apply batch locally</button>
       <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => setConfirm(false)}>Cancel batch application</button>
-    </div>}
+    </ConfirmCallout>}
     <section aria-label="Project review check" className="review-note">
       <h3>Project check</h3>
       {view.check_command ? <><pre>{view.check_command}</pre>
         <button className="btn btn-secondary" disabled={blocked || checkConfirm !== null || confirm} onClick={() => setCheckConfirm(view.check_command)}>Run project check</button>
       </> : <p>No final review check is configured for this project.</p>}
-      {checkConfirm !== null && <div className="review-confirm" role="alertdialog" aria-label="Run project review check">
+      {checkConfirm !== null && <ConfirmCallout label="Run project review check" className="review-confirm">
         <p>Run this shell command in the feature checkout? It may write build or test artifacts. Review progress stays open; this does not apply suggestions, finish the review or send feedback.</p>
         <pre>{checkConfirm}</pre>
         <button className="btn btn-primary" disabled={blocked} onClick={() => void runCheck()}>Run check now</button>
         <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => setCheckConfirm(null)}>Cancel check launch</button>
-      </div>}
+      </ConfirmCallout>}
       {view.check && <><p role="status">Check {view.check.status}: {view.check.command}</p>
         {view.check.output && <pre aria-label="Project check output">{view.check.output}</pre>}
         {checkRunning && <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel running check</button>}
@@ -110,7 +111,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
         ? <><p role="status">Completing: the configured check is running. The feedback round is recorded when it finishes. Any suggestions applied before the check remain in source files if you cancel.</p>
           <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel completion</button></>
         : <button className="btn btn-primary" disabled={blocked || generated || confirm || checkConfirm !== null || completeConfirm} onClick={() => setCompleteConfirm(true)}>Complete review…</button>}
-      {completeConfirm && !completing && <div className="review-confirm" role="alertdialog" aria-label="Complete Final Review">
+      {completeConfirm && !completing && <ConfirmCallout label="Complete Final Review" className="review-confirm">
         <p>Record this round in .claude/final-review-feedback.md, clear the saved progress and close the review? The round is shared with the review history in AMF's terminal app.</p>
         <ul>
           {finish.skipped > 0 && <li>{finish.skipped} file(s) have no verdict and are recorded as skipped.</li>}
@@ -126,7 +127,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
         {target && <button className="btn btn-primary" disabled={blocked || generated} onClick={() => void complete(true)}>Complete and hand off to {target.label}</button>}
         <button className={target ? "btn btn-secondary" : "btn btn-primary"} disabled={blocked || generated} onClick={() => void complete(false)}>{target ? "Complete without handoff" : "Complete review"}</button>
         <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => setCompleteConfirm(false)}>Keep reviewing</button>
-      </div>}
+      </ConfirmCallout>}
     </section>}
     {summary.rows.map((row, index) => <article className="review-note" key={index}>
       <h3>{row.title}</h3>

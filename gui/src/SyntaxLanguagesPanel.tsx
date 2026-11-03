@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 import {
   SyntaxLanguageAction, SyntaxLanguageRow, SyntaxLanguagesView, SyntaxInstallView,
   syntaxLanguages, syntaxLanguagesApply, syntaxInstallStatus, syntaxLanguagesChanged, syntaxOperationStarted, SYNTAX_OPERATION_STARTED,
@@ -94,14 +94,14 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
     </div>}
     {!operation?.running && operation?.message && <p role="status" className="callout callout-info">Last operation: {operation.message}</p>}
     {!operation?.running && operation?.error && <p role="alert" className="callout callout-danger">{operation.error} Parser files may have changed; refresh before retrying.</p>}
-    {confirmation && <div role="alertdialog" aria-label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning syntax-manager-confirmation">
+    {confirmation && <ConfirmCallout label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning syntax-manager-confirmation">
       <p>{title(confirmation.action)} the {confirmation.row.title} parser?</p>
       <p>{confirmation.action === "uninstall" ? "Remove its shared parser library and managed source checkout. This language will use plain text until installed again."
         : "Clone its grammar from GitHub and compile a shared parser. Repair replaces the existing managed parser files."}</p>
       <button type="button" className="btn btn-secondary" disabled={requesting} onClick={() => setConfirmation(null)}>Cancel</button>
       <button type="button" className={confirmation.action === "uninstall" ? "btn btn-danger" : "btn btn-primary"} disabled={busy} onClick={() => void apply()}>
         {requesting && <Spinner />}{title(confirmation.action)} parser</button>
-    </div>}
+    </ConfirmCallout>}
     <table className="syntax-languages"><thead><tr><th>Language</th><th>Parser</th><th>Actions</th></tr></thead><tbody>
       {(view?.languages ?? []).map(row => <tr key={row.key}><th scope="row">{row.title}</th><td>{stateName[row.state]}</td><td>
         {row.state === "available" ? <button type="button" className="btn btn-secondary btn-sm" disabled={busy} aria-label={`Install ${row.title} parser`}

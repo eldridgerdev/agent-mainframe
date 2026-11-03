@@ -131,12 +131,12 @@ it("protects unsaved edits on Escape, prompt switches and context changes, and o
   fireEvent.keyDown(document.body, { key: "Escape" });
   expect(outerEscape).not.toHaveBeenCalled();
   expect(onClose).not.toHaveBeenCalled();
-  const confirm = screen.getByRole("alertdialog", { name: "Discard unsaved template" });
+  const confirm = screen.getByRole("alert", { name: "Discard unsaved template" });
   fireEvent.click(within(confirm).getByRole("button", { name: "Keep editing" }));
   expect(template().value).toBe("changed");
 
   fireEvent.click(screen.getByRole("button", { name: /Session summary/ }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved template" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved template" })).toBeTruthy();
   expect(template().value).toBe("changed");
   fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(screen.getByLabelText("Effective template").textContent).toBe("GLOBAL codex {{recent_lines}}");
@@ -158,7 +158,7 @@ it("protects unsaved edits on Escape, prompt switches and context changes, and o
 it("clears one stored override only after explicit confirmation", async () => {
   mount(() => view(), undefined, "session.summary");
   fireEvent.click(await screen.findByRole("button", { name: "Clear Global · Codex" }));
-  const confirm = screen.getByRole("alertdialog", { name: "Confirm clear override" });
+  const confirm = screen.getByRole("alert", { name: "Confirm clear override" });
   expect(confirm.textContent).toContain("Clear the Global · Codex override for Session summary?");
   fireEvent.click(within(confirm).getByRole("button", { name: "Keep it" }));
   expect(calls("prompt_overrides_clear")).toHaveLength(0);
@@ -176,7 +176,7 @@ it("clears against the revision the user confirmed, not a newer polled one", asy
   let current = view();
   mount(() => current, undefined, "session.summary");
   fireEvent.click(await screen.findByRole("button", { name: "Clear Global · Codex" }));
-  const confirm = screen.getByRole("alertdialog", { name: "Confirm clear override" });
+  const confirm = screen.getByRole("alert", { name: "Confirm clear override" });
   expect(within(confirm).getByLabelText("Template to clear").textContent).toBe("GLOBAL codex {{recent_lines}}");
 
   // The TUI rewrites that slot while the confirmation is open; the next poll sees it.

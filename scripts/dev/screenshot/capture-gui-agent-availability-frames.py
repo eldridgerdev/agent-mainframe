@@ -29,7 +29,7 @@ with gui:
 
     toggle("Pi")
     click("Cancel")
-    wait("!!document.querySelector('[role=alertdialog][aria-label=\"Discard unsaved settings\"]')")
+    wait("!!document.querySelector('[data-confirm-callout][aria-label=\"Discard unsaved settings\"]')")
     capture("002-agent-discard-guard.png", "Cancel with unsaved agent choices asks before discarding the draft.", ["Discard unsaved settings and close?", "Keep editing", "Discard changes"])
     click("Keep editing")
     saved = json.loads(config_path.read_text())
@@ -42,9 +42,9 @@ with gui:
     assert json.loads(config_path.read_text())["extension"]["allowed_agents"] == ["claude", "codex"]
 
     click("Reload settings")
-    wait("!!document.querySelector('[role=alertdialog][aria-label=\"Discard unsaved settings\"]')")
+    wait("!!document.querySelector('[data-confirm-callout][aria-label=\"Discard unsaved settings\"]')")
     click("Discard changes")
-    wait('!document.querySelector("[role=alertdialog]") && !document.body.innerText.includes("Loading or saving settings…")')
+    wait('!document.querySelector("[data-confirm-callout]") && !document.body.innerText.includes("Loading or saving settings…")')
     assert checked() == ["Claude Code", "Codex"]
     toggle("Claude Code")
     toggle("Pi")

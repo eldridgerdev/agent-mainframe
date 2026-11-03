@@ -256,7 +256,7 @@ it("hosts line comments in the Files tab without the dialog's summary, preview o
   fireEvent.click(screen.getByRole("button", { name: "Save line comment" }));
   await waitFor(() => expect(actions()).toEqual([{ kind: "line_comment", path: "lib.rs", start: loc(5, 5), end: loc(5, 5), text: "From Files", severity: "suggestion" }]));
   await waitFor(() => expect(props.onDirtyChange).toHaveBeenLastCalledWith(false));
-  fireEvent.click(screen.getByRole("button", { name: "Preview and post in PR Review…" }));
+  fireEvent.click(screen.getByRole("button", { name: "Preview and post in Write a review…" }));
   expect(props.onOpenReview).toHaveBeenCalledOnce();
 });
 
@@ -267,7 +267,7 @@ it("refuses editing and says why when the Files PR head no longer matches", asyn
   render(<PrReviewPanel projectId="project" onClose={vi.fn()} embedded={props} />);
   expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
   expect((screen.getByRole("button", { name: "Select line 5" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: "Preview and post in PR Review…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Preview and post in Write a review…" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.queryByText("Read-only diff")).toBeNull();
 });
 

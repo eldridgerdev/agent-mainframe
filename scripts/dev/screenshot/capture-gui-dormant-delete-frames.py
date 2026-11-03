@@ -117,7 +117,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -172,8 +172,8 @@ def todo_choices():
     wait(f"{dialog}?.innerText.includes('1 unfinished TODO')")
     evaluate("document.querySelector('input[value=move_to_global]').click()")
     click("Delete feature")
-    wait(f"{dialog}?.innerText.includes('This feature hosts the project list')")
-    evaluate("Array.from(document.querySelectorAll('label')).find(l=>l.textContent.trim()==='Keep on docs-refresh').querySelector('input').click()")
+    wait(f"{dialog}?.innerText.includes('is stored in this feature')")
+    evaluate("Array.from(document.querySelectorAll('label')).find(l=>l.textContent.trim()==='Move it to docs-refresh').querySelector('input').click()")
 
 
 try:
@@ -190,13 +190,13 @@ try:
     preserved()
     capture("002-delete-confirm.png",
             "Deletion first asks for confirmation, warns that the worktree's uncommitted changes will be discarded, and explains fresh dormancy checks. No feature or TODO has changed.",
-            ["Delete billing-retry?", "Uncommitted changes", "Each confirmation checks dormancy again", "Cancel", "Delete feature"])
+            ["Delete billing-retry?", "you have not committed", "Each confirmation checks dormancy again", "Cancel", "Delete feature"])
     todo_choices()
     preserved()
     capture("003-todo-cancel.png",
-            "Before deletion, the shared flow collects both the unfinished worktree TODO destination and a surviving host for the project list. Move to global and Keep on docs-refresh are selected; cancelling applies neither answer.",
-            ["1 unfinished TODO", "Move them to the global list", "This feature hosts the project list", "Keep on docs-refresh", "Cancel"],
-            "document.querySelector('input[value=move_to_global]').checked && Array.from(document.querySelectorAll('label')).find(l=>l.textContent.trim()==='Keep on docs-refresh').querySelector('input').checked")
+            "Before deletion, the shared flow collects both the unfinished worktree TODO destination and a surviving host for the project list. Move to global and Move it to docs-refresh are selected; cancelling applies neither answer.",
+            ["1 unfinished TODO", "Move them to the global list", "is stored in this feature", "Move it to docs-refresh", "Cancel"],
+            "document.querySelector('input[value=move_to_global]').checked && Array.from(document.querySelectorAll('label')).find(l=>l.textContent.trim()==='Move it to docs-refresh').querySelector('input').checked")
     click("Cancel")
     wait(f"{panel}?.querySelectorAll('.dormancy-row').length===3")
     preserved()
@@ -215,7 +215,7 @@ try:
             ["Not deleted:", "It was opened in AMF after the list was loaded", "Dormant features", "billing-retry", "ordinary-checkout"],
             f"!{panel}.innerText.includes('docs-refresh') && !{dialog}", allow_error=True)
     evaluate("document.querySelector('.toast-error button[aria-label]').click()")
-    wait("!document.querySelector('[role=alert]')")
+    wait("!document.querySelector('[role=alert]:not([data-confirm-callout])')")
 
     delete_row("billing-retry")
     todo_choices()

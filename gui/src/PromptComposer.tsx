@@ -53,7 +53,7 @@ export default function PromptComposer({
           label="More draft actions"
           className="btn btn-ghost btn-icon btn-sm"
           items={[{
-            label: "Save as template",
+            label: "Save as prompt",
             icon: "book",
             disabled: sending || !text.trim(),
             hint: !text.trim() ? "Write a draft first" : undefined,

@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { invoke } from "@tauri-apps/api/core";
 import SyntaxLanguagesPanel from "../src/SyntaxLanguagesPanel";
 import type { SyntaxInstallView, SyntaxLanguagesView } from "../src/syntaxApi";
+import { getConfirm, queryConfirm } from "./confirmCallout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
@@ -22,13 +23,13 @@ it("lists the catalog and stages every action without mutating until confirmatio
   expect(screen.getByText("Needs repair")).toBeTruthy();
   for (const [action, language] of [["Install", "JSON"], ["Repair", "Python"], ["Uninstall", "Rust"]]) {
     click(`${action} ${language} parser`);
-    expect(screen.getByRole("alertdialog", { name: `${action} ${language} parser` })).toBeTruthy();
+    expect(screen.getByRole("alert", { name: `${action} ${language} parser` })).toBeTruthy();
     click("Cancel");
   }
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(close).not.toHaveBeenCalled();
   click("Uninstall Rust parser"); click("Close manager");
-  expect(screen.queryByRole("alertdialog")).toBeNull(); expect(close).not.toHaveBeenCalled();
+  expect(queryConfirm()).toBeNull(); expect(close).not.toHaveBeenCalled();
   click("Close manager"); expect(close).toHaveBeenCalledOnce();
 });
 
@@ -45,9 +46,9 @@ it.each([["Install", "JSON", "json", "install", "json-v1"], ["Repair", "Python",
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("syntax_languages_apply", { request: { language, action, revision } }));
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("button", { name: "Close manager" })).toHaveProperty("disabled", true);
-    expect(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
+    expect(within(getConfirm()).getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
     await act(async () => resolve({ ...idle, operation_id: 1, running: true, language: label, language_key: language, action }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(queryConfirm()).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh languages" })).toHaveProperty("disabled", true);
     click("Close manager"); expect(close).toHaveBeenCalledOnce();
   });
@@ -60,10 +61,10 @@ it("reports stale refusal, preserves confirmation, and refreshes before retry", 
   render(<SyntaxLanguagesPanel onClose={vi.fn()} />);
   await screen.findByRole("button", { name: "Uninstall Rust parser" });
   click("Uninstall Rust parser"); click("Uninstall parser");
-  expect((await screen.findByRole("alert")).textContent).toContain("Parser files changed");
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect((await screen.findByText("Parser files changed", { exact: false })).closest("[role=alert]")).not.toBeNull();
+  expect(getConfirm()).toBeTruthy();
   click("Refresh languages");
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(queryConfirm()).toBeNull());
   expect(invoke).toHaveBeenCalledTimes(3);
 });
 

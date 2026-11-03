@@ -36,12 +36,12 @@ export default function BookmarksPanel({ projects, onOpen, onClose }: {
   }
   const rows = loaded ? query.data : undefined;
   return <Modal label="Session bookmarks" title="Session bookmarks" onClose={() => { if (!inFlight.current) onClose(); }}
-    subtitle="Nine shared slots. Adding a tenth evicts the oldest bookmark. Opening a bookmark never starts a stopped session."
-    footer={<button className="btn btn-secondary" disabled={busy} onClick={() => { if (!inFlight.current) onClose(); }}>Close</button>}>
+    subtitle="Jump to a session quickly. You can keep nine; saving a tenth removes the oldest. Shared with AMF's terminal app. Opening a bookmark never starts a stopped session."
+    footer={<><span className="muted small modal-footer-hint">Esc to close</span><button className="btn btn-secondary" disabled={busy} onClick={() => { if (!inFlight.current) onClose(); }}>Close</button></>}>
     {(error || query.error) && <p role="alert">{error || asGuiError(query.error).message}{query.error && loaded && " Showing the previous load; refresh to retry."}</p>}
     <button className="btn btn-secondary" disabled={busy || query.isFetching} onClick={() => void query.refetch()}>Refresh bookmarks</button>
     {rows && <ol aria-label="Bookmarks">{rows.map(row => <li key={JSON.stringify(row.target)} className="row">
-      <button className="btn btn-secondary" disabled={busy || query.isError} onClick={() => void act("bookmarks_resolve", row.target)}>{row.slot}. {row.label}</button>
+      <button className="btn btn-secondary" disabled={busy || query.isError} onClick={() => void act("bookmarks_resolve", row.target)}>{row.slot}. {row.label}{row.stale && " (missing)"}</button>
       <button className="btn btn-ghost" disabled={busy || query.isError} aria-label={`Remove bookmark ${row.slot}`} onClick={() => void act("bookmarks_remove", row.target)}>Remove</button>
     </li>)}</ol>}
     {rows?.length === 0 && <p>No bookmarked sessions yet.</p>}

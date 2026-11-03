@@ -84,7 +84,7 @@ def wait(expression, timeout=10):
     state = evaluate(
         'JSON.stringify({header:document.querySelector(".diff-file-header,.learning-code-header")?.innerText,'
         'code:(document.querySelector(".diff-code,.learning-code")?.innerHTML||"").slice(0,1500),'
-        'alerts:Array.from(document.querySelectorAll("[role=alert],[role=status]")).map(e=>e.innerText)})'
+        'alerts:Array.from(document.querySelectorAll("[role=alert]:not([data-confirm-callout]),[role=status]")).map(e=>e.innerText)})'
     )
     raise AssertionError(f"{expression}\nPage: {state}")
 
@@ -179,7 +179,7 @@ def capture(name, note, expects, expression=None):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    assert not evaluate('!!document.querySelector("[role=alert]")'), body
+    assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.4)

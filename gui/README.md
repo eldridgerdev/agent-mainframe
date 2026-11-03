@@ -262,9 +262,9 @@ IPC-only review activity are not reported as current. The per-field source
 matrix is in `src/gui_contract/session_sidebar.rs`. Native offline proof:
 `scripts/dev/screenshot/scenarios/gui-session-sidebar.txt`.
 
-**Fresh context** in the Context section opens an editable continuation from
+**Continue in new session** (the TUI's fresh context) in the Context section opens an editable continuation from
 that feature's plan, changed files, summary and known prompt, using the same
-builder as TUI leader F. **Start fresh context** uses the feature's configured
+builder as TUI leader F. **Start new session** uses the feature's configured
 harness and opens a new tab with the continuation as an unsent composer draft;
 your original session stays open. Resource warnings require **Start anyway**.
 If the source changes while editing, reload context and review the retained
@@ -437,7 +437,9 @@ tests use isolated Git repositories; component tests mock the IPC calls.
 
 Use **Tools → Final Review** on a Git feature to approve, reject or skip files, undo a
 verdict, write whole-file or line/range comments with severity, resolve/reopen
-comments, edit suggested replacements, and save overall feedback. Click a line
+comments, edit suggested replacements, and save overall feedback. Files AMF itself
+generated (hook state, local agent settings) fold into an **AMF files** group, as in
+Changes, and stay out of the approved/rejected/undecided counts until you open it. Click a line
 number to select it; Shift-click another to extend a range in diff order. Use
 **Comment on selection** or **Suggest replacement**, or edit a saved thread.
 Empty saves clear prose or replacement code while keeping the other part of
@@ -824,9 +826,14 @@ drives the native window against an offline `gh` that logs every call and
 refuses writes, and asserts no write and no agent session. macOS validation
 remains open.
 
-### PR Triage
+### Review comments (PR Triage)
 
-**Tools → PR Triage** on a Git feature lists the repository's open pull requests (or all
+The desktop app names its pull-request tools by what they do: **Review comments**
+(the terminal app's PR Triage) reads and replies to feedback on your PR, **Write a
+review** (PR Review) comments on someone else's PR and posts the review, and **PR
+workspace** (experimental) shows files, threads and AI findings for one PR together.
+
+**Tools → Review comments** on a Git feature lists the repository's open pull requests (or all
 of them), marks the branch's own PR, and opens any PR from the list or by number.
 Comments load through the same `gh` fetch and normalization as the TUI's PR
 Triage: inline comments with their windowed diff context, review summaries,
@@ -912,7 +919,7 @@ remains open.
 
 ### Feature rename, ready and summary
 
-**More feature actions → Rename, ready and summary…** (or **Rename session…** on
+**More feature actions → Rename or mark ready…** (or **Rename session…** on
 a session tab) opens one panel for the TUI's `r`, `y` and `Z`. A feature rename
 sets or clears its nickname and a session rename changes its label, exactly as
 the dashboard does: no branch, worktree or tmux window is renamed, and the

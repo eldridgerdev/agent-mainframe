@@ -231,7 +231,7 @@ function Section({
           </span>
         );
       case "pr_triage":
-        return <button key={action.kind} type="button" className="sb-action" title={title("Open PR Triage")} onClick={onPrTriage}>Triage</button>;
+        return <button key={action.kind} type="button" className="sb-action" title={title("Open review comments")} onClick={onPrTriage}>Triage</button>;
       case "supervised_edits":
         return <button key={action.kind} type="button" className="sb-action" title={title("Answer the pending review")} onClick={onSupervisedEdits}>Review</button>;
       case "complete_todo":
@@ -306,7 +306,7 @@ function ContextMeter({ meter, onFreshContext }: { meter: SidebarContextMeter; o
         {meter.estimated && <span className="sb-chip">estimated</span>}
         {meter.stale && <span className="sb-chip sb-chip-stale">stale</span>}
       </p>
-      <button className="sb-action" onClick={onFreshContext}>Fresh context</button>
+      <button className="sb-action" onClick={onFreshContext}>Continue in new session</button>
       {meter.fresh_context_hint && (
         <p className="sb-hint">Context is filling up.</p>
       )}

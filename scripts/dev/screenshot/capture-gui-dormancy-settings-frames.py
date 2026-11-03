@@ -129,7 +129,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -174,7 +174,7 @@ try:
 
     fill_first("20")
     click("Cancel")
-    wait('!!document.querySelector(\'[role=alertdialog][aria-label="Discard unsaved settings"]\')')
+    wait('!!document.querySelector(\'[data-confirm-callout][aria-label="Discard unsaved settings"]\')')
     capture("002-discard-guard.png", "Cancel with a dirty draft asks before discarding or closing.", ["Discard unsaved settings and close?", "Keep editing", "Discard changes"])
     click("Keep editing")
     wait('!!document.querySelector(\'[role=dialog][aria-label="Dormancy settings"]\')')
@@ -186,7 +186,7 @@ try:
     assert evaluate('!!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Save settings" && !b.disabled)')
 
     click("Reload settings")
-    wait('!!document.querySelector(\'[role=alertdialog][aria-label="Discard unsaved settings"]\')')
+    wait('!!document.querySelector(\'[data-confirm-callout][aria-label="Discard unsaved settings"]\')')
     click("Discard changes")
     wait('document.querySelector(\'[role=dialog][aria-label="Dormancy settings"] input[type=number]\').value==="30"')
     fill_first("0")
@@ -196,7 +196,7 @@ try:
         import json as json_module
         saved=json_module.load(f)
     assert saved["dormant_idle_minutes"] == 0 and saved["dormant_last_accessed_hours"] == 4, saved
-    capture("004-detection-disabled.png", "Saving zero idle minutes immediately disables detection while preserving the other threshold.", ["Dormancy detection is off", "Open Settings and set both thresholds above 0"])
+    capture("004-detection-disabled.png", "Saving zero idle minutes immediately disables detection while preserving the other threshold.", ["Dormancy detection is off", "set both above 0 to turn it on", "Turn on…"])
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"], "note": n["note"]}) + "\n" for n in notes))
     print("PASS: settings load, discard guard, stale-save refusal and successful disable verified", flush=True)
 finally:

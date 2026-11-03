@@ -120,7 +120,7 @@ def capture(name, note, expects, expression=None):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    assert not evaluate('!!document.querySelector("[role=alert]")'), body
+    assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -327,7 +327,7 @@ try:
     no_launch('todo-direct')
     capture('006-resource-cancel.png',
             'The running-agent limit asks for approval before creating a checkout, running a hook or reserving the TODO. Cancelling this warning leaves every one of those unchanged.',
-            ['Start another agent?', 'Start anyway', 'Cancel'])
+            ['Resource limit reached. Start anyway?', 'Start anyway', 'Cancel'])
     evaluate('document.querySelector(`[role=dialog][aria-label="Approve new TODO feature"] button.btn-ghost`).click()')
     no_launch('todo-direct')
     click('Cancel')
@@ -357,9 +357,9 @@ try:
     input_value('textarea[aria-label="Plan answer"]', 'Preserve quota checks before accepting invoice work.')
     capture('008-full-plan-brief.png',
             'Full planning runs the chosen worktree setup before opening its brief. The checkout already exists, but no feature or agent has been created and no plan has been accepted.',
-            ['Plan interview', 'full-cancel', 'Describe the change you want to plan.', 'Draft plan now', 'Cancel interview…'],
+            ['Plan interview', 'full-cancel', 'Describe the change you want to plan.', 'Write the plan now', 'Cancel interview…'],
             'document.querySelector(`textarea[aria-label="Plan answer"]`).value.includes("Preserve quota checks")')
-    click('Draft plan now')
+    click('Write the plan now')
     wait('!!document.querySelector(`[role=dialog][aria-label="Approve planning agent call"]`)')
     click('View prompt')
     capture('009-precall-cancel.png',
@@ -371,9 +371,9 @@ try:
     assert evaluate('document.querySelector(`textarea[aria-label="Plan answer"]`).value.includes("Preserve quota checks")')
     capture('009b-return-to-brief.png',
             'Cancelling the synthesis call restores the editable Brief with its entered text intact. No synthesis has run, and an explicit retry remains available.',
-            ['Describe the change you want to plan.', 'Draft plan now', 'Cancel interview…'],
+            ['Describe the change you want to plan.', 'Write the plan now', 'Cancel interview…'],
             'document.querySelector(`textarea[aria-label="Plan answer"]`).value.includes("Preserve quota checks")')
-    click('Draft plan now')
+    click('Write the plan now')
     wait('!!document.querySelector(`[role=dialog][aria-label="Approve planning agent call"]`)')
     click('Continue')
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Accept plan" && !b.disabled)')
@@ -435,8 +435,8 @@ try:
             ['Which quota rule should be preserved?', 'Question 1 of 1', 'Continue', 'todo-plan-cancel'],
             'document.querySelector(`textarea[aria-label="Plan answer"]`).value.includes("per-account quota")')
     click('Continue')
-    wait('document.body.innerText.includes("Synthesize now")')
-    evaluate('Array.from(document.querySelectorAll("button.choice-card")).find(b=>b.querySelector("strong").textContent==="Synthesize now").click()')
+    wait('document.body.innerText.includes("Write the plan now")')
+    evaluate('Array.from(document.querySelectorAll("button.choice-card")).find(b=>b.querySelector("strong").textContent==="Write the plan now").click()')
     wait('!!document.querySelector(`[role=dialog][aria-label="Approve planning agent call"]`)')
     click('Continue')
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Accept plan" && !b.disabled)')

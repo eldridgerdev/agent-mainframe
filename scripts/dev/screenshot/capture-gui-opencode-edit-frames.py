@@ -131,7 +131,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -216,8 +216,8 @@ def edit_ready(name):
 
 
 def confirm_open():
-    wait('!!document.querySelector(`[role=alertdialog][aria-label="Confirm answer"]`)')
-    evaluate('document.querySelector(`[role=alertdialog][aria-label="Confirm answer"]`).scrollIntoView({block:"nearest"})')
+    wait('!!document.querySelector(`[data-confirm-callout][aria-label="Confirm answer"]`)')
+    evaluate('document.querySelector(`[data-confirm-callout][aria-label="Confirm answer"]`).scrollIntoView({block:"nearest"})')
 
 
 def finish(hook, result):
@@ -266,7 +266,7 @@ try:
     assert not approve_file.exists() and not pathlib.Path(approve_request['response_file']).parent.exists()
     capture('003-approved-hook-continues.png',
             'The actual hook consumes the approval, records its reason and permits the offline tool executor to write. Its notification and request-specific reply directory are removed, and the native queue is empty.',
-            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
+            ['No edits are waiting for review', 'Only features in Vibeless mode ask.'])
 
     reject,reject_file,reject_request,reject_result=start_hook('reject')
     edit_ready('reject')
@@ -284,7 +284,7 @@ try:
     assert 'strict quota boundary' not in rejected['error']
     capture('005-rejected-tool-blocked.png',
             'The shipped hook rejects the offline tool execution with its generic rejection error. The private source and change history remain unchanged; no rejection feedback reaches the executor.',
-            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
+            ['No edits are waiting for review', 'Only features in Vibeless mode ask.'])
 
     cancel,cancel_file,cancel_request,cancel_result=start_hook('cancel')
     edit_ready('cancel')
@@ -300,7 +300,7 @@ try:
     assert len(cancelled['history'])==2 and cancelled['history'][-1]['reason'] is None
     capture('007-skipped-reason-hook-continues.png',
             'The real hook consumes cancellation as skip, permits the offline tool write and records a null reason. The request leaves the native queue without changing the earlier approved history.',
-            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
+            ['No edits are waiting for review', 'Only features in Vibeless mode ask.'])
 
     stale,stale_file,stale_request,stale_result=start_hook('stale')
     edit_ready('stale')
@@ -308,7 +308,7 @@ try:
     confirm_open()
     pathlib.Path(stale_request['proposed_file']).write_text('def changed_after_review():\n    return False\n')
     click('Send approval')
-    wait('document.querySelector(`[role=alert]`)?.textContent.includes("changed after you reviewed")')
+    wait('document.querySelector(`[role=alert]:not([data-confirm-callout])`)?.textContent.includes("changed after you reviewed")')
     still_blocked(stale,stale_request)
     capture('008-changed-captured-diff-refused.png',
             f'Changing the hook’s captured proposal after confirmation refuses the stale answer. Inside the {auto_allow_secs:g} seconds before the plugin lets an unanswered write through, the live hook is still blocked, its source is unchanged and no proceed signal is written.',
@@ -336,7 +336,7 @@ try:
     remaining=sorted(path.name for path in abandon_dir.iterdir())
     assert abandon_file.exists() and 'waiter.json' in remaining
     click('Send approval')
-    wait('document.querySelector(`[role=alert]`)?.textContent.includes("The agent is no longer waiting for this edit")')
+    wait('document.querySelector(`[role=alert]:not([data-confirm-callout])`)?.textContent.includes("The agent is no longer waiting for this edit")')
     capture('009-abandoned-hook-refused.png',
             'An approval sent after the request-owning OpenCode process is killed is refused: its remaining files cannot authorize an answer. Native review marks it unanswerable and disables all decisions rather than recreating its reply paths.',
             ['The agent is no longer waiting for this edit', 'Not answerable', 'abandon.py'],

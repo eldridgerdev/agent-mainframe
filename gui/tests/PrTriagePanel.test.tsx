@@ -4,6 +4,7 @@ import { act as flush, cleanup, fireEvent, render, screen, waitFor, within } fro
 import { invoke } from "@tauri-apps/api/core";
 import PrTriagePanel from "../src/PrTriagePanel";
 import type { PrComment, PrTriageAction, PrTriageView } from "../src/prTriageApi";
+import { queryConfirm } from "./confirmCallout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
@@ -127,12 +128,12 @@ it("keeps the investigation text when continuing the AI call is refused", async 
   fireEvent.click(await screen.findByRole("button", { name: "Investigate…" }));
   fireEvent.change(screen.getByRole("textbox", { name: "What do you suspect? (optional)" }), { target: { value: "Negative totals round up" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview AI call" }));
-  await screen.findByRole("alertdialog", { name: "Investigation AI call" });
+  await screen.findByRole("alert", { name: "Investigation AI call" });
   const draft = screen.getByRole("textbox", { name: "What do you suspect? (optional)" }) as HTMLTextAreaElement;
   expect(draft.disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Continue AI call" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("rate limited");
-  expect(screen.getByRole("alertdialog", { name: "Investigation AI call" })).toBeTruthy();
+  expect((await screen.findByText("rate limited", { exact: false })).closest("[role=alert]")).not.toBeNull();
+  expect(screen.getByRole("alert", { name: "Investigation AI call" })).toBeTruthy();
   expect((screen.getByRole("textbox", { name: "What do you suspect? (optional)" }) as HTMLTextAreaElement).value).toBe("Negative totals round up");
 });
 
@@ -150,7 +151,7 @@ it("investigates only after the pre-call notice is continued, once", async () =>
   fireEvent.change(screen.getByRole("combobox", { name: "Investigate with" }), { target: { value: "codex" } });
   fireEvent.change(screen.getByRole("textbox", { name: "What do you suspect? (optional)" }), { target: { value: "Negative totals round up" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview AI call" }));
-  const notice = await screen.findByRole("alertdialog", { name: "Investigation AI call" });
+  const notice = await screen.findByRole("alert", { name: "Investigation AI call" });
   expect(notice.textContent).toContain("PR Triage: read-only investigation · Codex");
   expect(actions()[0].action).toEqual({ kind: "investigate", comment_id: 1, harness: "codex", note: "Negative totals round up", follow_up: null });
   fireEvent.click(within(notice).getByRole("button", { name: "View prompt" }));
@@ -182,11 +183,11 @@ it("keeps the reply draft local, shows the exact posted text and posts only on c
   expect(screen.getByText(/Discard your unsent fix, reply/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   fireEvent.click(screen.getByRole("button", { name: "Review reply…" }));
-  const confirm = await screen.findByRole("alertdialog", { name: "Confirm GitHub write" });
+  const confirm = await screen.findByRole("alert", { name: "Confirm GitHub write" });
   expect(confirm.textContent).toContain("Guarded upstream.\n\n— posted via AMF");
   expect(actions().some((a) => a.action.kind === "confirm_write")).toBe(false);
   fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(queryConfirm()).toBeNull());
   expect((screen.getByRole("textbox", { name: /^Reply: not needed/ }) as HTMLTextAreaElement).value).toBe("Guarded upstream.");
   fireEvent.click(screen.getByRole("button", { name: "Review reply…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Post reply to GitHub" }));
@@ -212,8 +213,8 @@ it("shows a refused write and reloads the current state without losing the draft
   fireEvent.change(editor, { target: { value: "Done in `abc`, with a test." } });
   fireEvent.click(screen.getByRole("button", { name: "Review reply…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Post reply to GitHub" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("new commits");
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect((await screen.findByText("new commits", { exact: false })).closest("[role=alert]")).not.toBeNull();
+  await waitFor(() => expect(queryConfirm()).toBeNull());
   expect((screen.getByRole("textbox", { name: /^Reply: fixed/ }) as HTMLTextAreaElement).value).toBe("Done in `abc`, with a test.");
 });
 
@@ -226,11 +227,11 @@ it("asks before resolving a thread and offers cancelling a running investigation
   }, () => running);
   render(<PrTriagePanel target={target} onClose={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Resolve thread…" }));
-  const confirm = await screen.findByRole("alertdialog", { name: "Confirm GitHub write" });
+  const confirm = await screen.findByRole("alert", { name: "Confirm GitHub write" });
   expect(within(confirm).getByRole("button", { name: "Resolve thread on GitHub" })).toBeTruthy();
   fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
   expect(await screen.findByText(/Investigating comment read-only with claude/)).toBeTruthy();
-  expect((screen.getByRole("button", { name: "Mark done (local)" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Mark done (only in AMF)" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Cancel investigation" })).toBeTruthy();
 });
 
@@ -272,9 +273,9 @@ it("keeps edited fix text after a stale-head refusal and guards cancellation", a
   expect((screen.getByRole("textbox", { name: "Fix prompt" }) as HTMLTextAreaElement).value).toBe("My edited instructions");
   expect(handoff).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel fix draft" }));
-  const discard = screen.getByRole("alertdialog", { name: "Discard edited fix prompt" });
+  const discard = screen.getByRole("alert", { name: "Discard edited fix prompt" });
   fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
-  expect(screen.queryByRole("alertdialog", { name: "Discard edited fix prompt" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Discard edited fix prompt" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Cancel fix draft" }));
   fireEvent.click(screen.getByRole("button", { name: "Discard fix prompt" }));
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Fix prompt" })).toBeNull());
@@ -297,7 +298,7 @@ it("blocks other triage actions during a fix draft and protects edited text on c
 it("explains how to get a fix target when a feature has no agent sessions", async () => {
   backend(review, () => review);
   render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
-  expect(await screen.findByText("Add an agent session to this feature to prepare a fix draft.")).toBeTruthy();
+  expect(await screen.findByText("Fixes are sent to an agent session in this feature. Add one for PR fixes to prepare a fix.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Prepare fix…" })).toBeNull();
 });
 
@@ -309,7 +310,7 @@ it("previews the receipt-bearing prompt and requires explicit send without closi
   const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
   fireEvent.change(prompt, { target: { value: "Edited instruction" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
-  const confirm = await screen.findByRole("alertdialog", { name: "Send fix to agent" });
+  const confirm = await screen.findByRole("alert", { name: "Send fix to agent" });
   expect(confirm.textContent).toContain("amf reply-draft --request-id current");
   expect(actions()[0].action).toEqual({ kind: "prepare_fix_submission", prompt: "Edited instruction" });
   expect((prompt as HTMLTextAreaElement).disabled).toBe(true);
@@ -329,7 +330,7 @@ it("cancels submission preview while retaining the edited fix prompt", async () 
   fireEvent.change(prompt, { target: { value: "Keep my edited instruction" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Back to fix prompt" }));
-  await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Send fix to agent" })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("alert", { name: "Send fix to agent" })).toBeNull());
   expect((prompt as HTMLTextAreaElement).value).toBe("Keep my edited instruction");
   expect((prompt as HTMLTextAreaElement).disabled).toBe(false);
   expect(actions().at(-1)?.action.kind).toBe("cancel_fix_submission");
@@ -396,11 +397,11 @@ it("marks several comments, requires an explicit agent, previews the exact text 
   expect(actions()[0].action).toEqual({ kind: "start_batch_fix", comment_ids: [1, 5], session_id: "codex-1", destination_revision: "rev-codex", feature_id: target.feature_id });
   expect(screen.getByText(/Large batch: 16 comments/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
-  const confirm = await screen.findByRole("alertdialog", { name: "Send batch fix to agent" });
+  const confirm = await screen.findByRole("alert", { name: "Send batch fix to agent" });
   expect(actions()[1]).toMatchObject({ revision: 4, action: { kind: "prepare_batch_submission", digest: "digest-1" } });
   expect(within(confirm).getByText(/EXACT PROMPT/).textContent).toContain("amf reply-draft --comment-id 5");
   fireEvent.click(within(confirm).getByRole("button", { name: "Send batch fix to agent" }));
-  await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Send batch fix to agent" })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("alert", { name: "Send batch fix to agent" })).toBeNull());
   expect(actions()[2]).toMatchObject({ revision: 5, action: { kind: "confirm_batch_submission", digest: "digest-1" } });
   // The selection is consumed once the batch is committed.
   expect(screen.queryByRole("group", { name: "Batch fix" })).toBeNull();
@@ -410,10 +411,10 @@ it("keeps the batch open and the selection after a refused confirmation", async 
   backend(batchPreview, (action) => { if (action.kind === "confirm_batch_submission") throw { kind: "conflict", message: "The selected comments changed; cancel and prepare the batch again" }; return batchReview; },
     () => ({ ...batchPreview, revision: 6 }));
   render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
-  const confirm = await screen.findByRole("alertdialog", { name: "Send batch fix to agent" });
+  const confirm = await screen.findByRole("alert", { name: "Send batch fix to agent" });
   fireEvent.click(within(confirm).getByRole("button", { name: "Send batch fix to agent" }));
   await screen.findByText("The selected comments changed; cancel and prepare the batch again");
-  expect(screen.getByRole("alertdialog", { name: "Send batch fix to agent" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Send batch fix to agent" })).toBeTruthy();
   // Other triage actions stay blocked while the batch is pending.
   expect((screen.getByRole("button", { name: "Refresh comments" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Cancel batch fix" }));

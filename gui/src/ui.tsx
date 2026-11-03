@@ -457,7 +457,72 @@ export function Modal({
   );
 }
 
-/** Confirmation for AMF's resource gate ("needs_approval" responses). */
+// ── Button tones ──────────────────────────────────────────
+// One rule for what a confirm button's color means:
+// - `btn-danger`: deletes or discards something the user made or kept
+//   (a draft, an edit, a list, a session, files). Also "Close session".
+// - `btn-warning`: proceed past a warning without losing data — resource
+//   approvals ("Start anyway") and ending work that stays resumable.
+// - `btn-primary`: the ordinary, reversible confirm.
+// The safe choice ("Keep editing", "Cancel") is `btn-secondary`/`btn-ghost`.
+
+/** Marks a callout as an inline confirmation (see {@link ConfirmCallout}). */
+export const CONFIRM_CALLOUT_SELECTOR = "[data-confirm-callout]";
+
+/** An inline confirmation inside a page or dialog: a `role="alert"` region
+ * (announced when it appears, not a second modal) that moves focus into
+ * itself on mount. Focus lands on `[data-autofocus]`, else the primary
+ * button, else the first control that is not `btn-danger` — for a discard
+ * prompt that is the safe "Keep editing" choice, so Enter never destroys
+ * work by accident. */
+export function ConfirmCallout({
+  label,
+  className,
+  as = "div",
+  children,
+}: {
+  label: string;
+  className?: string;
+  as?: "div" | "section";
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  // Captured once: StrictMode re-runs this effect after focus has already
+  // moved inside, and the re-run must not mistake our own button for the opener.
+  const openerRef = useRef<Element | null | undefined>(undefined);
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    if (openerRef.current === undefined) openerRef.current = document.activeElement;
+    const opener = openerRef.current;
+    if (!root.contains(document.activeElement)) {
+      const controls = focusableWithin(root);
+      const target = [root.querySelector("[data-autofocus]"), root.querySelector(".btn-primary")].find(canFocus)
+        ?? controls.find((el) => !el.classList.contains("btn-danger")) ?? controls[0];
+      target?.focus();
+    }
+    return () => {
+      // Answering removes the callout and drops focus to the body; hand it
+      // back to whatever had it before, as Modal does.
+      const focused = document.activeElement;
+      const lost = !focused || focused === document.body || !focused.isConnected;
+      if (lost && opener !== root && canFocus(opener)) opener.focus();
+    };
+  }, []);
+  const props = {
+    ref: (el: HTMLElement | null) => { ref.current = el; },
+    role: "alert",
+    "aria-label": label,
+    "data-confirm-callout": "",
+    className,
+    children,
+  };
+  return as === "section" ? <section {...props} /> : <div {...props} />;
+}
+
+/** Confirmation for AMF's resource gate ("needs_approval" responses), and
+ * for other single-step confirms. `tone="danger"` when confirming loses
+ * something (see the button-tone rule above). */
 export function ApprovalDialog({
   label,
   title,
@@ -465,6 +530,7 @@ export function ApprovalDialog({
   confirmLabel,
   cancelLabel = "Cancel",
   busy,
+  tone = "warning",
   onConfirm,
   onCancel,
 }: {
@@ -474,6 +540,7 @@ export function ApprovalDialog({
   confirmLabel: string;
   cancelLabel?: string;
   busy?: boolean;
+  tone?: "warning" | "danger";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -486,7 +553,7 @@ export function ApprovalDialog({
       footer={
         <>
           <button className="btn btn-ghost" onClick={onCancel}>{cancelLabel}</button>
-          <button className="btn btn-warning" disabled={busy} onClick={onConfirm}>
+          <button className={`btn btn-${tone}`} disabled={busy} onClick={onConfirm}>
             {busy && <Spinner />}
             {confirmLabel}
           </button>
@@ -835,16 +902,47 @@ export function Field({
   );
 }
 
+/** The one "Experimental" marker for features that are new and still
+ * changing. Its text is part of the surrounding control's name, so what a
+ * screen reader announces matches what is on screen. */
+export function ExperimentalBadge({ title = "New and still changing" }: { title?: string }) {
+  return <span className="tag tag-accent badge-experimental" title={title}>Experimental</span>;
+}
+
+/** A compact list filter with a search icon and placeholder, the same
+ * pattern as the sidebar's project filter. The label is visually hidden
+ * but still names the field. */
+export function FilterField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="nav-filter filter-field">
+      <Icon name="search" size={14} />
+      <span className="visually-hidden">{label}</span>
+      <input type="text" placeholder={label} value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
 export function Switch({
   checked,
   onChange,
   label,
+  badge,
   hint,
   disabled,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  /** Shown after the label, e.g. an {@link ExperimentalBadge}. */
+  badge?: ReactNode;
   hint?: string;
   disabled?: boolean;
 }) {
@@ -859,7 +957,7 @@ export function Switch({
         onChange={(event) => onChange(event.target.checked)}
       />
       <span>
-        <span className="switch-label">{label}</span>
+        <span className="switch-label">{label}{badge && <> {badge}</>}</span>
         {hint && <span className="field-hint">{hint}</span>}
       </span>
     </label>

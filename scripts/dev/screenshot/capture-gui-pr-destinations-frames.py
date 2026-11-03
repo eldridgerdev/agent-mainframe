@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -200,7 +200,7 @@ try:
     x.sync()
     wait(has_button("Round invoice totals"))
     click("Round invoice totals")
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')

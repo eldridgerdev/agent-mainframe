@@ -112,11 +112,11 @@ describe("session sidebar", () => {
       return previous(command, args);
     });
     const { onFreshSession } = mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Fresh context" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue in new session" }));
     await screen.findByRole("textbox", { name: "Continuation prompt" });
-    fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start new session" }));
     await waitFor(() => expect(onFreshSession).toHaveBeenCalledWith({ ...target, session_id: "fresh-session" }, "Continue"));
-    expect(screen.queryByRole("dialog", { name: "Fresh context" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Continue in a new session" })).toBeNull();
   });
 
   it("shows every section with content in the TUI's order under a per-harness title", async () => {
@@ -191,7 +191,7 @@ describe("session sidebar", () => {
     expect(within(context).getByText("Ctx ~85% CRITICAL STALE · 170,000")).toBeTruthy();
     expect(within(context).getByText("estimated")).toBeTruthy();
     expect(within(context).getByText("stale")).toBeTruthy();
-    expect(within(context).getByRole("button", { name: "Fresh context" })).toBeTruthy();
+    expect(within(context).getByRole("button", { name: "Continue in new session" })).toBeTruthy();
     expect(within(context).queryByText(/The TUI offers a fresh context/)).toBeNull();
   });
 

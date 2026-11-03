@@ -36,7 +36,7 @@ with GuiFrames.from_argv() as frames:
     action('wait',text='Invoice rounding',scope='nav[aria-label=Workspace]')
     click('Invoice rounding','nav[aria-label=Workspace]')
     action('wait',text='Test agent')
-    click('Feature tools'); click('PR Workspace')
+    click('Feature tools'); click('PR workspace')
     action('wait',expression='!!Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`))')
     frames.evaluate('Array.from(document.querySelectorAll(`.pr-entry`)).find(e=>e.textContent.includes(`Round invoice totals to cents`)).click()')
     wait('3 open of 4')
@@ -64,9 +64,9 @@ with GuiFrames.from_argv() as frames:
     click('Skip finding 2'); action('wait',expression='document.body.innerText.includes("Skipped")')
     assert cached_findings()[1]['skipped'] is True
     click('Post to GitHub…')
-    action('wait',expression='!!document.querySelector(`[role=alertdialog]`)')
-    capture('005-skipped-left-out-of-post.png','The edited text is what the post confirmation lists, and the skipped finding is absent from it. This confirmation is cancelled; nothing is posted.',['Post 1 finding to PR #12','round the magnitude'],expression='!document.querySelector(`[role=alertdialog]`).innerText.includes("Add a regression test.")')
-    click('Cancel','[role=alertdialog]')
+    action('wait',expression='!!document.querySelector(`[data-confirm-callout]`)')
+    capture('005-skipped-left-out-of-post.png','The edited text is what the post confirmation lists, and the skipped finding is absent from it. This confirmation is cancelled; nothing is posted.',['Post 1 finding to PR #12','round the magnitude'],expression='!document.querySelector(`[data-confirm-callout]`).innerText.includes("Add a regression test.")')
+    click('Cancel','[data-confirm-callout]')
     click('Restore finding 2'); action('wait',expression='!!document.querySelector(`[aria-label="Skip finding 2"]`)')
     assert cached_findings()[1]['skipped'] is False
     capture('006-restored.png','Restore returns the skipped finding to the postable set; the edited body is kept.',['Add a regression test.','round the magnitude'],expression='!!document.querySelector(`[aria-label="Skip finding 2"]`)')

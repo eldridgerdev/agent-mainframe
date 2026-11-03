@@ -39,6 +39,7 @@ import {
   TodoHostChoice,
   TodoHostPrompt,
   WorkspaceSnapshot,
+  agentName,
   asGuiError,
   createFeature,
   createProject,
@@ -129,6 +130,7 @@ import {
 import {
   ApprovalDialog,
   EmptyState,
+  ExperimentalBadge,
   Field,
   Icon,
   IconName,
@@ -334,6 +336,8 @@ export default function App() {
   // `isPending` reaches the dialog a render late, so a double-click (or
   // Enter then click) would otherwise send two launches and two sessions.
   const addSessionInFlight = useRef(false);
+  // Stopping a feature with more than one running session asks first.
+  const [stopFeatureConfirm, setStopFeatureConfirm] = useState<{ target: FeatureTarget; name: string; count: number } | null>(null);
   const [closeSessionDialog, setCloseSessionDialog] = useState<{
     target: SessionTarget;
     label: string;
@@ -1307,7 +1311,12 @@ export default function App() {
       stopping: stopFeatureMutation.isPending
         && stopFeatureMutation.variables?.feature_id === feature.id,
       onStart: () => void beginFeatureStart(projectId, feature),
-      onStop: () => stopFeatureMutation.mutate(target),
+      onStop: () => {
+        const running = feature.sessions
+          .filter((session) => sessionRunning(feature, session, workspace.data?.stopped_session_ids ?? [])).length;
+        if (running > 1) setStopFeatureConfirm({ target, name: feature.name, count: running });
+        else stopFeatureMutation.mutate(target);
+      },
     };
   };
 
@@ -1362,6 +1371,12 @@ export default function App() {
       : { kind: "project", projectId: first.project.id });
   };
   const createFeatureProject = projects.find((project) => project.id === createFeatureFor);
+  // The first agent session of the Switch-agent target holding an unsent draft.
+  const harnessDraftSession = harnessTarget ? projects.flatMap((project) => project.features)
+    .filter((feature) => feature.id === harnessTarget.feature_id)
+    .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+    .find((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)
+    : undefined;
 
   return (
     <div className="app">
@@ -1398,7 +1413,7 @@ export default function App() {
               <Icon name="sliders" /><span className="nav-label">Prompt overrides</span>
             </button>
 
-            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="camera" /><span className="nav-label">Validation screenshots</span></button>
+            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="camera" /><span className="nav-label">Screenshots</span></button>
 
             <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="layers" /><span className="nav-label">Feature presets</span></button>
             <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="gauge" /><span className="nav-label">Context settings</span></button>
@@ -1589,10 +1604,10 @@ export default function App() {
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
-      {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
+      {prReviewProject && <Suspense fallback={<Modal label="Loading Write a review" title="Loading Write a review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
         <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
       </Suspense>}
-      {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
+      {prTriageTarget && <Suspense fallback={<Modal label="Loading review comments" title="Loading review comments" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
       {issueBrowserFor && (() => {
@@ -1635,7 +1650,7 @@ export default function App() {
       <main className="main">
         {prWorkspaceTarget && !showPrWorkspace && <section className={`pr-workspace-background-banner${prWorkspaceStatus.running ? " is-running" : ""}`} aria-live="polite">
           {prWorkspaceStatus.running ? <Spinner /> : <span className="pr-workspace-background-check">{prWorkspaceStatus.completed ? "✓" : "↗"}</span>}
-          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR Workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
+          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setView({ kind: "feature", projectId: prWorkspaceTarget.project_id, featureId: prWorkspaceTarget.feature_id }); setPrWorkspaceVisible(true); }}>Return to PR workspace</button>
         </section>}
         {prWorkspaceTarget && <div className="pr-workspace-host" hidden={!showPrWorkspace}>
@@ -1914,7 +1929,7 @@ export default function App() {
       {pendingTodoNewApproval && (
         <ApprovalDialog
           label="Approve new TODO feature"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingTodoNewApproval.message}
           confirmLabel="Start anyway"
           busy={todoNewBusy}
@@ -1939,7 +1954,7 @@ export default function App() {
       {pendingStart && (
         <ApprovalDialog
           label="Approve agent start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingStart.message}
           confirmLabel="Start anyway"
           busy={startFeatureMutation.isPending}
@@ -1951,7 +1966,7 @@ export default function App() {
       {pendingSessionStart && (
         <ApprovalDialog
           label="Approve session start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingSessionStart.message}
           confirmLabel="Start anyway"
           busy={startSessionMutation.isPending}
@@ -1996,6 +2011,17 @@ export default function App() {
         />
       )}
 
+      {stopFeatureConfirm && (
+        <ApprovalDialog
+          label="Stop feature"
+          title={`Stop ${stopFeatureConfirm.name}?`}
+          message={`Stop ends all ${stopFeatureConfirm.count} running sessions of this feature. They stay in the list and you can start them again; saved agent conversations can be resumed.`}
+          confirmLabel="Stop feature"
+          onConfirm={() => { stopFeatureMutation.mutate(stopFeatureConfirm.target); setStopFeatureConfirm(null); }}
+          onCancel={() => setStopFeatureConfirm(null)}
+        />
+      )}
+
       {closeSessionDialog && (
         <ApprovalDialog
           label="Close session"
@@ -2004,6 +2030,7 @@ export default function App() {
             ? "Close ends this session and removes it from the list. It is the feature's last running session, so the feature stops too."
             : "Close ends this session and removes it from the list."}
           confirmLabel="Close session"
+          tone="danger"
           busy={removeSessionMutation.isPending}
           onConfirm={() => requestRemoveSession(closeSessionDialog.target)}
           onCancel={() => setCloseSessionDialog(null)}
@@ -2013,11 +2040,15 @@ export default function App() {
       {harnessTarget && <FeatureHarnessDialog
         key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
         target={harnessTarget}
-        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
-          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
-          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        hasDrafts={harnessDraftSession !== undefined}
         sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
         onClose={() => setHarnessTarget(null)}
+        onOpenComposer={harnessDraftSession && (() => {
+          const featureId = harnessTarget.feature_id;
+          setHarnessTarget(null);
+          setView({ kind: "feature", projectId: harnessTarget.project_id, featureId });
+          setTabByFeature((current) => ({ ...current, [featureId]: harnessDraftSession.id }));
+        })}
         onChanged={() => {
           setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
           pushToast({ tone: "info", title: "Agent changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
@@ -2060,7 +2091,7 @@ export default function App() {
           label="Approve new session"
           title={pendingAddSessionApproval.choice.type === "builtin"
             && ["claude", "codex", "opencode", "pi"].includes(pendingAddSessionApproval.choice.kind)
-            ? "Start another agent?" : "Start this feature?"}
+            ? "Resource limit reached. Start anyway?" : "Start this feature?"}
           message={pendingAddSessionApproval.message}
           confirmLabel="Start anyway"
           busy={addSessionMutation.isPending}
@@ -2077,7 +2108,7 @@ export default function App() {
       {pendingRecoveryApproval && (
         <ApprovalDialog
           label="Approve agent recovery"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingRecoveryApproval.message}
           confirmLabel="Start anyway"
           busy={recoverSessionMutation.isPending}
@@ -2105,7 +2136,7 @@ export default function App() {
       {pendingTodoLaunch && (
         <ApprovalDialog
           label="Approve TODO agent start"
-          title="Start another agent?"
+          title="Resource limit reached. Start anyway?"
           message={pendingTodoLaunch.message}
           confirmLabel="Start anyway"
           onConfirm={() => void launchTodoAgent(pendingTodoLaunch.todoId, pendingTodoLaunch.target, true)}
@@ -2118,7 +2149,7 @@ export default function App() {
         onClose={() => setSavePromptBody(null)} onSaved={() => {
           setSavePromptBody(null);
           void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
-          pushToast({ tone: "info", title: "User template saved", message: "Your composer draft is unchanged. Sending remains explicit." });
+          pushToast({ tone: "info", title: "Prompt saved", message: "Your composer draft is unchanged. Sending remains explicit." });
         }} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
@@ -2245,10 +2276,10 @@ function ProjectView({
               text="Pull request"
               icon={null}
               className="btn btn-ghost btn-sm"
-              title="Triage or review a pull request"
+              title="Read feedback on a pull request, or review one"
               items={[
-                { label: "PR Triage", icon: "gitPullRequest", onSelect: onPrTriage },
-                { label: "PR Review", icon: "gitCompare", onSelect: onPrReview },
+                { label: "Review comments", icon: "gitPullRequest", title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                { label: "Write a review", icon: "gitCompare", title: "Comment on someone else's pull request and post your review (PR Review in the terminal app)", onSelect: onPrReview },
               ]}
             />}
             <Menu
@@ -2541,8 +2572,8 @@ function FeatureView({
               indicator={reviewBusy || learningBusy}
               items={[
                 { section: "Plan" },
-                { label: "Plan interview", icon: "sparkles", hint: "Full", onSelect: () => onPlan(false) },
-                { label: "Quick Plan", icon: "zap", hint: "Fast", onSelect: () => onPlan(true) },
+                { label: "Plan interview", icon: "sparkles", hint: "Guided, for big tasks", onSelect: () => onPlan(false) },
+                { label: "Quick Plan", icon: "zap", hint: "A question or two", onSelect: () => onPlan(true) },
                 { section: "Review" },
                 { label: "Learning", icon: "bookOpen", disabled: learningBusy, hint: learningBusy ? "Working…" : undefined, onSelect: onLearning },
                 ...(project.is_git ? [{
@@ -2552,8 +2583,8 @@ function FeatureView({
                 { label: "Screenshots", icon: "camera", onSelect: () => onScreenshots(null) },
                 ...(project.is_git ? [
                   { section: "Pull request" },
-                  { label: "PR Triage", icon: "gitPullRequest" as const, onSelect: onPrTriage },
-                  { label: "PR Workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", onSelect: onPrWorkspace },
+                  { label: "Review comments", icon: "gitPullRequest" as const, title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
+                  { label: "PR workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", title: "Files, review threads and AI findings in one page. New and still changing; your GitHub data is not affected.", onSelect: onPrWorkspace },
                 ] : []),
               ]}
             />
@@ -2570,12 +2601,13 @@ function FeatureView({
               label="More feature actions"
               className="btn btn-ghost btn-icon btn-sm"
               items={[
-                { section: "Mode" },
+                { section: "Vibe mode" },
                 ...vibeModes.map((mode) => {
                   const unsupported = mode.unsupported_agents?.includes(feature.agent) ?? false;
                   return {
-                    label: `Vibe mode: ${mode.display_name}`,
-                    icon: "sparkles" as const,
+                    label: mode.display_name,
+                    // One setting, so the current choice carries the check.
+                    icon: feature.mode === mode.slug ? "check" as const : undefined,
                     hint: feature.mode === mode.slug
                       ? "Current"
                       : unsupported ? `Unavailable with ${harnessName(feature.agent)}` : undefined,
@@ -2586,11 +2618,11 @@ function FeatureView({
                 { section: "Feature" },
                 // While edits wait, the header's counted button is the way in.
                 ...(feature.mode === "vibeless" && pendingEdits === 0 ? [{ label: "Supervised edits", icon: "shieldCheck" as const, onSelect: onSupervisedEdits }] : []),
-                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
-                { label: "Rename, ready and summary…", icon: "pencil" as const, onSelect: () => onFeatureActions(null) },
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Switch agent…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                { label: "Rename or mark ready…", icon: "pencil" as const, title: "Rename the feature or its sessions, mark it ready, or write a summary", onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 "separator",
-                { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
+                { label: "Delete feature…", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />
           </>
@@ -2611,7 +2643,7 @@ function FeatureView({
                 !isStopped && !isRunning(session) && "tab-stopped",
               ].filter(Boolean).join(" ")}
               onClick={() => onTab(session.id)}
-              title={`${session.kind} — ${isRunning(session) ? "running" : "stopped"}`}
+              title={`${sessionKindName(session.kind)} · ${isRunning(session) ? "running" : "stopped"}`}
             >
               <SessionStateDot running={isRunning(session)} />
               {session.label}
@@ -2893,6 +2925,12 @@ export function CreateProjectForm({
 
 const AGENT_KINDS = ["claude", "codex", "opencode", "pi"];
 
+/** What a session tab's tooltip calls its kind (never the raw id). */
+function sessionKindName(kind: string): string {
+  const names: Record<string, string> = { terminal: "Terminal", nvim: "Neovim", vscode: "VS Code", todos: "TODOs" };
+  return AGENT_KINDS.includes(kind) ? `${agentName(kind)} agent` : names[kind] ?? "Custom session";
+}
+
 type PlanKind = "none" | "quick" | "full";
 
 export function CreateFeatureForm({
@@ -3047,7 +3085,8 @@ export function CreateFeatureForm({
           checked={steering && planKind === "none"}
           disabled={planKind !== "none"}
           onChange={setSteering}
-          label="Steering coach (experimental)"
+          label="Steering coach"
+          badge={<ExperimentalBadge />}
           hint={planKind !== "none"
             ? "Planning already shapes the startup prompt, so the coach is off while Quick or Full Plan is chosen."
             : "After the agent starts, get feedback on your first message: is the goal clear, how will you know it is done, what could go wrong. Nothing is sent until you send it."}

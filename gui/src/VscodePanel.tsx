@@ -16,7 +16,7 @@ function explain(editor: FeatureEditor): string {
     case "open":
       return editor.closes_with_feature
         ? "AMF opened this window and closes it, with its language servers, when the feature stops."
-        : "AMF opened this window. Closing editors on stop is off (kill_editor_on_stop), so stopping the feature leaves it open.";
+        : "AMF opened this window. Closing editors when a feature stops is turned off in your AMF settings, so stopping the feature leaves it open.";
     case "opening":
       return "Waiting for the window to appear so AMF can identify it. A window that cannot be identified on this machine is removed from this list after the lookup finishes.";
     case "not_owned":

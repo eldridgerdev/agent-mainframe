@@ -60,7 +60,7 @@ function open(onClose = vi.fn(), onOpenFork = vi.fn()) {
   return { onClose, onOpenFork };
 }
 const forkButton = () => screen.getByRole("button", { name: "Fork feature" }) as HTMLButtonElement;
-const ready = async () => { await screen.findByLabelText("New branch / feature name"); await waitFor(() => expect(forkButton().disabled).toBe(false)); };
+const ready = async () => { await screen.findByLabelText("Branch / feature name"); await waitFor(() => expect(forkButton().disabled).toBe(false)); };
 
 it("previews the changes, the staging rule and the context, then sends a bound confirmation", async () => {
   script({ fork_prepare: () => preview(), fork_confirm: () => created, fork_cancel: () => ({}) });
@@ -73,7 +73,7 @@ it("previews the changes, the staging rule and the context, then sends a bound c
   expect(screen.getByText("executable")).toBeTruthy();
   expect(screen.getByText(/staging choices are not copied/)).toBeTruthy();
   expect(screen.getByText(/0123456789/)).toBeTruthy();
-  const context = screen.getByRole("switch", { name: /Include the conversation/ }) as HTMLInputElement;
+  const context = screen.getByRole("switch", { name: /Give the new agent a copy/ }) as HTMLInputElement;
   expect(context.checked).toBe(true);
   // Starting an agent is a visible, explicit choice.
   fireEvent.click(screen.getByRole("switch", { name: /Start the agent after forking/ }));
@@ -103,7 +103,7 @@ it.each([
   open();
   await ready();
 
-  const context = screen.getByRole("switch", { name: /Include the conversation/ }) as HTMLInputElement;
+  const context = screen.getByRole("switch", { name: /Give the new agent a copy/ }) as HTMLInputElement;
   expect(context.disabled).toBe(true);
   expect(context.checked).toBe(false);
   expect(screen.getByText(message)).toBeTruthy();
@@ -164,7 +164,7 @@ it("keeps the form and shows the refusal when the backend refuses a confirmation
   fireEvent.click(forkButton());
 
   expect((await screen.findByRole("alert")).textContent).toContain("already exists");
-  expect(screen.getByLabelText("New branch / feature name")).toHaveProperty("value", "my-feat-fork");
+  expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "my-feat-fork");
   expect(screen.queryByRole("button", { name: "Open fork" })).toBeNull();
 });
 
@@ -249,7 +249,7 @@ it("shows a preparation failure and can try again", async () => {
 it("will not fork with a harness the project does not offer", async () => {
   script({ fork_prepare: () => preview({ default_agent: "pi" }) });
   open();
-  await screen.findByLabelText("New branch / feature name");
+  await screen.findByLabelText("Branch / feature name");
   await screen.findByText(/pi is not available for this project/);
   expect(forkButton().disabled).toBe(true);
   fireEvent.change(screen.getByLabelText(/^Agent/), { target: { value: "codex" } });

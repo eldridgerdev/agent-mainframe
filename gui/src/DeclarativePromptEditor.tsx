@@ -49,7 +49,7 @@ export default function DeclarativePromptEditor({ snapshot, onClose, onSaved }: 
         </button>
       </>}>
       <p className="muted small">Write to: <code>{original.destination_path}</code></p>
-      {original.source_path !== original.destination_path && <p className="muted small">Read from: <code>{original.source_path}</code>. The legacy file is kept.</p>}
+      {original.source_path !== original.destination_path && <p className="muted small">Saving moves this to the new location; the old file at <code>{original.source_path}</code> is left in place.</p>}
       {error && <p role="alert" className="callout callout-danger">{error}</p>}
       {original?.description && <p className="muted">Description (kept): {original.description}</p>}
       {!!original?.configured_fields && <p className="muted small">{original.configured_fields} configured placeholder definitions are kept, including ones not used in the body.</p>}

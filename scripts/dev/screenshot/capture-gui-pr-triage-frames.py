@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -201,9 +201,9 @@ try:
     wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Round invoice totals")')
     click("Round invoice totals")
     wait('document.body.innerText.includes("Stopped") && !!document.querySelector(`[aria-label="Feature tools"]`)')
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
-    capture("001-pr-list.png", "PR Triage opens on the repository's open pull requests. The branch's own PR is marked, drafts are labelled, and a PR can also be opened by number. Nothing has been fetched beyond the list.", ["PR Triage · Round invoice totals", "#12", "Round invoice totals to cents", "This branch", "Yours", "Draft", "Include closed and merged", "Open by number"], '!document.body.innerText.includes("Initial invoice API")')
+    capture("001-pr-list.png", "PR Triage opens on the repository's open pull requests. The branch's own PR is marked, drafts are labelled, and a PR can also be opened by number. Nothing has been fetched beyond the list.", ["Review comments · Round invoice totals", "#12", "Round invoice totals to cents", "This branch", "Yours", "Draft", "Include closed and merged", "Open by number"], '!document.body.innerText.includes("Initial invoice API")')
     assert ai_calls() == [] and gh_writes() == []
 
     evaluate('document.querySelector(".pr-entry").click()')
@@ -240,7 +240,7 @@ try:
 
     (state / "head.txt").write_text("feed" + "1" * 36 + "\n")
     click("Post reply to GitHub")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     idle()
     capture("006-stale-head-refused.png", "The PR gained a commit after the comments loaded. Confirming re-reads the PR head first and refuses: nothing is posted and the unsent draft stays in the editor.", ["has new commits since these comments were loaded", "nothing was posted and your draft is kept", "Review reply…", "Discard reply"], 'document.querySelector(".pr-detail textarea").value.includes("From a read-only investigation")', allow_alert=True)
     assert gh_writes() == [], "A stale reply must not reach gh"

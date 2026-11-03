@@ -5,7 +5,7 @@ import {
   HARNESS_LABELS, OverrideContext, OverrideRow, OverrideScope, OverridesView, StoredOverride,
   promptOverridesClear, promptOverridesLoad, promptOverridesSave, slotLabel,
 } from "./promptOverridesApi";
-import { EmptyState, Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, EmptyState, Field, Modal, Spinner } from "./ui";
 
 const HARNESSES: AgentSlug[] = ["claude", "opencode", "codex", "pi"];
 const contextKey = (context: OverrideContext) => JSON.stringify(context);
@@ -164,7 +164,7 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
   const editing = draft !== null && row?.id === draft.promptId;
 
   return <Modal label="Prompt overrides" title="Prompt overrides" size="xl" onClose={requestClose} dismissable={!busy}
-    subtitle="Change the prompts AMF sends for headless AI calls. The nearest scope wins: feature, then project, then global, then the built-in default."
+    subtitle="AMF sends its own instructions to an AI for tasks like plan interviews, code review and summaries. Change that wording for one feature, one project, or everywhere. The closest one wins: feature, then project, then everywhere, then AMF's built-in wording."
     footer={<>
       <span className="muted small">{view ? `Context: ${view.context_label}` : ""}</span>
       <button className="btn btn-secondary" disabled={busy} onClick={requestClose}>Done</button>
@@ -190,32 +190,31 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
     {view?.project_config_error && <div className="callout callout-warning" role="alert">
       <p><strong>Project overrides are ignored.</strong> {view.project_config_error}</p>
     </div>}
-    {pendingDiscard && <div className="callout callout-warning" role="alertdialog" aria-label="Discard unsaved template">
+    {pendingDiscard && <ConfirmCallout label="Discard unsaved template" className="callout callout-warning">
       <p>Discard your unsaved template changes and {pendingDiscard.label}?</p>
       <button className="btn btn-secondary btn-sm" onClick={() => setPendingDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning btn-sm" onClick={() => { const next = pendingDiscard.run; setPendingDiscard(null); setDraft(null); next(); }}>Discard changes</button>
-    </div>}
+      <button className="btn btn-danger btn-sm" onClick={() => { const next = pendingDiscard.run; setPendingDiscard(null); setDraft(null); next(); }}>Discard changes</button>
+    </ConfirmCallout>}
     <div className="library-browser">
       <div className="library-list" role="group" aria-label="Headless prompts">
         {overrides.isLoading && <p className="muted">Loading prompts…</p>}
         {view?.rows.map((candidate) => <button key={candidate.id} disabled={busy}
           ref={row?.id === candidate.id ? activeItem : undefined}
           className={`library-item ${row?.id === candidate.id ? "library-item-active" : ""}`}
-          aria-pressed={row?.id === candidate.id}
+          aria-pressed={row?.id === candidate.id} title={candidate.id}
           onClick={() => candidate.id !== row?.id && guard("open another prompt", () => { setSelectedId(candidate.id); setConfirmClear(null); setError(null); setNotice(null); })}>
           <span className="library-item-heading"><strong>{candidate.title}</strong>
             <span className={`badge ${candidate.source === "built_in" ? "" : "overrides-badge-active"}`}>
               {candidate.source === "built_in" ? "Built-in" : slotLabel(candidate.source, candidate.source_harness)}
             </span>
           </span>
-          <span className="muted small mono">{candidate.id}</span>
         </button>)}
       </div>
       <div className="library-detail">
         {!row && !overrides.isLoading && <EmptyState icon="sliders" title="Select a prompt">Choose a prompt to see its effective template.</EmptyState>}
         {row && <>
           <h3>{row.title}</h3>
-          <p className="muted">{row.summary} <code>{row.id}</code></p>
+          <p className="muted" title={row.id}>{row.summary}</p>
           <p className="small"><strong>Placeholders:</strong>{" "}
             {row.placeholders.length === 0 ? <span className="muted">none</span> :
               row.placeholders.map((name) => <code key={name} className="overrides-token">{`{{${name}}}`}</code>)}
@@ -236,7 +235,8 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                 {HARNESSES.map((slug) => <option key={slug} value={slug}>{HARNESS_LABELS[slug]} only</option>)}
               </select></Field>
             </div>
-            <Field label="Template" hint="Placeholders are not validated: a missing token is sent literally. While an override stands, built-in prompt updates no longer apply.">
+            <div className="callout callout-warning"><p>Placeholders are not checked: a misspelled or missing <code>{"{{token}}"}</code> is sent as typed. While this override stands, AMF's updates to the built-in wording no longer apply.</p></div>
+            <Field label="Template">
               <textarea className="overrides-textarea" disabled={busy} rows={14} value={draft.text}
                 onChange={(event) => setDraft({ ...draft, text: event.target.value })} />
             </Field>
@@ -272,13 +272,13 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                 </li>;
               })}
             </ul>
-            {confirmClear && <div className="callout callout-warning" role="alertdialog" aria-label="Confirm clear override">
+            {confirmClear && <ConfirmCallout label="Confirm clear override" className="callout callout-warning">
               <p>Clear the {slotLabel(confirmClear.slot.scope, confirmClear.slot.harness)} override for {row.title}? Only this override is removed; the prompt then uses the next layer that has a template.</p>
               <pre className="library-preview" aria-label="Template to clear">{confirmClear.slot.template}</pre>
               {clearStale && <p role="alert">This prompt’s overrides changed after you chose Clear. Keep it, then review the current template before clearing.</p>}
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setConfirmClear(null)}>Keep it</button>
               <button className="btn btn-danger btn-sm" disabled={busy || clearStale} onClick={() => void clear(confirmClear)}>{busy && <Spinner />}Clear override</button>
-            </div>}
+            </ConfirmCallout>}
             <button className="btn btn-primary" disabled={busy || draft !== null || availableScopes.length === 0} onClick={() => startEdit(row, null)}>New override…</button>
           </>}
         </>}

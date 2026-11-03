@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { asGuiError, type FeatureTarget } from "./api";
+import { agentName, asGuiError, type FeatureTarget } from "./api";
 import CompanionIntegrationDialog from "./CompanionIntegrationDialog";
 import { prDestinationCatalog, type DestinationCatalog, type DestinationFeature, type PrFixTarget } from "./prTriageApi";
 
@@ -54,7 +54,7 @@ export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onI
           {chosen ? "Selected" : "Use"}
         </button>
         <span>{session.label}</span>
-        <span className="muted small">{session.harness}{session.stopped ? " (stopped)" : ""}</span>
+        <span className="muted small">{agentName(session.harness)}{session.stopped ? " (stopped)" : ""}</span>
         {reason && <span className="muted small"> {reason}</span>}
       </li>
     );

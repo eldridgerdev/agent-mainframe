@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { asGuiError } from "./api";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 import { SHARED_WITH_TERMINAL } from "./terminalNote";
 
 interface SettingsView {
@@ -72,34 +72,32 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
     {busy && <p role="status"><Spinner /> Loading or saving settings…</p>}
     {error && <p className="callout callout-danger" role="alert">{error}</p>}
     {view && <div className="form-stack">
-      <Field label="Context window (tokens)" hint="Leave blank to restore each agent's default. Used when telemetry does not report a limit.">
-        <input type="text" inputMode="numeric" aria-label="Context window (tokens)" value={windowLimit} disabled={busy}
+      <Field label="Context size (tokens)" hint="How much text the agent can hold at once; a token is about 4 characters. Leave blank to use each agent's default. Used only when the agent does not report its own limit.">
+        <input type="text" inputMode="numeric" aria-label="Context size (tokens)" value={windowLimit} disabled={busy}
           onChange={(event) => setWindowLimit(event.target.value)} />
       </Field>
-      <Field label="Warning percent">
-        <input type="number" min="1" max="99" step="1" value={warning} disabled={busy}
+      <Field label="Warn at (% full)" hint="The context meter warns once the agent's memory is this full.">
+        <input type="number" aria-label="Warn at (% full)" min="1" max="99" step="1" value={warning} disabled={busy}
           onChange={(event) => setWarning(event.target.value)} />
       </Field>
-      <Field label="Critical percent">
-        <input type="number" min="2" max="100" step="1" value={critical} disabled={busy}
+      <Field label="Critical at (% full)" hint="The meter shows critical from this point; must be above the warning.">
+        <input type="number" aria-label="Critical at (% full)" min="2" max="100" step="1" value={critical} disabled={busy}
           onChange={(event) => setCritical(event.target.value)} />
       </Field>
-      <p className="muted">Threshold changes update the desktop indicators immediately. A changed window limit marks estimated samples stale
-        until the next context update. External settings edits refresh automatically. Restart AMF's terminal app if it is open: until then
-        it keeps its old values and writes them back when it next saves a setting.</p>
+      <p className="muted">Restart AMF's terminal app if it is open: until then it keeps its old values and writes them back when it next saves a setting.</p>
       {!valid && <p role="alert">Use a positive whole token limit or leave it blank. Percentages must be 1–100, with critical greater than warning.</p>}
     </div>}
-    {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">
+    {discard && <ConfirmCallout label="Discard unsaved settings" className="callout callout-warning">
       <p>Discard unsaved settings and {discard === "close" ? "close" : "reload"}?</p>
       <button className="btn btn-secondary" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         setDiscard(null);
       }}>Keep editing</button>
-      <button className="btn btn-warning" disabled={busy} onClick={() => {
+      <button className="btn btn-danger" disabled={busy} onClick={() => {
         if (inFlight.current) return;
         const action = discard; setDiscard(null);
         if (action === "close") onClose(); else void load();
       }}>Discard changes</button>
-    </div>}
+    </ConfirmCallout>}
   </Modal>;
 }

@@ -16,7 +16,7 @@ it("retains edited fields after stale save and failed reload, then explicitly di
   const { onClose, onSaved } = mount();
   vi.mocked(invoke).mockRejectedValue({ kind: "conflict", message: "Changed elsewhere. Keep your draft." });
   fireEvent.change(screen.getByRole("textbox", { name: /^Template body/ }), { target: { value: "Local unsaved body" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
   await screen.findByText("Changed elsewhere. Keep your draft.");
   expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe("Local unsaved body");
   expect(invoke).toHaveBeenCalledWith("prompt_user_save", { draft: { id: "original", revision: "raw-revision", name: "Repair", body: "Local unsaved body", tags: "bug" } });
@@ -50,7 +50,7 @@ it("locks pending saves against double submission, Escape and cancellation, keep
   vi.mocked(invoke).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
   const { onClose, onSaved } = mount(null);
   fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Composer" } });
-  const button = screen.getByRole("button", { name: "Save User template" });
+  const button = screen.getByRole("button", { name: "Save prompt" });
   fireEvent.click(button); fireEvent.click(button);
   fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -68,7 +68,7 @@ it("does not open a reload discard overlay during the synchronous start of a sav
   mount();
   fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Local name" } });
   act(() => {
-    fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
     fireEvent.click(screen.getByRole("button", { name: "Reload template" }));
   });
   expect(screen.queryByRole("dialog", { name: "Discard prompt edits" })).toBeNull();

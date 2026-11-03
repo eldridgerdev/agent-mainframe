@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { reviewDestinationCatalog, reviewDestinationPreview, type AgentSlug, type ModeSlug, type ReviewAction, type ReviewDestinationCatalog, type ReviewDestinationChoice, type ReviewDestinationPreview, type ReviewView } from "./api";
-import { Field, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
 
 /** Preview and prepare a destination. Editing these fields never creates or starts anything. */
 export default function ReviewFeedbackDestinationDialog({ view, error, onAct, onClose }: {
@@ -71,7 +71,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
     const node = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Feedback destination"]');
     if (!node) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    function root() { return node!.querySelector<HTMLElement>('[role="alertdialog"]') ?? node!; }
+    function root() { return node!.querySelector<HTMLElement>('[data-confirm-callout]') ?? node!; }
     function controls() { return Array.from(root().querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')); }
     function focusInside() { (controls()[0] ?? node!).focus(); }
     function onKey(event: KeyboardEvent) {
@@ -141,7 +141,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
         <Field label="Companion branch"><input value={branch} disabled={busy} onChange={event => edit(() => setBranch(event.target.value))} /></Field>
         <Field label="Mode"><select value={mode} disabled={busy} onChange={event => edit(() => setMode(event.target.value as ModeSlug))}><option value="supervibe">SuperVibe</option><option value="vibe">Vibe</option><option value="vibeless">Vibeless</option></select></Field>
         <label className="checkbox"><input type="checkbox" checked={review} disabled={busy} onChange={event => edit(() => setReview(event.target.checked))} /> Review workflow</label>
-        <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Enable Chrome</label>
+        <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Chrome</label>
         {catalog.hook_prompt && <Field label={catalog.hook_prompt.title}><select value={hookChoice} disabled={busy} onChange={event => edit(() => setHookChoice(event.target.value))}><option value="">Choose a worktree setup option</option>{catalog.hook_prompt.options.map(option => <option key={option}>{option}</option>)}</select></Field>}
         <p>Branches from {catalog.source_branch} at {catalog.source_head}. Uncommitted reviewed changes are not copied. Integrate the companion's commits later from the companion feature's “Integrate companion…” dialog.</p>
       </>}
@@ -158,7 +158,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
       </section>}
     </>}
     <button className="btn btn-secondary" disabled={busy} onClick={close}>Cancel destination selection</button>
-    {discard && <div role="alertdialog" aria-label="Discard destination choices"><p>Discard these unsaved destination choices? No resources were created by editing them.</p><button className="btn btn-secondary" onClick={() => setDiscard(false)}>Keep editing</button><button className="btn btn-primary" onClick={onClose}>Discard choices</button></div>}
+    {discard && <ConfirmCallout label="Discard destination choices"><p>Discard these unsaved destination choices? No resources were created by editing them.</p><button className="btn btn-secondary" onClick={() => setDiscard(false)}>Keep editing</button><button className="btn btn-danger" onClick={onClose}>Discard choices</button></ConfirmCallout>}
   </Modal>;
 }
 function message(failure: unknown): string { return failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure); }

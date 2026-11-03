@@ -53,7 +53,7 @@ with GuiFrames.from_argv() as frames:
     def state_is(name):
         wait('Array.from(document.querySelectorAll(`.syntax-languages tbody tr`)).find(r=>r.querySelector(`th`)?.textContent==="JSON")?.querySelector(`td`)?.textContent === '+json.dumps(name))
     def parser_action(name): click(name+' JSON parser','[role=dialog][aria-label="Syntax languages"]')
-    def confirm(name): click(name+' parser','[role=alertdialog]')
+    def confirm(name): click(name+' parser','[data-confirm-callout]')
     def capture(name,note,texts,allow_alert=False):
         frames.capture(name,note,texts,allow_alert=allow_alert)
         assert rows()==initial_rows and panes()==initial_panes, 'Parser operation changed original sessions or running panes'
@@ -68,7 +68,7 @@ with GuiFrames.from_argv() as frames:
     parser_action('Install')
     capture('002-install-confirmation.png','Choosing Install stages a confirmation; no parser or source checkout exists until explicitly confirmed.', ['Install the JSON parser?','Install parser','Cancel'])
     assert not library.exists() and not source.exists()
-    click('Cancel','[role=alertdialog]'); assert not library.exists() and not source.exists()
+    click('Cancel','[data-confirm-callout]'); assert not library.exists() and not source.exists()
     (scratch/'hold-compiler').touch(); parser_action('Install'); confirm('Install'); wait_file(scratch/'compiler-waiting')
     capture('003-install-busy.png','Confirmed Install uses the real shared installer and compiler. While the compiler is gated, duplicate actions are disabled and progress is visible.', ['Installing JSON parser','continues if you close'])
     assert frames.evaluate('Array.from(document.querySelectorAll(`.syntax-languages button`)).every(b=>b.disabled)')

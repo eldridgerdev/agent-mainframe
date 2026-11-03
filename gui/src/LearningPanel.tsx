@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
-import { AgentSlug, LearningAction, LearningView } from "./api";
+import { AgentSlug, agentName, LearningAction, LearningView } from "./api";
 import Markdown from "./Markdown";
-import { Field, Icon, Modal, Spinner } from "./ui";
+import { ConfirmCallout, Field, Icon, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** The question draft stays local across backend polls and navigation. */
@@ -40,11 +40,11 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
     <Modal hidden={hidden} label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
       subtitle="Read code and ask questions. Opening an editing agent is a separate action."
       dismissable={!busy} onClose={() => question.trim() ? setConfirmClose(true) : onClose()}>
-      {confirmClose && <div className="callout callout-warning" role="alert">
+      {confirmClose && <ConfirmCallout label="Discard question and close Learning" className="callout callout-warning">
         <p>Discard this unsent question and close Learning?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep writing</button>
-        <button className="btn btn-warning" disabled={busy} onClick={onClose}>Discard question and close</button>
-      </div>}
+        <button className="btn btn-danger" disabled={busy} onClick={onClose}>Discard question and close</button>
+      </ConfirmCallout>}
       <div className="learning-controls">
         <button className="btn btn-secondary btn-sm" disabled={busy || !view.is_git}
           onClick={() => { setRangeStart(null); void onAct({ kind: "toggle_scope" }); }}>
@@ -53,7 +53,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void onAct({ kind: "refresh" })}>Refresh files</button>
         <Field label="Answer with">
           <select value={view.harness} disabled={busy} onChange={(e) => void onAct({ kind: "settings", harness: e.target.value as AgentSlug, level: view.level })}>
-            {view.harnesses.map((h) => <option key={h} value={h}>{h}</option>)}
+            {view.harnesses.map((h) => <option key={h} value={h}>{agentName(h)}</option>)}
           </select>
         </Field>
         <Field label="Reading level">
@@ -69,11 +69,11 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
         <nav className="learning-files" aria-label="Learning files">
           {view.entries.map((entry) => (
             <button key={entry.key} disabled={busy}
-              className={entry.key === view.selected_key ? "learning-file learning-file-selected" : "learning-file"}
+              className={`learning-file learning-file-${entry.kind}${entry.key === view.selected_key ? " learning-file-selected" : ""}`}
               aria-current={entry.key === view.selected_key ? "true" : undefined}
               style={{ paddingLeft: 8 + entry.depth * 14 }}
               onClick={() => { setRangeStart(null); void onAct({ kind: "select_entry", key: entry.key }); }}>
-              <Icon name={entry.kind === "dir" ? (entry.expanded ? "chevronDown" : "chevronRight") : "file"} size={12} />
+              <Icon name={entry.kind === "dir" || entry.kind === "header" ? (entry.expanded ? "chevronDown" : "chevronRight") : entry.kind === "project" ? "compass" : "file"} size={12} />
               {entry.label}
             </button>
           ))}
@@ -87,7 +87,11 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
               onClick={() => { setRangeStart(null); void onAct({ kind: "project_anchor" }); }}>Ask about project</button>
             <SyntaxBadge info={view.content_path ? view.syntax : null} />
           </div>
-          {view.content_error ? <p role="alert">{view.content_error}</p> : (
+          {view.content_error ? <p role="alert">{view.content_error}</p> : view.content.length === 0 ? (
+            <p className="learning-empty muted">{view.content_path
+              ? "This file is empty. Ask about it, or pick another file on the left."
+              : "Pick a file on the left to read it here, or ask a question about the whole project below."}</p>
+          ) : (
             <div className="learning-code">
               {view.content.map((line, index) => {
                 const hunk = hunkAt.get(index + 1);
@@ -129,7 +133,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
           <Field label="Question intent"><select value={intent} onChange={(e) => setIntent(e.target.value)}>
             <option value="explain">Explain this to me</option><option value="action">Propose a change</option>
           </select></Field>
-          <button className="btn btn-primary" disabled={busy || !question.trim()}>{busy && <Spinner />} Ask {view.harness}</button>
+          <button className="btn btn-primary" disabled={busy || !question.trim()}>{busy && <Spinner />} Ask {agentName(view.harness)}</button>
           <span className="field-hint">{view.harness === "codex" ? "Codex reads the repository in a read-only sandbox." : "Answers use the selected code. Deep dive lets the agent read the repository."}</span>
         </div>
       </form>
@@ -140,7 +144,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hi
           </button>)}
         </nav>
         {answer && <section aria-label="Learning answer">
-          <h3>{answer.question}</h3><p className="field-hint">{answer.anchor} · {answer.intent === "action" ? "change request" : "explanation"} · {answer.harness} · {answer.run_mode} · {answer.status}</p>
+          <h3>{answer.question}</h3><p className="field-hint">{answer.anchor} · {answer.intent === "action" ? "change request" : "explanation"} · {agentName(answer.harness)} · {answer.run_mode} · {answer.status}</p>
           {answer.drift && <p role="status">{answer.drift}</p>}
           {answer.error && <p role="alert">{answer.error}</p>}
           {answer.answer && <Markdown source={answer.answer} />}

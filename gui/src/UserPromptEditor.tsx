@@ -45,7 +45,7 @@ export default function UserPromptEditor({ snapshot, seedBody = "", onClose, onS
           onClick={() => { if (inFlight.current) return; if (dirty) setDiscard("reload"); else void reload(); }}>Reload template</button>}
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={close}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={busy || !name.trim() || !body.trim()}>
-          {busy && <Spinner />}Save User template
+          {busy && <Spinner />}Save prompt
         </button>
       </>}>
       {error && <p role="alert" className="callout callout-danger">{error}</p>}

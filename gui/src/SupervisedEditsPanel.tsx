@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DiffOptions, FeatureTarget, asGuiError } from "./api";
 import { Hunk } from "./DiffPanel";
-import { EmptyState, Field, Icon, Modal, Spinner } from "./ui";
+import { ConfirmCallout, EmptyState, Field, Icon, Modal, Spinner } from "./ui";
 import {
   MAX_FEEDBACK_CHARS,
   SupervisedEdit,
@@ -237,7 +237,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   const layoutSplit = split && !newFile;
 
   return <div ref={container} className="supervised-popup"><Modal label="Supervised edits" title={view ? `Supervised edits · ${view.feature_name}` : "Supervised edits"}
-    subtitle="Vibeless agents wait for your answer before writing each file change." size="xl"
+    subtitle="Features in Vibeless mode ask before every file change: the agent waits here until you approve, reject or cancel it." size="xl"
     onClose={requestClose} dismissable={!sending}
     footer={<button className="btn btn-secondary" disabled={sending} onClick={requestClose}>Close</button>}>
     {onAutoOpenChange && <label className="switch-row">
@@ -245,7 +245,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       <span>Automatically open waiting edits</span>
     </label>}
     {moreWaiting > 0 && <p role="status">{moreWaiting} more waiting</p>}
-    {holding && <p role="status" className="callout callout-warning">Review hold · answers available after {holdSecs} seconds.</p>}
+    {holding && <p role="status" className="callout callout-warning">Buttons unlock in {holdSecs} seconds so you can read the change.</p>}
     <div className="diff-controls">
       <Field label="Layout"><select value={layoutSplit ? "split" : "unified"} disabled={newFile}
         onChange={(event) => setSplit(event.target.value === "split")}>
@@ -261,18 +261,18 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
     {notice && <p role="status" className="callout callout-accent">{notice}</p>}
     {lost && <p role="status" className="callout callout-warning">{lost}</p>}
     {error && <p role="alert" className="callout callout-warning">{error}</p>}
-    {discardPrompt && <div role="alertdialog" aria-label="Discard unsent feedback" className="callout callout-warning supervised-confirm">
+    {discardPrompt && <ConfirmCallout label="Discard unsent feedback" className="callout callout-warning supervised-confirm">
       <p>Discard unsent feedback for {unsentDrafts.join(", ")}? Leaving does not answer the agent; the edit keeps waiting.</p>
       <div className="supervised-actions">
         <button className="btn btn-ghost" onClick={() => setDiscardPrompt(null)}>Keep editing</button>
-        <button className="btn btn-warning" disabled={sending} onClick={() => {
+        <button className="btn btn-danger" disabled={sending} onClick={() => {
           if (!inFlight.current) { discardPrompt.proceed(); setDiscardPrompt(null); }
         }}>{discardPrompt.switching ? "Discard and switch" : "Discard and close"}</button>
       </div>
-    </div>}
+    </ConfirmCallout>}
     {view && !query.error && (edits.length === 0
       ? <EmptyState icon="check" title="No edits are waiting for review">
-        Edits a Vibeless agent asks to write appear here. Requests already delivered to AMF's terminal app are answered there.
+        Only features in Vibeless mode ask. Other modes write files directly. Requests already delivered to AMF's terminal app are answered there.
       </EmptyState>
       : <div className="diff-reader">
         <nav className="diff-files" aria-label="Pending edits">{edits.map((candidate) => <button key={candidate.id}
@@ -311,7 +311,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
               onChange={(event) => { const text = event.target.value; feedbackPaths.current[edit.id] = edit.path; setFeedback((current) => ({ ...current, [edit.id]: text })); }} />
           </Field>
           {confirm && confirm.id === edit.id
-            ? <div role="alertdialog" aria-label="Confirm answer" className="callout callout-warning supervised-confirm">
+            ? <ConfirmCallout label="Confirm answer" className="callout callout-warning supervised-confirm">
               <p><strong>{CONFIRM[confirm.kind].title}</strong> {edit.effects[confirm.kind]}</p>
               {confirm.kind === "reject" && edit.effects.feedback_reaches_agent && <p>
                 {draft.trim() ? <>Feedback: <q>{draft.trim()}</q></> : "No feedback will be sent."}
@@ -322,9 +322,10 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
                   {sending && <Spinner />}{CONFIRM[confirm.kind].button}
                 </button>
               </div>
-            </div>
+            </ConfirmCallout>
             : <div className="supervised-actions">
               {(["approve", "reject", "cancel"] as const).map((kind) => <button key={kind}
+                title={kind === "reject" ? "Decline this change. Any feedback you typed goes with it." : kind === "cancel" ? "Withdraw the request. The next step says what happens before you confirm." : undefined}
                 className={`btn ${kind === "approve" ? "btn-primary" : kind === "reject" ? "btn-danger" : "btn-secondary"}`}
                 disabled={blocked || holding} onClick={() => { setError(null); setNotice(null); setConfirm({ id: edit.id, revision: edit.revision, kind }); }}>
                 {kind === "approve" && <Icon name="check" size={12} />}

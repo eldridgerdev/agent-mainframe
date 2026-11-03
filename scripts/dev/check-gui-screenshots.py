@@ -450,8 +450,8 @@ export function formatTotal(total: number): string {
             "(()=>{const t=document.querySelector('[aria-controls=workspace-tools]');"
             "if(t.getAttribute('aria-expanded')==='false')t.click();})()"
         )
-        wait("document.body.innerText.includes('Validation screenshots')")
-        click("Validation screenshots")
+        wait("document.body.innerText.includes('Screenshots')")
+        click("Screenshots")
         wait("document.querySelectorAll('.screenshot-card').length===2")
         listing = invoke(
             "screenshots_list", dict(selection=dict(feature=None, session_id=None))
@@ -479,7 +479,7 @@ export function formatTotal(total: number): string {
         assert evaluate("document.activeElement.classList.contains('screenshot-open')")
         escape()
         wait("!document.querySelector('.screenshot-grid')")
-        click("Validation screenshots")
+        click("Screenshots")
         wait("document.querySelectorAll('.screenshot-card').length===2")
         owner, directory, completion = owners[0]
         previous = completion["sha256"]
@@ -532,7 +532,7 @@ export function formatTotal(total: number): string {
         )
         escape()
         wait("!document.querySelector('.screenshot-grid')")
-        feature_tool("PR Triage")
+        feature_tool("Review comments")
         wait("!!document.querySelector('.pr-entry')")
         evaluate("document.querySelector('.pr-entry').click()")
         wait("!!document.querySelector('.pr-detail')")
@@ -749,7 +749,7 @@ export function formatTotal(total: number): string {
             checks.append(
                 f"Live public Actions artifact {artifact_id} downloads, validates ZIP members and decodes through production adapter"
             )
-        click("Validation screenshots")
+        click("Screenshots")
         wait("document.querySelectorAll('.screenshot-card').length===2")
         click("Screenshot cleanup…")
         wait("document.body.innerText.includes('Clean up this scope…')")

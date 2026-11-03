@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ReviewPanel from "../src/ReviewPanel";
 import type { ReviewView } from "../src/api";
+import { getConfirm, queryConfirm } from "./confirmCallout";
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 const view: ReviewView = {
@@ -49,7 +50,7 @@ it("opens the complete pre-finish summary without discarding a draft or its file
   fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Unsent multiline\ndraft" } });
   fireEvent.click(screen.getByRole("button", { name: "Pre-finish summary" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "summary_open" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   update({ view: { ...view, summary } });
   expect(screen.getByRole("heading", { name: "image.bin — no verdict" })).toBeTruthy();
   expect(screen.getByText(/1 file\(s\) have no verdict/)).toBeTruthy();
@@ -79,10 +80,10 @@ it("requires explicit batch confirmation and cancelling starts no action", () =>
   const { onAct } = mount({ ...view, summary });
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
-  expect(screen.getByRole("alertdialog", { name: "Apply pending suggestions locally" }).textContent).toContain("writes source files");
+  expect(screen.getByRole("alert", { name: "Apply pending suggestions locally" }).textContent).toContain("writes source files");
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel batch application" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
 });
 
@@ -97,11 +98,11 @@ it("sends exactly one batch action, retains failed confirmation for retry and re
   expect(onAct).toHaveBeenCalledWith({ kind: "apply_finish_suggestions" });
   resolve(false);
   await waitFor(() => expect((screen.getByRole("button", { name: "Apply batch locally" }) as HTMLButtonElement).disabled).toBe(false));
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(getConfirm()).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
   resolve(true);
   update({ view: { ...view, revision: 5, applied_suggestions: ["code.rs:1"], summary: { ...summary, pending_suggestions: 1, failures: ["other.rs:9: overlapping replacements"] } } });
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(queryConfirm()).toBeNull());
   expect(screen.getByText("other.rs:9: overlapping replacements")).toBeTruthy();
   expect(screen.getByText("1 open suggestion(s) · 1 applied locally")).toBeTruthy();
 });
@@ -124,7 +125,7 @@ it("requires a fresh confirmation when the review revision changes and prevents 
   const { onAct, update } = mount({ ...view, summary });
   fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
   update({ view: { ...view, revision: 5, summary } });
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
   update({ view: { ...view, revision: 5, summary }, busy: true });
   fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
@@ -156,7 +157,7 @@ it("retains a dirty editor through history navigation and returns without pausin
   fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Keep my unsaved draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Review history" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_open" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   update({ view: { ...view, history } });
   fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_close" }));
@@ -282,10 +283,10 @@ it("defaults a fresh rejection to blocker, as the TUI does", async () => {
 it("closes without saving only after confirmation when a save failed", async () => {
   const { onAct } = mount({ ...view, save_error: "Read-only file system" });
   fireEvent.click(screen.getByRole("button", { name: "Close without saving" }));
-  expect(screen.getByRole("alertdialog", { name: "Close review without saving" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Close review without saving" })).toBeTruthy();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Close without saving" }));
   fireEvent.click(screen.getByRole("button", { name: "Discard and close" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "discard" }));
@@ -311,7 +312,7 @@ it("keeps unsaved drafts until discard is confirmed for pause and file navigatio
   fireEvent.click(screen.getByRole("button", { name: "Edit file comment" }));
   fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Unsent" } });
   fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved review draft" })).toBeTruthy();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   expect((screen.getByRole("textbox", { name: "File comment" }) as HTMLTextAreaElement).value).toBe("Unsent");
@@ -338,7 +339,7 @@ it("protects drafts on refresh and cancel, and reports save failures with a retr
   fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "retry_save" }));
   fireEvent.click(screen.getByRole("button", { name: "Reload saved review" }));
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(getConfirm()).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "reload" }));
 });
@@ -364,17 +365,17 @@ function applicableView(): ReviewView {
 it("confirms a saved local replacement and can cancel without changing source", async () => {
   const { onAct } = mount(applicableView());
   fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
-  const confirmation = screen.getByRole("alertdialog", { name: "Apply suggestion locally" });
+  const confirmation = screen.getByRole("alert", { name: "Apply suggestion locally" });
   expect(confirmation.textContent).toContain("writes to your checkout");
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel application" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
   fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "apply_suggestion", path: "code.rs",
     start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 } }));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(queryConfirm()).toBeNull());
 });
 
 it("keeps a refused application visible and blocks duplicate submissions during a write", async () => {
@@ -383,10 +384,10 @@ it("keeps a refused application visible and blocks duplicate submissions during 
   fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
   fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledOnce());
-  expect(screen.getByRole("alertdialog", { name: "Apply suggestion locally" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Apply suggestion locally" })).toBeTruthy();
   expect(screen.getByText("suggested code")).toBeTruthy();
   update({ busy: true, error: "File changed; refresh before applying" });
-  expect(screen.getByRole("alert").textContent).toContain("File changed");
+  expect(screen.getByText("File changed", { exact: false }).closest("[role=alert]")).not.toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
   fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
   expect(onAct).toHaveBeenCalledOnce();
@@ -405,7 +406,7 @@ it("shows application blockers and protects unsaved editors and failed progress 
   fireEvent.change(screen.getByRole("textbox", { name: "Suggested replacement" }), { target: { value: "Unsaved code" } });
   fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
   expect((screen.getByRole("button", { name: "Apply suggestion locally" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
   fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
@@ -545,7 +546,7 @@ it("keeps failed suggestion drafts and blocks selection changes until edits are 
   await waitFor(() => expect(onAct).toHaveBeenCalledOnce());
   expect((screen.getByRole("textbox", { name: "Suggested replacement" }) as HTMLTextAreaElement).value).toBe("Keep code");
   fireEvent.click(screen.getByRole("button", { name: "Refresh changes" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved review draft" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   update({ busy: true });
   fireEvent.click(screen.getByRole("button", { name: "Save suggestion" }));
@@ -591,7 +592,7 @@ it("keeps a multiline question through pre-call cancellation, failed commands an
   update({ view: { ...view, revision: view.revision + 2 } });
   expect((textbox as HTMLTextAreaElement).value).toBe("Why?\nCheck the helper 🦀");
   fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved review draft" })).toBeTruthy();
 });
 
 it.each(["claude", "codex", "opencode", "pi"])("asks selected source coordinates with %s and shows returned answers", async (harness) => {
@@ -709,7 +710,7 @@ it("retains edited AI draft text across polls and failed transfers and blocks du
 it("requires explicit discard before leaving a generated draft and preserves it when dismissal is cancelled", async () => {
   const { onAct } = mount(withDraft);
   fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved review draft" })).toBeTruthy();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   expect((screen.getByRole("textbox", { name: "AI comment draft" }) as HTMLTextAreaElement).value).toBe("Generated feedback");
@@ -760,7 +761,7 @@ it("protects a cleared transferred editor when an empty save would remove existi
   const { onAct } = mount(withReady, vi.fn(async () => false));
   fireEvent.change(screen.getByRole("textbox", { name: "Line comment" }), { target: { value: "" } });
   fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Discard unsaved review draft" })).toBeTruthy();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
@@ -770,12 +771,12 @@ it("protects a cleared transferred editor when an empty save would remove existi
 it("previews the configured check and cancelling its confirmation launches nothing", () => {
   const { onAct } = mount({ ...view, summary, check_command: "npm test" });
   fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
-  const dialog = screen.getByRole("alertdialog", { name: "Run project review check" });
+  const dialog = screen.getByRole("alert", { name: "Run project review check" });
   expect(dialog.textContent).toContain("npm test");
   expect(dialog.textContent).toContain("may write build or test artifacts");
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel check launch" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
 });
 
@@ -793,7 +794,7 @@ it("submits a confirmed check once and retains a failed launch confirmation for 
   fireEvent.click(screen.getByRole("button", { name: "Run check now" }));
   resolve(true);
   update({ view: { ...view, summary, revision: 5, check_command: "cargo test", check: { command: "cargo test", status: "running", output: "" } } });
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(queryConfirm()).toBeNull());
   expect(screen.getByText("Check running: cargo test")).toBeTruthy();
   expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Cancel running check" }));
@@ -816,11 +817,11 @@ it("requires a new confirmation when the configured command or revision changes"
   const { onAct, update } = mount({ ...view, summary, check_command: "old command" });
   fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
   update({ view: { ...view, summary, check_command: "new command" } });
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
-  expect(screen.getByRole("alertdialog").textContent).toContain("new command");
+  expect(getConfirm().textContent).toContain("new command");
   update({ view: { ...view, summary, revision: 5, check_command: "new command" } });
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
 });
 
@@ -866,7 +867,7 @@ it("shows what completing records and hands off, and cancelling or closing sends
   const { onAct } = mount({ ...view, summary, finish, check_command: "cargo test" });
   expect(screen.getByText(/1 approved · 1 need work · 1 skipped/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
-  const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
+  const confirm = screen.getByRole("alert", { name: "Complete Final Review" });
   for (const text of [/1 file\(s\) have no verdict and are recorded as skipped/, /2 saved replacement\(s\) are written to source before the check/,
     /Cancelling completion during the check leaves those source changes in place/,
     /Runs the configured check first/, /earlier results shown here are not reused/, /GitHub pull request/,
@@ -875,7 +876,7 @@ it("shows what completing records and hands off, and cancelling or closing sends
   }
   expect(within(confirm).getByText("cargo test")).toBeTruthy();
   fireEvent.click(within(confirm).getByRole("button", { name: "Keep reviewing" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(queryConfirm()).toBeNull();
   expect(onAct).not.toHaveBeenCalled();
 });
 
@@ -944,7 +945,7 @@ it("keeps the parent review closed to Escape while destination choices need disc
   fireEvent.change(type,{target:{value:"companion"}});
   fireEvent.change(screen.getByRole("textbox",{name:"Companion branch"}),{target:{value:"keep-my-draft"}});
   fireEvent.keyDown(window,{key:"Escape"});
-  expect(screen.getByRole("alertdialog",{name:"Discard destination choices"})).toBeTruthy();
+  expect(screen.getByRole("alert",{name:"Discard destination choices"})).toBeTruthy();
   expect(screen.getByRole("dialog",{name:"Feedback destination"})).toBeTruthy();
   expect(onAct).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button",{name:"Keep editing"}));
@@ -956,4 +957,16 @@ it("keeps the parent review closed to Escape while destination choices need disc
   await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Feedback destination"})).toBeNull());
   expect(document.activeElement).toBe(opener);
   expect(onAct).not.toHaveBeenCalled();
+});
+
+it("folds AMF-generated files away from the review list and its counts", () => {
+  const generated = { ...view.files[1], diff: { ...view.files[1].diff, path: ".claude/settings.local.json", old_path: null, is_binary: false, amf_generated: true }, verdict: "undecided" as const };
+  mount({ ...view, files: [...view.files, generated] });
+  const nav = screen.getByRole("navigation", { name: "Review files" });
+  expect(within(nav).queryByText(".claude/settings.local.json")).toBeNull();
+  expect(screen.getByText(/1 approved · 1 rejected · 0 undecided · 1 file generated by AMF is hidden/)).toBeTruthy();
+  fireEvent.click(within(nav).getByRole("button", { name: "AMF files group" }));
+  expect(within(nav).getByText(".claude/settings.local.json")).toBeTruthy();
+  expect(screen.getByText(/1 approved · 1 rejected · 1 undecided/)).toBeTruthy();
+  expect(screen.getByRole("group", { name: "File verdict" })).toBeTruthy();
 });

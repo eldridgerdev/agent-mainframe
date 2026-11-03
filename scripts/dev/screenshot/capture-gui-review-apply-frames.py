@@ -137,7 +137,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -215,7 +215,7 @@ def application_count():
 
 def begin_application():
     click("Apply suggestion locally")
-    wait('document.querySelector("[role=alertdialog]")?.getAttribute("aria-label")==="Apply suggestion locally"')
+    wait('document.querySelector("[data-confirm-callout]")?.getAttribute("aria-label")==="Apply suggestion locally"')
 
 
 try:
@@ -247,15 +247,15 @@ try:
     assert progress()["line_comments"]["invoice.ts"][0]["suggestion"] == replacement
 
     begin_application()
-    capture("002-explicit-application-confirmation.png", "Applying requires confirmation that the saved whole-range replacement writes to the checkout, settles its thread and requires the changed code to be reviewed again.", ["This writes to your checkout", "Apply replacement", "Cancel application", "line 8 – line 9"], '!!document.querySelector("[role=alertdialog]")')
+    capture("002-explicit-application-confirmation.png", "Applying requires confirmation that the saved whole-range replacement writes to the checkout, settles its thread and requires the changed code to be reviewed again.", ["This writes to your checkout", "Apply replacement", "Cancel application", "line 8 – line 9"], '!!document.querySelector("[data-confirm-callout]")')
     click("Cancel application")
-    wait('!document.querySelector("[role=alertdialog]")')
+    wait('!document.querySelector("[data-confirm-callout]")')
     assert source_path.read_text() == original_source, "Cancelling application changed source"
     assert application_count() == 0
     begin_application()
     click("Apply replacement")
     ready()
-    wait('!document.querySelector("[role=alertdialog]") && document.body.innerText.includes("Applied locally (1)")')
+    wait('!document.querySelector("[data-confirm-callout]") && document.body.innerText.includes("Applied locally (1)")')
     expand_threads()
     capture("003-applied-source-and-invalidated-approval.png", "The replacement now appears in the real source diff, its prose is resolved, its suggestion is consumed, application history is saved, and the old approval is cleared.", ["0 approved", "Applied locally (1)", "Number.EPSILON", "(resolved)", "does not undo source changes"], '!Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Apply suggestion locally")')
     applied_source = original_source.replace("  return Math.round(total * 100) / 100;", "  return Math.round((total + Number.EPSILON) * 100) / 100;")

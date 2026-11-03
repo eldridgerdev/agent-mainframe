@@ -136,7 +136,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -265,7 +265,7 @@ try:
     x.sync()
     wait(has_button("Round invoice totals"))
     click("Round invoice totals")
-    header_menu("Feature tools", "PR Triage")
+    header_menu("Feature tools", "Review comments")
     wait('!!document.querySelector(".pr-entry")')
     evaluate('document.querySelector(".pr-entry").click()')
     wait('!!document.querySelector(".pr-detail")')
@@ -323,7 +323,7 @@ try:
     capture("006-companion-in-destination-picker.png", "The new companion appears in the shared destination picker as a stopped triage companion with its commits-ahead summary and an Integrate link, and its session is the chosen fix agent. Preparing a fix is a separate click; nothing was prepared or sent.", ["Fix agent", "Triage companion: round-invoice-totals-triage", "Integrate PR #12 fixes", "New triage feature…"])
     wait(has_button("New triage feature…"))
     click("New triage feature…")
-    wait(f'!!document.querySelector("[role=alert]") && {form()}.innerText.includes("already exists")')
+    wait(f'!!document.querySelector("[role=alert]:not([data-confirm-callout])") && {form()}.innerText.includes("already exists")')
     evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     assert len(companions()) == 1
     capture("007-second-companion-for-this-head-refused.png", "A second companion for the same PR head is refused with the existing one's name; the person is pointed at the destination list. No branch, worktree or feature was added.", ["already exists", "Create (stopped)"], allow_alert=True)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError, FeatureTarget } from "./api";
 import { EvidenceListing, EvidenceOwner, screenshotCleanup, screenshotCleanupScopes, screenshotImage, screenshotsChanged, screenshotsList } from "./screenshotsApi";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 import ScreenshotViewer, { ScreenshotImage } from "./ScreenshotViewer";
 
 export default function ScreenshotsPanel({ target = null, sessionId = null, onClose }: { target?: FeatureTarget | null; sessionId?: string | null; onClose: () => void }) {
@@ -66,8 +66,8 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
     finally { if (mounted.current) setBusyScope(null); }
   }
   const sessions = [...new Map((listing?.owners ?? []).map((owner) => [owner.session_id, owner.session_label])).entries()];
-  return <Modal label="Screenshots" title={target ? "Validation screenshots" : "Retained validation screenshots"} size="xl"
-    onClose={selected ? closeImage : onClose} subtitle="Evidence captured only for explicit visual-validation requests.">
+  return <Modal label="Screenshots" title={target ? "Screenshots" : "All screenshots"} size="xl"
+    onClose={selected ? closeImage : onClose} subtitle="Images an agent saved when you asked it to check how something looks.">
     {error && <div role="alert" className="callout callout-danger">{error}<button className="btn btn-secondary" onClick={() => void refresh()}>Retry</button></div>}
     {selected ? <ScreenshotViewer identity={`${selected.key}:${selected.sha256}`} caption={selected.caption || selected.image_id}
       provenance={[`${selected.owner.feature_name} · ${selected.owner.session_label} · ${selected.owner.session_id} · ${selected.captured_at}`]}
@@ -81,9 +81,9 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
         </select></label>}
         <button className="btn btn-secondary" onClick={() => void openCleanup()}>Screenshot cleanup…</button>
       </div>
-      {!listing && !error && <p role="status"><Spinner /> Discovering evidence…</p>}
-      {listing && items.length === 0 && <p>No completed screenshots. New Claude/Codex launches receive their evidence destination. Capture requires an explicit request for visual validation.</p>}
-      {listing?.truncated && <p role="status">The evidence processing limit was reached. Clean up older scopes to view more.</p>}
+      {!listing && !error && <p role="status"><Spinner /> Looking for screenshots…</p>}
+      {listing && items.length === 0 && <p>No screenshots yet. When you ask an agent to check how something looks, the images show up here. Claude Code and Codex sessions started from now on can save them.</p>}
+      {listing?.truncated && <p role="status">There are too many screenshots to show at once. Clean up older ones to see more.</p>}
       <div className="screenshot-grid">
         {items.slice(currentPage * 20, (currentPage + 1) * 20).map((item) => <article className="screenshot-card" key={item.key}>
           <button className="screenshot-open" data-screenshot-key={item.key} aria-label={`View screenshot ${item.caption || item.image_id}`} onClick={() => { trigger.current = item.key; setSelectedKey(item.key); }}>
@@ -92,16 +92,16 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
           <p className="small muted">{item.owner.feature_name} · {item.owner.session_label}</p><p className="small mono">{item.owner.session_id}</p>
         </article>)}
       </div>
-      {items.length > 20 && <div className="row"><button disabled={currentPage === 0} onClick={() => setPage((p) => p - 1)}>Previous page</button><span>Page {currentPage + 1}</span><button disabled={(currentPage + 1) * 20 >= items.length} onClick={() => setPage((p) => p + 1)}>Next page</button></div>}
-      {!!listing?.issues.length && <details><summary>Incomplete or unsupported evidence ({listing.issues.length})</summary>{listing.issues.map((issue, i) => <p key={i}>{issue.file}: {issue.message}</p>)}</details>}
+      {items.length > 20 && <div className="row"><button className="btn btn-secondary btn-sm" disabled={currentPage === 0} onClick={() => setPage((p) => p - 1)}>Previous page</button><span>Page {currentPage + 1}</span><button className="btn btn-secondary btn-sm" disabled={(currentPage + 1) * 20 >= items.length} onClick={() => setPage((p) => p + 1)}>Next page</button></div>}
+      {!!listing?.issues.length && <details><summary>Screenshots that could not be read ({listing.issues.length})</summary>{listing.issues.map((issue, i) => <p key={i}>{issue.file}: {issue.message}</p>)}</details>}
       {cleanup && <section aria-label="Screenshot cleanup" className="callout">
-        <p>Cleanup removes only the selected producing scope. Retained root and non-git evidence stays until you choose cleanup. Restart its agent session to receive a new destination afterward.</p>
+        <p>Cleanup permanently deletes the screenshot files of one agent session. Others stay until you clean them up too. Restart that agent session afterwards so it gets a new place to save screenshots.</p>
         <button className="btn btn-ghost" onClick={() => { setCleanup(null); setConfirmScope(null); }}>Close cleanup</button>
         {!cleanup.length && <p>No screenshot scopes to clean up.</p>}
         {cleanup.map(([owner, retired]) => <div key={owner.scope_id} className="screenshot-cleanup-row">
           <span>{owner.project_name} / {owner.feature_name} · {owner.session_label} · {owner.scope_id}{retired ? " (retired; removal can be retried)" : ""}</span>
-          <button className="btn btn-warning" disabled={busyScope !== null} onClick={() => setConfirmScope(owner.scope_id)}>Clean up this scope…</button>
-          {confirmScope === owner.scope_id && <div role="alertdialog" aria-label="Confirm screenshot cleanup"><p>Delete this scope’s screenshot files at {owner.workdir}?</p><button disabled={busyScope !== null} onClick={() => void clean(owner.scope_id)}>{busyScope === owner.scope_id ? "Cleaning…" : "Delete screenshots"}</button><button onClick={() => setConfirmScope(null)}>Cancel</button></div>}
+          <button className="btn btn-secondary" disabled={busyScope !== null} onClick={() => setConfirmScope(owner.scope_id)}>Clean up this scope…</button>
+          {confirmScope === owner.scope_id && <ConfirmCallout label="Confirm screenshot cleanup"><p>Delete this scope’s screenshot files at {owner.workdir}?</p><button className="btn btn-danger" disabled={busyScope !== null} onClick={() => void clean(owner.scope_id)}>{busyScope === owner.scope_id ? "Cleaning…" : "Delete screenshots"}</button><button className="btn btn-secondary" onClick={() => setConfirmScope(null)}>Cancel</button></ConfirmCallout>}
         </div>)}
       </section>}
     </>}

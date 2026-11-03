@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -208,7 +208,7 @@ try:
     click("Round invoice totals")
     wait('!!document.querySelector(\'[aria-label="More feature actions"]\')')
     windows_before = tmux_windows()
-    menu_item("More feature actions", "Rename, ready and summary")
+    menu_item("More feature actions", "Rename or mark ready…")
     wait('!!document.querySelector(\'[role=dialog][aria-label="Feature actions"]\') && !!document.querySelector(\'[aria-label="Name of session Claude"]\')')
     capture("001-actions-panel.png", "The feature menu opens one panel for nickname, session names, ready state and summary; nothing has run.", ["Rename, ready and summary", "Save nickname", "Generate summary…", "Not marked ready."])
 
@@ -245,7 +245,7 @@ try:
     capture("006-changed-elsewhere.png", "A change made elsewhere is flagged with a Reload instead of being silently adopted.", ["changed elsewhere", "Reload"])
     set_input('section[aria-label="Nickname"] input', "Stale overwrite")
     click("Save nickname")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     assert db("SELECT nickname FROM features WHERE id='shot-feature'") == [("Renamed in the TUI",)]
     capture("007-stale-refused.png", "Saving over the stale nickname is refused with an explicit message; the other change survives.", ["The nickname changed since you opened this"], allow_alert=True)
 

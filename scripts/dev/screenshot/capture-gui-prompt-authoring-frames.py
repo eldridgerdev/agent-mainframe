@@ -124,7 +124,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -220,26 +220,26 @@ try:
     evaluate("""(()=>{const e=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,%s);e.dispatchEvent(new Event('input',{bubbles:true}));})()""" % json.dumps(draft))
     wait('document.querySelector(".composer textarea").value===' + json.dumps(draft))
     library()
-    capture('001-user-and-declarative-sources.png','The native library offers User authoring alongside read-only global, project and worktree sources; the existing composer remains unsent.',['User repair','Invoice repair','Worktree audit','Global review','New User template'])
+    capture('001-user-and-declarative-sources.png','The native library offers User authoring alongside read-only global, project and worktree sources; the existing composer remains unsent.',['User repair','Invoice repair','Worktree audit','Global review','New prompt'])
     choose('Invoice repair')
-    assert not evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Edit User template")')
+    assert not evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Edit saved prompt")')
     click('Duplicate to User')
     wait('document.body.innerText.includes("Duplicated to your User library.")')
     # The new copy is selected on its own; no click is needed to reach it.
     wait('document.querySelector(".library-item-active strong")?.textContent==="Invoice repair (copy)"')
-    click('Edit User template')
+    click('Edit saved prompt')
     wait('!!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     capture('002-declarative-copy-keeps-metadata.png','Duplicate to User creates a fresh editable copy with the original description and both configured placeholder definitions, including the unused definition. Declarative source files remain byte-identical.',['Edit User prompt','Keep all configured metadata.','2 configured placeholder definitions'])
     close_editor()
     choose('User repair')
-    click('Edit User template')
+    click('Edit saved prompt')
     wait('!!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     field('Template name','User repair revised')
     field('Template body','Local revised {{area}}. Keep my edits.')
     field('Tags','bug, invoice')
     with sqlite3.connect(dbpath) as db:
         db.execute("UPDATE prompt_templates SET body='External User edit' WHERE id='proof-user'")
-    click('Save User template')
+    click('Save prompt')
     wait('document.body.innerText.includes("changed or was deleted")')
     assert editor_body() == 'Local revised {{area}}. Keep my edits.'
     capture('003-stale-save-keeps-local-edit.png','A concurrent SQLite edit refuses the delayed save. The editor keeps the local name, tags and body; raw description and placeholder metadata remain untouched.',['changed or was deleted','Keep your draft','Preserved User description.'],allow_alert=True)
@@ -249,27 +249,27 @@ try:
     field('Template name','User repair revised')
     field('Template body','Saved revised {{area}}.')
     field('Tags','#bug invoice BUG')
-    click('Save User template')
+    click('Save prompt')
     wait('!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     with sqlite3.connect(dbpath) as db:
         row=db.execute("SELECT name,body,tags,description,placeholders FROM prompt_templates WHERE id='proof-user'").fetchone()
         assert row == ('User repair revised','Saved revised {{area}}.',json.dumps(['bug','invoice'],separators=(',',':')),'Preserved User description.',raw_definitions),row
     choose('Invoice repair (copy)')
-    click('Delete User template…')
-    wait('!!document.querySelector(\'[role=dialog][aria-label="Delete User template"]\')')
-    capture('004-explicit-user-delete-confirmation.png','Deletion names the User copy and requires a separate confirmation. The configured project source and existing composer are kept.',['Delete this User template?','Invoice repair (copy)','Existing composer drafts and declarative templates are kept.'])
+    click('Delete saved prompt…')
+    wait('!!document.querySelector(\'[role=dialog][aria-label="Delete saved prompt"]\')')
+    capture('004-explicit-user-delete-confirmation.png','Deletion names the User copy and requires a separate confirmation. The configured project source and existing composer are kept.',['Delete this saved prompt?','Invoice repair (copy)','Existing composer drafts and declarative templates are kept.'])
     with sqlite3.connect(dbpath) as db:
         db.execute("UPDATE prompt_templates SET body='Copy changed elsewhere' WHERE name='Invoice repair (copy)'")
-    click('Delete User template')
+    click('Delete saved prompt')
     wait('document.body.innerText.includes("changed or was deleted")')
-    capture('005-stale-delete-refused.png','The exact persisted row is rechecked under the SQLite writer lock. Changing the copy after confirmation opens refuses deletion, leaving both User rows and all declarative sources intact.',['Delete this User template?','changed or was deleted'],allow_alert=True)
+    capture('005-stale-delete-refused.png','The exact persisted row is rechecked under the SQLite writer lock. Changing the copy after confirmation opens refuses deletion, leaving both User rows and all declarative sources intact.',['Delete this saved prompt?','changed or was deleted'],allow_alert=True)
     click('Cancel')
     click('Refresh')
     wait('document.body.innerText.includes("was changed or removed outside this window")')
     choose('Invoice repair (copy)')
-    click('Delete User template…')
-    wait('!!document.querySelector(\'[role=dialog][aria-label="Delete User template"]\')')
-    click('Delete User template')
+    click('Delete saved prompt…')
+    wait('!!document.querySelector(\'[role=dialog][aria-label="Delete saved prompt"]\')')
+    click('Delete saved prompt')
     wait('document.body.innerText.includes("Deleted from your User library.")')
     # Exercise every other source through real duplicate/delete IPC too.
     for source_name, expected_body in [('User repair revised','Saved revised {{area}}.'), ('Global review','Review shared guidance.'), ('Worktree audit','Audit the isolated checkout.')]:
@@ -283,20 +283,20 @@ try:
             if source_name == 'User repair revised':
                 assert copy[1] == raw_definitions
         choose(copy_name)
-        click('Delete User template…')
-        wait('!!document.querySelector(\'[role=dialog][aria-label="Delete User template"]\')')
-        click('Delete User template')
+        click('Delete saved prompt…')
+        wait('!!document.querySelector(\'[role=dialog][aria-label="Delete saved prompt"]\')')
+        click('Delete saved prompt')
         wait('document.body.innerText.includes("Deleted from your User library.")')
         print('PASS: duplicated then explicitly deleted private User copy from ' + source_name, flush=True)
-    click('New User template')
+    click('New prompt')
     field('Template name','New audit')
     field('Tags','audit, invoice')
     field('Template body','Audit {{area}}.\nKeep Unicode: café 世界.')
-    capture('006-create-user-template.png','A new User template has editable name, tags and multiline body. No declarative file is edited, and nothing is sent to either offline session.',['New User prompt','Template name','Template body','Save User template'])
+    capture('006-create-user-template.png','A new User template has editable name, tags and multiline body. No declarative file is edited, and nothing is sent to either offline session.',['New User prompt','Template name','Template body','Save prompt'])
     click('Cancel')
     capture('007-unsaved-authoring-protected.png','Cancel protects unsaved template edits with an explicit discard choice. Keep editing restores the fields; the original composer draft stays mounted.',['Discard unsaved prompt edits?','Keep editing','The original composer draft is kept.'])
     click('Keep editing')
-    click('Save User template')
+    click('Save prompt')
     wait('document.body.innerText.includes("Saved in your User library.")')
     choose('Future metadata')
     click('Duplicate to User')
@@ -305,16 +305,16 @@ try:
     click('Cancel')
     assert composer_body() == draft
     evaluate('document.querySelector(`.composer button[aria-label="More draft actions"]`).click()')
-    click('Save as template','[role=menuitem]')
+    click('Save as prompt','[role=menuitem]')
     wait('!!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     assert editor_body() == draft
     field('Template name','Saved composer')
-    capture('009-save-unsent-composer-as-template.png','Save as template copies the unsent composer text into a new User editor. It neither clears nor sends the mounted composer draft.',['New User prompt','Save User template','Template body'])
-    click('Save User template')
+    capture('009-save-unsent-composer-as-template.png','Save as prompt copies the unsent composer text into a new User editor. It neither clears nor sends the mounted composer draft.',['New User prompt','Save prompt','Template body'])
+    click('Save prompt')
     wait('!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     assert composer_body() == draft
     evaluate('Array.from(document.querySelectorAll(".toast .btn-icon")).forEach(b=>b.click())')
-    capture('010-saved-template-keeps-unsent-draft.png','After saving, the original multiline composer is unchanged and both private offline receivers remain empty. User metadata and declarative source bytes are preserved.',['Round invoice totals','Save as template'],'document.querySelector(".composer textarea").value===' + json.dumps(draft))
+    capture('010-saved-template-keeps-unsent-draft.png','After saving, the original multiline composer is unchanged and both private offline receivers remain empty. User metadata and declarative source bytes are preserved.',['Round invoice totals','Save as prompt'],'document.querySelector(".composer textarea").value===' + json.dumps(draft))
     with sqlite3.connect(dbpath) as db:
         rows = db.execute('SELECT name,body FROM prompt_templates ORDER BY sort_order').fetchall()
         assert rows == [('User repair revised','Saved revised {{area}}.'),('New audit','Audit {{area}}.\nKeep Unicode: café 世界.'),('Saved composer',draft)],rows

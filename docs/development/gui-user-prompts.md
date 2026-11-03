@@ -1,8 +1,8 @@
 # Desktop User prompt authoring
 
 Open **Prompt library** from workspace navigation or an agent composer. Use
-**New User template** to save a name, multiline body and comma/space-separated
-tags. User entries offer **Edit User template** and a separate deletion
+**New prompt** to save a name, multiline body and comma/space-separated
+tags. User entries offer **Edit saved prompt** and a separate deletion
 confirmation. Descriptions and configured placeholder definitions are kept,
 including definitions whose keys are absent from the current body.
 

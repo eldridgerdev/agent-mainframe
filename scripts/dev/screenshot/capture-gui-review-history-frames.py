@@ -137,7 +137,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -299,7 +299,7 @@ try:
     history_ready()
     click("Load older rounds")
     history_ready()
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("006-archive-read-failure.png", "An unreadable archive reports the error while Current and completed live rounds remain accessible and the editor can be reopened.", ["Could not read archived review history", "Current", "Review — 2026-10-04T18:00:00Z", "Return to review"], 'document.querySelectorAll(".review-history .diff-file").length===3', allow_alert=True)
     archive_path.write_bytes(original_archive)
     click("Return to review")
@@ -310,7 +310,7 @@ try:
     history_ready()
     wait('document.querySelectorAll(".review-history .diff-file").length===5')
     choose_round("Review — 2026-10-01T12:00:00Z")
-    capture("007-history-retry-after-repair.png", "Reopening history retries the repaired archive and returns to a readable older round without losing the local draft.", ["Round the total after calculating tax.", "Check:", "passed", "Return to review"], '!document.querySelector("[role=alert]")')
+    capture("007-history-retry-after-repair.png", "Reopening history retries the repaired archive and returns to a readable older round without losing the local draft.", ["Round the total after calculating tax.", "Check:", "passed", "Return to review"], '!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     click("Return to review")
     ready()
     assert evaluate('document.querySelector(".review-editor textarea").value') == draft

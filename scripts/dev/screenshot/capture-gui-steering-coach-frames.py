@@ -130,7 +130,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(1.0)
@@ -178,11 +178,11 @@ try:
     click("New feature")
     wait('!!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
     wait('!!document.querySelector("[role=dialog] input[type=checkbox]")')
-    box = '''Array.from(document.querySelectorAll("[role=dialog] label")).find(l=>l.textContent.includes("Steering coach (experimental)")).querySelector("input")'''
+    box = '''Array.from(document.querySelectorAll("[role=dialog] label")).find(l=>l.textContent.includes("Steering coach")).querySelector("input")'''
     assert evaluate(f"!{box}.checked"), "the coach must be off by default"
     evaluate(f"{box}.click()")
     wait(f"{box}.checked")
-    capture("001-creation-checkbox.png", "The New feature form offers 'Steering coach (experimental)', off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Steering coach (experimental)", "get feedback on your first message"], f"{box}.checked", allow_alert=True)  # a runner without Claude shows a harness alert here
+    capture("001-creation-checkbox.png", "The New feature form offers 'Steering coach' with an Experimental badge, off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Steering coach", "Experimental", "get feedback on your first message"], f"{box}.checked", allow_alert=True)  # a runner without Claude shows a harness alert here
     click("Cancel")
     wait('!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
 
@@ -192,7 +192,7 @@ try:
     click("Steering coach")
     wait('!!document.querySelector("[aria-label=\\"Steering coach\\"][data-stale=false]") && document.body.innerText.includes("Score:")')
     nothing_sent()
-    capture("002-advisory-panel.png", "Checklist for the unsent draft in the composer: only some constraints are covered, with the TUI's explanations and tips. Nothing was sent.", ["Steering Coach", "Advisory only. Your draft stays unsent.", "Constraint checklist", "File scope", "Validation commands", "How to strengthen it", "Send prompt"], f"document.querySelector('.composer textarea').value==={json.dumps(thin)}")
+    capture("002-advisory-panel.png", "Checklist for the unsent draft in the composer: only some constraints are covered, with the TUI's explanations and tips. Nothing was sent.", ["Steering coach", "Advisory only. Your draft stays unsent.", "Constraint checklist", "File scope", "Validation commands", "How to strengthen it", "Send prompt"], f"document.querySelector('.composer textarea').value==={json.dumps(thin)}")
 
     set_textarea(fuller)
     wait('!!document.querySelector("[aria-label=\\"Steering coach\\"][data-stale=true]")')
@@ -202,7 +202,7 @@ try:
     click("Re-check draft")
     wait('!!document.querySelector("[aria-label=\\"Steering coach\\"][data-stale=false]") && !document.body.innerText.includes("The draft changed since")')
     nothing_sent()
-    capture("004-rechecked.png", "Re-checking binds the checklist to the edited text (higher score); the harness still has received nothing.", ["Steering Coach", "Score:", "Constraint checklist"], f"document.querySelector('.composer textarea').value==={json.dumps(fuller)}")
+    capture("004-rechecked.png", "Re-checking binds the checklist to the edited text (higher score); the harness still has received nothing.", ["Steering coach", "Score:", "Constraint checklist"], f"document.querySelector('.composer textarea').value==={json.dumps(fuller)}")
 
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"], "note": n["note"]}) + "\n" for n in notes))
     print("PASS: creation checkbox, advisory panel, stale and re-check verified; nothing was sent", flush=True)

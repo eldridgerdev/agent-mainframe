@@ -3,11 +3,13 @@ import { asGuiError, type AgentSlug, type FeatureTarget } from "./api";
 import { featureHarnessApply, featureHarnessLoad, type HarnessChangeView } from "./harnessChangeApi";
 import { Field, Modal, Spinner } from "./ui";
 
-export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClose, onResync, onChanged }: {
+export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClose, onResync, onChanged, onOpenComposer }: {
   target: FeatureTarget;
   hasDrafts: boolean;
   sending: boolean;
   onClose: () => void;
+  /** Shows the session holding the unsent draft (closes this dialog). */
+  onOpenComposer?: () => void;
   onResync: () => void;
   onChanged: () => void;
 }) {
@@ -45,14 +47,21 @@ export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClo
       onResync(); inFlight.current = false; if (mounted.current) setBusy(false);
     }
   }
-  return <Modal label="Change agent" title="Change agent" subtitle={view?.feature_name}
+  const nameOf = (slug: AgentSlug | "") => view?.choices.find((entry) => entry.agent === slug)?.name ?? slug;
+  const switching = !!view && agent !== "" && agent !== view.current_agent;
+  const from = view ? nameOf(view.current_agent) : "";
+  const sessions = view?.agent_rows === 1 ? "the agent session" : `all ${view?.agent_rows ?? 0} agent sessions`;
+  return <Modal label="Switch agent" title="Switch agent" subtitle={view?.feature_name}
     dismissable={!busy} onClose={() => { if (!inFlight.current) onClose(); }}
     footer={<><button className="btn btn-secondary" disabled={busy} onClick={onClose}>Cancel</button>
       <button className="btn btn-secondary" disabled={busy} onClick={() => void load()}>Reload</button>
-      <button className="btn btn-primary" disabled={!canApply} onClick={() => void apply()}>Change agent</button></>}>
+      <button className="btn btn-primary" disabled={!canApply} onClick={() => void apply()}>Switch agent</button></>}>
     {busy && <Spinner />}
     {error && <p className="error-message" role="alert">{error}</p>}
-    {(hasDrafts || sending) && <p role="alert">{sending ? "Wait for the current prompt send to finish." : "This feature has unsent agent drafts. Cancel and send or explicitly clear them before changing the agent."}</p>}
+    {(hasDrafts || sending) && <p role="alert">{sending ? "Wait for the current prompt send to finish." : <>
+      This feature has unsent agent drafts. Send or clear them before switching the agent.{" "}
+      {onOpenComposer && <button type="button" className="link-button" onClick={onOpenComposer}>Open composer</button>}
+    </>}</p>}
     {view && <>
       <Field label="New agent"><select value={agent} disabled={busy} onChange={(event) => {
         setAgent(event.target.value as AgentSlug); setConfirmed(false);
@@ -63,10 +72,13 @@ export default function FeatureHarnessDialog({ target, hasDrafts, sending, onClo
       </select></Field>
       {!view.choices.some((choice) => !choice.unavailable && choice.agent !== view.current_agent)
         && <p>No other installed agent is allowed for this feature and mode.</p>}
-      <p>{view.agent_rows ? `All ${view.agent_rows} agent session rows will switch` : "An agent session row will be added"} to the selected agent. Their past conversations can no longer be resumed. Terminal and custom session definitions stay the same.</p>
+      <p>{view.agent_rows
+        ? `Switching from ${from} to ${switching ? nameOf(agent) : "another agent"} starts a fresh conversation in ${sessions} of this feature. Past conversations can no longer be resumed.`
+        : `Switching to ${switching ? nameOf(agent) : "another agent"} adds an agent session to this feature.`}
+        {" "}Terminals and custom sessions are not changed.</p>
       <p>{view.running ? "The running feature and all its sessions will stop. Previously runnable sessions restart; individually stopped sessions remain stopped." : "The feature will remain stopped. This change does not launch any sessions."}</p>
       <label className="checkbox-row"><input type="checkbox" checked={confirmed} disabled={busy || agent === view.current_agent}
-        onChange={(event) => setConfirmed(event.target.checked)} /> I understand and confirm this agent change</label>
+        onChange={(event) => setConfirmed(event.target.checked)} /> I understand the conversations will be reset</label>
     </>}
   </Modal>;
 }

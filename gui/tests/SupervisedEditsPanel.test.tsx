@@ -58,7 +58,7 @@ it("shows the pending diff and sends an approval only after explicit confirmatio
   expect(screen.getByText("Round to cents")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
   expect(responds()).toHaveLength(0);
-  const dialog = screen.getByRole("alertdialog", { name: "Confirm answer" });
+  const dialog = screen.getByRole("alert", { name: "Confirm answer" });
   expect(within(dialog).getByText(/The agent writes this change\./)).toBeTruthy();
   fireEvent.click(within(dialog).getByRole("button", { name: "Send approval" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "Send approval" }));
@@ -82,7 +82,7 @@ it("keeps rejection feedback after a refused answer and reports the conflict", a
   const feedback = screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement;
   fireEvent.change(feedback, { target: { value: "  Keep raw totals; café 🧾  " } });
   fireEvent.click(screen.getByRole("button", { name: "Reject edit" }));
-  const dialog = screen.getByRole("alertdialog", { name: "Confirm answer" });
+  const dialog = screen.getByRole("alert", { name: "Confirm answer" });
   expect(within(dialog).getByText("Keep raw totals; café 🧾")).toBeTruthy();
   fireEvent.click(within(dialog).getByRole("button", { name: "Send rejection" }));
   expect(await screen.findByRole("alert")).toBeTruthy();
@@ -100,11 +100,11 @@ it("drops a confirmation whose revision changed and says when the edit is gone",
   render(<QueryClientProvider client={client}><SupervisedEditsPanel target={target} onClose={vi.fn()} /></QueryClientProvider>);
   await screen.findByText("-return subtotal;");
   fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
-  expect(screen.getByRole("alertdialog", { name: "Confirm answer" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Confirm answer" })).toBeTruthy();
   current = view([edit({ revision: "rev-2" })]);
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   expect(await screen.findByText(/This edit changed while you were confirming/)).toBeTruthy();
-  expect(screen.queryByRole("alertdialog", { name: "Confirm answer" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Confirm answer" })).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "unsent" } });
   current = view([]);
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
@@ -128,7 +128,7 @@ it("asks before discarding unsent feedback and states OpenCode's semantics", asy
   fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "draft" } });
   fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
   expect(onClose).not.toHaveBeenCalled();
-  const prompt = screen.getByRole("alertdialog", { name: "Discard unsent feedback" });
+  const prompt = screen.getByRole("alert", { name: "Discard unsent feedback" });
   fireEvent.click(within(prompt).getByRole("button", { name: "Keep editing" }));
   expect((screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("draft");
   fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
@@ -177,7 +177,7 @@ it.each(["Close", "Escape"])("protects feedback on %s while a new context query 
   if (closeAction === "Close") fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
   else fireEvent.keyDown(document, { key: "Escape" });
   expect(onClose).not.toHaveBeenCalled();
-  const prompt = screen.getByRole("alertdialog", { name: "Discard unsent feedback" });
+  const prompt = screen.getByRole("alert", { name: "Discard unsent feedback" });
   expect(prompt.textContent).toContain("src/invoice.ts");
   fireEvent.click(within(prompt).getByRole("button", { name: "Keep editing" }));
   fireEvent.change(screen.getByLabelText("Context"), { target: { value: "standard" } });
@@ -193,11 +193,11 @@ it("holds answers for the configured duration and restarts the hold on changed e
   expect(approve.disabled).toBe(true);
   fireEvent.click(approve);
   fireEvent.keyDown(document.activeElement!, { key: "Enter" });
-  expect(screen.queryByRole("alertdialog", { name: "Confirm answer" })).toBeNull();
-  expect(screen.getByText(/Review hold/)).toBeTruthy();
+  expect(screen.queryByRole("alert", { name: "Confirm answer" })).toBeNull();
+  expect(screen.getByText(/Buttons unlock in/)).toBeTruthy();
   await waitFor(() => expect(approve.disabled).toBe(false));
   fireEvent.click(approve);
-  expect(screen.getByRole("alertdialog", { name: "Confirm answer" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Confirm answer" })).toBeTruthy();
   current = { ...view([edit({ revision: "new" })]), popup_hold_secs: 0.3 };
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText(/This edit changed while/);
@@ -303,7 +303,7 @@ it("does not bypass or restart the original answer hold when explanation state c
   const approve = screen.getByRole("button", { name: "Approve edit" }) as HTMLButtonElement;
   expect(approve.disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
-  await screen.findByRole("alertdialog", { name: "Explanation AI call" });
+  await screen.findByRole("alert", { name: "Explanation AI call" });
   expect(approve.disabled).toBe(true);
   await waitFor(() => expect(approve.disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Continue explanation" }));
@@ -324,7 +324,7 @@ it("prepares only on Explain and cancellation of the mandatory notice preserves 
   const feedback = screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement;
   fireEvent.change(feedback, { target: { value: "Keep my unsent rejection" } });
   fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
-  const notice = await screen.findByRole("alertdialog", { name: "Explanation AI call" });
+  const notice = await screen.findByRole("alert", { name: "Explanation AI call" });
   expect(notice.textContent).toContain("review-model"); expect(notice.textContent).toContain("high");
   expect(within(notice).getByText("Explain old -> new exactly")).toBeTruthy();
   expect(explanationCalls("start")).toHaveLength(0);
@@ -421,7 +421,7 @@ it("retires a preparation arriving during Close before leaving and never launche
   await act(async () => prepared(precall));
   await waitFor(() => expect(explanationCalls("cancel")).toHaveLength(1)); expect(close).not.toHaveBeenCalled();
   await act(async () => cancelled()); await waitFor(() => expect(close).toHaveBeenCalledOnce());
-  expect(screen.queryByRole("alertdialog", { name: "Explanation AI call" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Explanation AI call" })).toBeNull();
   expect(explanationCalls("start")).toHaveLength(0);
 });
 

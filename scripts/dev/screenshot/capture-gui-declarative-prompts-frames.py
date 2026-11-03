@@ -124,7 +124,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -221,7 +221,7 @@ try:
     click('Cancel');capture('002-unsaved-edits-protected.png','Closing a changed declarative editor asks before discarding. Keep editing preserves all local fields.',['Discard unsaved prompt edits?','Keep editing'])
     click('Keep editing')
     project['external_edit']='kept';legacy.write_text(json.dumps(project,indent=1));legacy_bytes=legacy.read_bytes()
-    click('Save template');wait('!!document.querySelector("[role=alert]")')
+    click('Save template');wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture('003-stale-project-save-keeps-draft.png','A legacy source edited outside the dialog refuses saving and keeps the locally revised name/body/tags.',['Edit declarative prompt','Keep your draft and reload before saving.'],'document.querySelector(\'[role=dialog][aria-label="Declarative prompt editor"] textarea\').value==="Revised {{area}}."',allow_alert=True)
     assert not project_path.exists() and legacy.read_bytes()==legacy_bytes
     click('Reload template');click('Discard changes');wait('document.querySelector(\'[role=dialog][aria-label="Declarative prompt editor"] textarea\')?.value==="Repair {{area}}."')
@@ -241,10 +241,10 @@ try:
     click('Export template…');field('Export destination',json.dumps({'kind':'project','project_id':'shot-project'},separators=(',',':')));click('Refresh export preview');wait('document.body.innerText.includes("Replace the same-name destination template")')
     capture('007-explicit-replacement-preview.png','Export copies the full User template into an explicit Project path and requires same-name replacement confirmation.',['Export prompt template','Replace the same-name destination template','User repair {{area}}.'],'document.querySelector(\'[role=dialog] input[type=checkbox]\')?.checked===false')
     destination=json.loads(project_path.read_text());destination['external_destination']='kept';project_path.write_text(json.dumps(destination))
-    evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!!document.querySelector("[role=alert]")')
+    evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture('008-stale-export-refused.png','An external destination edit invalidates the preview. Replacement confirmation resets; the source and unsent composer remain intact.',['Export prompt template','Refresh the export preview before confirming.'],allow_alert=True)
     assert json.loads(project_path.read_text())==destination
-    click('Refresh export preview');wait('!document.querySelector("[role=alert]")');evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')')
+    click('Refresh export preview');wait('!document.querySelector("[role=alert]:not([data-confirm-callout])")');evaluate('document.querySelector(\'[role=dialog] input[type=checkbox]\').click()');click('Export template');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')')
     value=json.loads(project_path.read_text());assert value['external_destination']=='kept';assert value['prompt_templates'][0]['body']=='User repair {{area}}.';assert value['prompt_templates'][0]['opaque_template']==template['opaque_template'];assert value['prompt_templates'][0]['placeholders']==definitions;assert value['prompt_templates'][1]==sibling
     evaluate('Array.from(document.querySelectorAll(".library-item")).find(b=>b.querySelector("strong")?.textContent==="Invoice repair revised"&&b.querySelector(".badge")?.textContent==="Project").click()')
     click('Export template…');field('Export destination',json.dumps({'kind':'project','project_id':'shot-project'},separators=(',',':')));click('Refresh export preview');wait('document.body.innerText.includes("No file will be written.")')
@@ -252,7 +252,7 @@ try:
     click('Confirm unchanged destination');wait('!document.querySelector(\'[role=dialog][aria-label="Export prompt template"]\')');assert project_path.read_bytes()==before
     click('Cancel');wait('!document.querySelector(\'[role=dialog][aria-label="Prompt library"]\')');assert composer_body()==draft
     evaluate('Array.from(document.querySelectorAll(".toast .btn-icon")).forEach(b=>b.click())')
-    capture('010-composer-and-sessions-preserved.png','After Global, Project and Worktree edits and metadata-preserving export, the original multiline composer is unchanged and both offline sessions remain alive and empty.',['Round invoice totals','Save as template'],'document.querySelector(".composer textarea").value==='+json.dumps(draft))
+    capture('010-composer-and-sessions-preserved.png','After Global, Project and Worktree edits and metadata-preserving export, the original multiline composer is unchanged and both offline sessions remain alive and empty.',['Round invoice totals','Save as prompt'],'document.querySelector(".composer textarea").value==='+json.dumps(draft))
     for filename in ['claude-received.json','opencode-received.json']:assert json.loads((repo/filename).read_text())==[]
     (out/'capture-notes.jsonl').write_text(''.join(json.dumps({'file':note['file'],'note':note['note']})+'\n' for note in notes));print('PASS: declarative edits, raw preservation, legacy permissions, stale guards, explicit export and unchanged composer',flush=True)
 except Exception:

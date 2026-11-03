@@ -59,7 +59,7 @@ export function usePendingEdits(
       // Minimized workflows still protect unsaved work, but their hidden
       // dialogs do not block a popup once that work has been saved.
       const draft = current.popup.draftPending || document.querySelector('[data-unsaved-changes="true"]');
-      const modal = Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog], [role=menu]"))
+      const modal = Array.from(document.querySelectorAll("[role=dialog], [data-confirm-callout], [role=menu]"))
         .some((element) => !element.closest('[hidden], [aria-hidden="true"]'));
       if (draft || modal) {
         current.popup.onDeferred?.(draft

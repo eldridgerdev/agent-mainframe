@@ -137,7 +137,7 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     for text in expects:
         assert text in body, (text, body)
     if not allow_alert:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+        assert not evaluate('!!document.querySelector("[role=alert]:not([data-confirm-callout])")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -229,7 +229,7 @@ try:
     click("Overall feedback")
     fill("Overall feedback draft", "Good direction. Please cover negative totals and locale handling.")
     click("Pause review")
-    wait('!!document.querySelector("[role=alertdialog]")')
+    wait('!!document.querySelector("[data-confirm-callout]")')
     capture("004-unsaved-draft-protection.png", "Pausing with unsaved overall feedback asks for an explicit discard; Keep editing preserves the draft.", ["Discard unsaved edits and continue?", "Discard and continue", "Keep editing"], 'document.querySelector(".review-editor textarea").value.includes("Good direction")')
     click("Keep editing")
     save("Save overall feedback")
@@ -248,11 +248,11 @@ try:
     with (repo / "invoice.test.ts").open("a") as test:
         test.write("\nconsole.assert(invoiceTotal({ subtotal: -19.99, taxRate: 0.0825 }) === -21.64);\n")
     click("Approve file")
-    wait('!!document.querySelector("[role=alert]")')
+    wait('!!document.querySelector("[role=alert]:not([data-confirm-callout])")')
     capture("006-changed-patch-rejected.png", "A file changed on disk after it was reviewed cannot receive a verdict until the diff is refreshed.", ["File changed since you opened it; refresh changes before reviewing it"], allow_alert=True)
     click("Refresh changes")
     ready()
-    wait('!document.querySelector("[role=alert]") && document.body.innerText.includes("0 approved")')
+    wait('!document.querySelector("[role=alert]:not([data-confirm-callout])") && document.body.innerText.includes("0 approved")')
     capture("007-refresh-invalidates-approval.png", "Refreshing shows the new negative-total test and clears its previous approval while retaining the other review feedback.", ["0 approved · 1 rejected · 3 undecided", "subtotal: -19.99", "Good direction. Please cover negative totals and locale handling."])
     progress = json.loads((claude / "final-review-progress.json").read_text())
     assert "invoice.test.ts" not in progress["decisions"]

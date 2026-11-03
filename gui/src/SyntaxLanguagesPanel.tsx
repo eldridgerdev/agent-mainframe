@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
-import { Modal, Spinner } from "./ui";
+import { ConfirmCallout, Modal, Spinner } from "./ui";
 import {
   SyntaxLanguageAction, SyntaxLanguageRow, SyntaxLanguagesView, SyntaxInstallView,
   syntaxLanguages, syntaxLanguagesApply, syntaxInstallStatus, syntaxLanguagesChanged, syntaxOperationStarted, SYNTAX_OPERATION_STARTED,
@@ -81,7 +81,10 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
     subtitle="Parsers shared by the desktop app and AMF's terminal app. Your open views and drafts stay in place."
     footer={<><button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void load(true)}>Refresh languages</button>
       <button type="button" className="btn btn-ghost" disabled={requesting} onClick={close}>Close manager</button></>}>
-    <p className="muted small">Install or repair clones a grammar from GitHub and compiles it with your C compiler. Uninstall removes its parser and managed source checkout. Files in your project stay unchanged.</p>
+    <p className="muted small">Install a language to color its code in Changes, Final Review and Learning. Installing needs a C compiler
+      (<code>cc</code>): AMF downloads the language's grammar from GitHub and builds it. If an install says <code>cc</code> was not found,
+      install your system's build tools (for example <code>build-essential</code> or Xcode command line tools) and try again.
+      Uninstall removes the parser and its downloaded source. Files in your project stay unchanged.</p>
     {loading && <p role="status"><Spinner /> Reading parser state…</p>}
     {error && <p role="alert" className="callout callout-danger">{error}</p>}
     {operation?.running && <div role="status" className="callout callout-info syntax-manager-progress"><Spinner />
@@ -91,14 +94,14 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
     </div>}
     {!operation?.running && operation?.message && <p role="status" className="callout callout-info">Last operation: {operation.message}</p>}
     {!operation?.running && operation?.error && <p role="alert" className="callout callout-danger">{operation.error} Parser files may have changed; refresh before retrying.</p>}
-    {confirmation && <div role="alertdialog" aria-label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning syntax-manager-confirmation">
+    {confirmation && <ConfirmCallout label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning syntax-manager-confirmation">
       <p>{title(confirmation.action)} the {confirmation.row.title} parser?</p>
       <p>{confirmation.action === "uninstall" ? "Remove its shared parser library and managed source checkout. This language will use plain text until installed again."
         : "Clone its grammar from GitHub and compile a shared parser. Repair replaces the existing managed parser files."}</p>
       <button type="button" className="btn btn-secondary" disabled={requesting} onClick={() => setConfirmation(null)}>Cancel</button>
       <button type="button" className={confirmation.action === "uninstall" ? "btn btn-danger" : "btn btn-primary"} disabled={busy} onClick={() => void apply()}>
         {requesting && <Spinner />}{title(confirmation.action)} parser</button>
-    </div>}
+    </ConfirmCallout>}
     <table className="syntax-languages"><thead><tr><th>Language</th><th>Parser</th><th>Actions</th></tr></thead><tbody>
       {(view?.languages ?? []).map(row => <tr key={row.key}><th scope="row">{row.title}</th><td>{stateName[row.state]}</td><td>
         {row.state === "available" ? <button type="button" className="btn btn-secondary btn-sm" disabled={busy} aria-label={`Install ${row.title} parser`}

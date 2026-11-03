@@ -113,3 +113,23 @@
   flex-shrink: 0;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Hidden from sight, still read by assistive tech (and part of a label's name). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* A FilterField inside a toolbar row (the sidebar filter pattern). */
+.filter-field { width: min(100%, 260px); margin: 0; }
+
+/* Toolbar rows: groups of related buttons with a wider gap between groups. */
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 8px 0; }
+.toolbar-group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }

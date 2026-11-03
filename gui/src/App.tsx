@@ -119,7 +119,10 @@ import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
 import ForkFeatureDialog from "./ForkFeatureDialog";
 import SidebarTree, { byStatus, filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
-import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
+import { useSidebarCollapsed } from "./sidebarPrefs";
+import { useShortcut } from "./shortcuts";
+import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
+import HelpMenu from "./HelpMenu";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
@@ -165,6 +168,8 @@ const PENDING_SESSION_GRACE_MS = 10_000;
 
 type View =
   | { kind: "todos" }
+  /** The first-run steps, reopened from Help. */
+  | { kind: "welcome" }
   | { kind: "project"; projectId: string }
   | { kind: "feature"; projectId: string; featureId: string };
 
@@ -222,24 +227,19 @@ export default function App() {
   const collapsingAllRef = useRef(false);
   const treeFilterInput = useRef<HTMLInputElement>(null);
   const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
-  useEffect(() => {
-    // "/" jumps to the project filter, as in most list-heavy apps; never from
-    // a terminal, a form field or a dialog.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
-          || keyIsForOtherInput(event)) return;
-      const input = treeFilterInput.current;
-      // A hidden sidebar keeps the input mounted; only claim the key when
-      // focus actually landed, so "/" is never swallowed with no effect.
-      if (!input || input.closest("[hidden]")) return;
-      input.focus();
-      if (document.activeElement !== input) return;
-      event.preventDefault();
-      input.select();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  // "/" jumps to the project filter, as in most list-heavy apps; never from
+  // a terminal, a form field or a dialog (the registry's workspace scope).
+  useShortcut("sidebar.filter.focus", () => {
+    const input = treeFilterInput.current;
+    // A hidden sidebar keeps the input mounted; only claim the key when
+    // focus actually landed, so "/" is never swallowed with no effect.
+    if (!input || input.closest("[hidden]")) return false;
+    input.focus();
+    if (document.activeElement !== input) return false;
+    input.select();
+  });
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  useShortcut("help.shortcuts", () => { setShowShortcuts(true); });
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
@@ -439,7 +439,7 @@ export default function App() {
   }, [queryClient]);
 
   const projects = workspace.data?.projects ?? [];
-  const selectedProject: Project | undefined = view && view.kind !== "todos"
+  const selectedProject: Project | undefined = view && (view.kind === "project" || view.kind === "feature")
     ? projects.find((project) => project.id === view.projectId)
     : undefined;
   const selectedFeature: Feature | undefined = view?.kind === "feature"
@@ -458,7 +458,7 @@ export default function App() {
     // Query notifications can lag behind a cache write and local navigation.
     // Wait for this render to see the latest snapshot before deleting a view.
     if (workspace.data !== queryClient.getQueryData(SNAPSHOT_KEY)) return;
-    if (!view || (view.kind !== "todos" && !selectedProject)) {
+    if (!view || ((view.kind === "project" || view.kind === "feature") && !selectedProject)) {
       setView(projects[0] ? { kind: "project", projectId: projects[0].id } : null);
     } else if (view.kind === "feature" && !selectedFeature) {
       setView({ kind: "project", projectId: view.projectId });
@@ -1430,6 +1430,8 @@ export default function App() {
             <button className="nav-item" onClick={() => setShowDebugLog(true)}>
               <Icon name="bug" /><span className="nav-label">Debug log</span>
             </button>
+            <HelpMenu onShortcuts={() => setShowShortcuts(true)} onFirstRun={() => setView({ kind: "welcome" })}
+              onError={reportError} />
           </div>
 
           <div className="nav-tree-toolbar">
@@ -1604,6 +1606,7 @@ export default function App() {
         onClose={() => setFeatureActions(null)} onChanged={() => void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY })} />}
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
+      {showShortcuts && <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
       {prReviewProject && <Suspense fallback={<Modal label="Loading Write a review" title="Loading Write a review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
         <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
@@ -1834,7 +1837,7 @@ export default function App() {
           />
         )}
 
-        {workspace.data && projects.length === 0 && !view && (
+        {workspace.data && ((projects.length === 0 && !view) || view?.kind === "welcome") && (
           <WelcomePanel onAddProject={() => setShowCreateProject(true)}
             onOpenAvailability={() => setAgentAvailabilityScope({})} />
         )}

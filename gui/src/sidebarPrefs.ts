@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
+import { useShortcut } from "./shortcuts";
+
+export { keyIsForOtherInput } from "./shortcuts";
 
 // Per-viewer layout preferences for the GUI's sidebars. They belong to this
 // window's user, not to the workspace: nothing here reaches the shared
@@ -63,40 +66,8 @@ export function resetSidebarPrefsForTest() {
   memory.clear();
 }
 
-function hasVisibleDialog(): boolean {
-  return Array.from(document.querySelectorAll("[role='dialog'], [data-confirm-callout]")).some((dialog) => {
-    // Planning keeps its modal mounted under a hidden wrapper when minimized.
-    if (dialog.closest("[hidden]")) return false;
-    const visibility = window.getComputedStyle(dialog).visibility;
-    if (visibility === "hidden" || visibility === "collapse") return false;
-    for (let element: Element | null = dialog; element; element = element.parentElement) {
-      if (window.getComputedStyle(element).display === "none") return false;
-    }
-    return true;
-  });
-}
-
-/** Whether a key press belongs to a terminal, a form field or an open
- *  dialog, where workspace shortcuts must not fire. */
-export function keyIsForOtherInput(event: KeyboardEvent): boolean {
-  const target = event.target instanceof Element ? event.target : null;
-  return !!target?.closest(".term-frame, input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")
-    || hasVisibleDialog();
-}
-
-/** Shortcuts apply only to workspace chrome, never to terminal or form input. */
-export function useSidebarShortcut(pref: SidebarPref, toggle: () => void) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const key = pref === "projectsSidebar" ? "p" : "a";
-      if (event.defaultPrevented || event.repeat || !event.altKey || !event.shiftKey
-          || event.ctrlKey || event.metaKey
-          || (event.code ? event.code !== `Key${key.toUpperCase()}` : event.key.toLowerCase() !== key)) return;
-      if (keyIsForOtherInput(event)) return;
-      event.preventDefault();
-      toggle();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pref, toggle]);
+/** Shortcuts apply only to workspace chrome, never to terminal or form input
+ *  (see `shortcuts.ts`, which owns the bindings). */
+export function useSidebarShortcut(pref: "sessionSidebar" | "projectsSidebar", toggle: () => void) {
+  useShortcut(pref === "projectsSidebar" ? "sidebar.projects.toggle" : "sidebar.agents.toggle", () => { toggle(); });
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useSidebarCollapsed, useSidebarShortcut } from "./sidebarPrefs";
+import { shortcutAria, shortcutLabel } from "./shortcuts";
 import { Icon } from "./ui";
 
 export default function ProjectsSidebar({ children }: { children: ReactNode }) {
@@ -12,7 +13,8 @@ export default function ProjectsSidebar({ children }: { children: ReactNode }) {
         {!collapsed && <><span className="brand-mark">A</span><span className="brand-name">Agent Mainframe</span></>}
         <button type="button" className="btn btn-ghost btn-icon btn-sm projects-sidebar-toggle"
           aria-label={label} aria-expanded={!collapsed}
-          title={`${label} (Alt+Shift+P outside terminal and text inputs)`}
+          aria-keyshortcuts={shortcutAria("sidebar.projects.toggle")}
+          title={`${label} (${shortcutLabel("sidebar.projects.toggle")} outside terminal and text inputs)`}
           onClick={() => setCollapsed(!collapsed)}>
           <span style={{ display: "flex", transform: collapsed ? undefined : "rotate(180deg)" }}><Icon name="chevronRight" size={14} /></span>
         </button>

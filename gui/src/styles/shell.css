@@ -383,3 +383,5 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .plan-pill .muted { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plan-pill-open { font-size: var(--fs-sm); font-weight: 600; }
 .plan-pill:hover { border-color: var(--accent); }
+/* The Help entry is a menu trigger dressed as a nav item. */
+.nav-help > span { flex: 1; min-width: 0; text-align: left; }

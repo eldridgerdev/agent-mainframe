@@ -298,3 +298,26 @@
 .toast-error > .icon { color: var(--red); }
 .toast-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: var(--fs-md); }
 .toast-text span { color: var(--text-muted); overflow-wrap: anywhere; }
+
+/* Keyboard shortcuts dialog: one section per group, keys left, action right. */
+.shortcut-group { margin-top: 16px; }
+.shortcut-group h3 { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--text-muted); }
+.shortcut-list { display: grid; gap: 2px; margin: 0; }
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row:last-child { border-bottom: 0; }
+.shortcut-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; }
+.shortcut-binding { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.shortcut-plus, .shortcut-then, .shortcut-or { color: var(--text-faint); font-size: var(--fs-xs); }
+.shortcut-then { margin: 0 2px; }
+.shortcut-row dd { display: flex; flex-direction: column; margin: 0; }
+.shortcut-when { color: var(--text-muted); font-size: var(--fs-xs); }
+@media (max-width: 560px) {
+  .shortcut-row { grid-template-columns: 1fr; gap: 2px; }
+}

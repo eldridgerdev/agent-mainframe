@@ -215,7 +215,7 @@ try:
     wait('document.body.innerText.includes("Continue AI call")')
     click("View prompt")
     wait('document.body.innerText.includes("You are helping a reviewer understand")')
-    capture("002-review-ai-prompt-preview.png", "Before generation, the GUI shows the real resolved prompt and explicit continue/cancel controls; no fixture call has run yet.", ["Headless AI call: Final Review: file walkthrough", "You are helping a reviewer understand", "File: invoice.test.ts", "Continue AI call", "Cancel AI call"], '!document.querySelector(".review-confirm pre").hidden')
+    capture("002-review-ai-prompt-preview.png", "Before generation, the GUI shows the real resolved prompt and explicit continue/cancel controls; no fixture call has run yet.", ["Background AI call: Final Review: file walkthrough", "You are helping a reviewer understand", "File: invoice.test.ts", "Continue AI call", "Cancel AI call"], '!document.querySelector(".review-confirm pre").hidden')
     assert calls() == []
     click("Cancel AI call")
     wait('!document.body.innerText.includes("Continue AI call")')

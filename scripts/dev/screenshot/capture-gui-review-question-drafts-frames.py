@@ -251,7 +251,7 @@ try:
     assert calls() == [{"harness": "codex", "kind": "question"}]
 
     click("Draft inline comment")
-    wait('document.body.innerText.includes("Headless AI call: Review: draft comment from answer")')
+    wait('document.body.innerText.includes("Background AI call: Review: draft comment from answer")')
     focus(".review-confirm")
     capture("002-draft-call-confirmation.png", "Drafting is a separate Codex call requiring explicit prompt preview/confirmation; it has not run yet.", ["Review: draft comment from answer", "Codex", "View prompt", "Continue AI call", "Cancel AI call"])
     click("View prompt")

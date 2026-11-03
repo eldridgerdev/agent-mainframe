@@ -52,9 +52,9 @@ with GuiFrames.from_argv() as frames:
     def batch(*actions): return driver.run({'op':'batch','actions':list(actions)})
     def click(name, scope=None): return action('click',name=name, **({'scope':scope} if scope else {}))
     def choose(value): return action('select',name='New agent',value=value,scope='[role=dialog]')
-    def consent(): return click('I understand and confirm this harness change','[role=dialog]')
+    def consent(): return click('I understand and confirm this agent change','[role=dialog]')
     def open_dialog():
-        batch({'op':'click','name':'More feature actions'},{'op':'click','name':'Change harness…'},
+        batch({'op':'click','name':'More feature actions'},{'op':'click','name':'Change agent…'},
               {'op':'wait','expression':'!!document.querySelector("[role=dialog] select") && !document.querySelector("[role=dialog] select").disabled'})
     def close_dialog(): click('Cancel','[role=dialog]')
     def dismiss_toasts():
@@ -71,7 +71,7 @@ with GuiFrames.from_argv() as frames:
     action('fill',name='Draft prompt',value='Keep this unsent invoice investigation.')
     open_dialog(); choose('opencode'); consent()
     frames.capture('002-draft-guard.png','An unsent agent draft blocks harness replacement; selecting and confirming does not mutate.', ['unsent agent drafts','All 2 agent session rows','Previously runnable sessions'], allow_alert=True,
-                   expression='Array.from(document.querySelectorAll("[role=dialog] button")).find(b=>b.textContent==="Change harness").disabled')
+                   expression='Array.from(document.querySelectorAll("[role=dialog] button")).find(b=>b.textContent==="Change agent").disabled')
     assert_unchanged(initial_rows, initial_panes, 'draft guard')
     close_dialog()
     assert frames.evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).value')=='Keep this unsent invoice investigation.'
@@ -85,12 +85,12 @@ with GuiFrames.from_argv() as frames:
     with sqlite3.connect(dbpath) as db:
         db.execute("UPDATE feature_sessions SET claude_session_id='external-conversation' WHERE id='proof-0'")
         db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
-    click('Change harness','[role=dialog]')
+    click('Change agent','[role=dialog]')
     action('wait',text='changed. Reload and confirm again',scope='[role=dialog]')
     frames.capture('004-stale-refusal.png','A real external SQLite change invalidates the open confirmation before stopping any session.', ['changed. Reload and confirm again','nothing was stopped'],allow_alert=True)
     assert feature_panes()==initial_panes and state()[0]=='claude'
     click('Reload','[role=dialog]'); action('wait',expression='!!document.querySelector("[role=dialog] select")'); choose('opencode'); consent()
-    click('Change harness','[role=dialog]')
+    click('Change agent','[role=dialog]')
     wait_for(lambda: state()==('opencode','idle'),'OpenCode replacement did not finish')
     action('wait',expression='!document.querySelector("[role=dialog]")')
     after = rows(); new_panes = feature_panes()
@@ -111,7 +111,7 @@ with GuiFrames.from_argv() as frames:
     launch_count = len((scratch/'launches.jsonl').read_text().splitlines())
     open_dialog(); choose('claude'); consent()
     frames.capture('006-confirm-stopped-switch.png','Stopped-feature confirmation explicitly says no sessions launch.', ['feature will remain stopped','does not launch any sessions'])
-    click('Change harness','[role=dialog]')
+    click('Change agent','[role=dialog]')
     wait_for(lambda: state()==('claude','stopped'),'Stopped Claude conversion did not save')
     action('wait',expression='!document.querySelector("[role=dialog]")')
     assert not feature_panes()

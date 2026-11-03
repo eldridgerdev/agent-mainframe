@@ -209,7 +209,7 @@ try:
     click("View prompt")
     wait('!!document.querySelector(".review-confirm pre")')
     idle()
-    capture("003-investigation-precall.png", "An investigation never starts from the button. The pre-call notice names the read-only call and Codex, and shows the exact prompt built from the PR, the comment and the operator's hypothesis. No harness has run yet.", ["Headless AI call: PR Triage: read-only investigation · Codex", "Investigate this PR review comment.", "PR #12: Round invoice totals to cents", "Refunds (negative totals) may round the wrong way.", "Continue AI call", "Cancel AI call"])
+    capture("003-investigation-precall.png", "An investigation never starts from the button. The pre-call notice names the read-only call and Codex, and shows the exact prompt built from the PR, the comment and the operator's hypothesis. No harness has run yet.", ["Background AI call: PR Triage: read-only investigation · Codex", "Investigate this PR review comment.", "PR #12: Round invoice totals to cents", "Refunds (negative totals) may round the wrong way.", "Continue AI call", "Cancel AI call"])
     assert ai_calls() == [], "The pre-call notice must not run the harness"
 
     click("Continue AI call")

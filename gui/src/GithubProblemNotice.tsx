@@ -2,7 +2,6 @@ import { useState } from "react";
 import { asGuiError, type GithubProblem } from "./api";
 import { openScreenshotBrowser } from "./screenshotsApi";
 import { Spinner } from "./ui";
-import "./githubProblem.css";
 
 /** A GitHub failure the user can fix: what is wrong, what to run or install,
  * and Retry. The original `gh` text stays one click away under Details, so

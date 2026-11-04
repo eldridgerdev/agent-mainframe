@@ -138,9 +138,9 @@ import {
   ExperimentalBadge,
   Field,
   Icon,
-  IconName,
   Menu,
   Modal,
+  PageHeader,
   Segmented,
   Spinner,
   StatusBadge,
@@ -2173,37 +2173,6 @@ export default function App() {
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
-  );
-}
-
-function PageHeader({
-  icon,
-  title,
-  subtitle,
-  badge,
-  actions,
-  crumb,
-}: {
-  icon?: IconName;
-  title: string;
-  subtitle?: ReactNode;
-  badge?: ReactNode;
-  actions?: ReactNode;
-  crumb?: ReactNode;
-}) {
-  return (
-    <header className="page-header">
-      <div className="page-title">
-        {crumb && <div className="crumb">{crumb}</div>}
-        <div className="page-title-row">
-          {icon && <span className="page-icon"><Icon name={icon} size={18} /></span>}
-          <h1 title={title}>{title}</h1>
-          {badge}
-        </div>
-        {subtitle && <div className="page-subtitle">{subtitle}</div>}
-      </div>
-      {actions && <div className="page-actions">{actions}</div>}
-    </header>
   );
 }
 

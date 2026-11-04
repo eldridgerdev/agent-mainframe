@@ -1,0 +1,568 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentSlug, agentName, type GuiError, asGuiError } from "./api";
+import GithubProblemNotice from "./GithubProblemNotice";
+import Markdown from "./Markdown";
+import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
+import type { ImageData } from "./screenshotsApi";
+import {
+  PrComment, PrTriageTarget, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
+} from "./prTriageApi";
+import { ConfirmCallout, Field, Spinner } from "./ui";
+import FixDestinationPicker, { resolveTarget, targetKey } from "./FixDestinationPicker";
+import DestinationPicker from "./DestinationPicker";
+import DedicatedSessionForm from "./DedicatedSessionForm";
+import CompanionFeatureForm from "./CompanionFeatureForm";
+import type { PrDestinationPrepared } from "./prDestinationApi";
+
+const SORTS: [PrSort, string][] = [
+  ["fetch_order", "Fetch order"], ["by_file", "By file"], ["by_author", "By author"],
+  ["humans_first", "Humans first"], ["conversations", "Conversations last"],
+];
+
+const REPLY_LABELS: Record<PrReplyKind, string> = {
+  done: "Reply: fixed", not_needed: "Reply: not needed", investigation: "Reply with findings",
+};
+
+function location(comment: PrComment) {
+  if (!comment.path) return comment.kind === "review_summary" ? `Review (${comment.review_state?.toLowerCase().replace("_", " ")})` : "Conversation";
+  if (comment.file_level || comment.line === null) return comment.path;
+  return `${comment.path}:${comment.line}${comment.side === "LEFT" ? " (base)" : ""}`;
+}
+
+function hunkClass(line: string) {
+  if (line.startsWith("@@")) return "pr-hunk-header";
+  if (line.startsWith("+")) return "diff-added";
+  if (line.startsWith("-")) return "diff-removed";
+  return "";
+}
+
+export type PrTriageProps = { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void; embedded?: boolean; embeddedActive?: boolean; embeddedView?: PrTriageView | null; onEmbeddedViewChange?: (view: PrTriageView) => void; onEmbeddedBusyChange?: (busy: boolean) => void; onRequestClose?: (requestClose: () => void) => void };
+
+/** The state and actions of PR Triage: the Review comments dialog and the workspace's Threads tab share it. */
+export function usePrTriage({ target, onClose, onHandoff, embedded = false, embeddedActive = true, embeddedView, onEmbeddedViewChange, onEmbeddedBusyChange, onRequestClose }: PrTriageProps) {
+  const [view, setView] = useState<PrTriageView | null>(null);
+  const [busy, setBusy] = useState(true);
+  // The last refusal, kept whole so a GitHub problem can name its fix.
+  const [failure, setFailure] = useState<GuiError | null>(null);
+  const error = failure?.message ?? null;
+  // Bumped by Retry when opening PR Triage itself failed.
+  const [attempt, setAttempt] = useState(0);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [numberDraft, setNumberDraft] = useState("");
+  const [investigate, setInvestigate] = useState<{ commentId: number; harness: AgentSlug; text: string; followUp: boolean } | null>(null);
+  const [reply, setReply] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [fixChoice, setFixChoice] = useState<string | null>(null);
+  const [fixPrompt, setFixPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [confirmDiscardFix, setConfirmDiscardFix] = useState(false);
+  // Batch fix: marks are a client-side selection; the destination is chosen
+  // explicitly (never defaulted) and everything is revalidated by the backend.
+  const [marked, setMarked] = useState<number[]>([]);
+  const [batchChoice, setBatchChoice] = useState<string | null>(null);
+  const [batchPrompt, setBatchPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [confirmDiscardBatch, setConfirmDiscardBatch] = useState(false);
+  // Which picker the dedicated-session form was opened from; its result selects there.
+  const [dedicatedFor, setDedicatedFor] = useState<"fix" | "batch" | null>(null);
+  // Same for the new-triage-feature form (a separate screen; it only creates).
+  const [companionFor, setCompanionFor] = useState<"fix" | "batch" | null>(null);
+  const [openImage, setOpenImage] = useState<{ image: ImageData; caption: string; identity: string } | null>(null);
+  const imageTrigger = useRef<HTMLElement | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const pending = useRef(false);
+  // Bring a newly opened editor into the detail pane's view.
+  const reveal = useCallback((node: HTMLElement | null) => { node?.scrollIntoView?.({ block: "nearest" }); }, []);
+
+  useEffect(() => {
+    if (embedded && embeddedView) {
+      setView(embeddedView);
+      setBusy(false);
+      return;
+    }
+    if (embedded) return;
+    let live = true;
+    prTriageBegin(target).then((next) => { if (live) setView(next); })
+      .catch((err) => { if (live) setFailure(asGuiError(err)); })
+      .finally(() => { if (live) setBusy(false); });
+    return () => { live = false; };
+  }, [target.project_id, target.feature_id, embedded, embeddedView?.workflow_id, attempt]);
+
+  useEffect(() => { if (embedded && view) onEmbeddedViewChange?.(view); }, [embedded, view, onEmbeddedViewChange]);
+
+  // Background work (a comment fetch, a list read or an investigation) reports through polls.
+  const waiting = view?.stage === "loading" || !!view?.picker?.loading || view?.review?.investigating != null;
+  useEffect(() => {
+    if (!view || !waiting || busy || (embedded && !embeddedActive)) return;
+    const workflowId = view.workflow_id;
+    let live = true;
+    let timer = 0;
+    const poll = async () => {
+      const startedAt = performance.now();
+      try {
+        const next = await prTriageSnapshot(workflowId);
+        if (live) setView((current) => current?.workflow_id === workflowId && !pending.current ? next : current);
+      } catch (err) {
+        if (live) setFailure(asGuiError(err));
+      } finally {
+        // Keep at most one read in flight; GitHub-backed snapshots can take
+        // longer than the normal polling interval.
+        if (live) timer = window.setTimeout(poll, Math.max(700, 1400 - (performance.now() - startedAt)));
+      }
+    };
+    timer = window.setTimeout(poll, 700);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [view?.workflow_id, waiting, busy, embedded, embeddedActive]);
+
+  // Seed the local reply editor once per opened reply; later polls never
+  // overwrite what the user typed.
+  useEffect(() => {
+    const open = view?.reply;
+    if (!open) { setReply(null); return; }
+    const key = `${open.comment_id}:${open.kind}`;
+    setReply((current) => current?.key === key ? current : { key, text: open.seed, seed: open.seed });
+  }, [view?.reply?.comment_id, view?.reply?.kind]);
+
+  useEffect(() => {
+    const open = view?.fix_draft;
+    if (!open) { setFixPrompt(null); return; }
+    const key = `${view.workflow_id}:${open.comment_id}:${open.target.session_id}`;
+    setFixPrompt((current) => current?.key === key ? current : { key, text: open.prompt, seed: open.prompt });
+  }, [view?.workflow_id, view?.fix_draft]);
+
+  useEffect(() => {
+    const open = view?.batch_fix;
+    if (!open) { setBatchPrompt(null); return; }
+    const key = `${view.workflow_id}:${open.digest}`;
+    setBatchPrompt((current) => current?.key === key ? current : { key, text: open.prompt, seed: open.prompt });
+  }, [view?.workflow_id, view?.batch_fix?.digest]);
+
+  const act = useCallback(async (action: PrTriageAction): Promise<boolean> => {
+    if (!view || pending.current) return false;
+    pending.current = true;
+    setBusy(true);
+    try {
+      const next = await prTriageAct(view, action);
+      setFailure(null);
+      if (next === null) onClose(); else if (next.handoff) {
+        onHandoff?.(next.handoff);
+        onClose();
+      } else setView(next);
+      return true;
+    } catch (err) {
+      setFailure(asGuiError(err));
+      // A refusal may have changed what is pending; show the current state.
+      try { setView(await prTriageSnapshot(view.workflow_id)); } catch { /* keep the last view */ }
+      return false;
+    } finally {
+      pending.current = false;
+      setBusy(false);
+    }
+  }, [view, onClose, onHandoff]);
+
+  const review = view?.review ?? null;
+  const imageIdentity = view && review ? `${view.workflow_id}:${review.number}:${review.head_sha}:${review.fetched_at}` : "";
+  const showImage = useCallback<OpenPrImage>((image, caption, trigger) => {
+    imageTrigger.current = trigger;
+    setOpenImage({ image, caption, identity: imageIdentity });
+  }, [imageIdentity]);
+  const closeImage = useCallback(() => {
+    setOpenImage(null);
+    window.requestAnimationFrame(() => imageTrigger.current?.focus());
+  }, []);
+  const currentImage = openImage?.identity === imageIdentity ? openImage : null;
+  const comments = review?.comments ?? [];
+  const selected = comments.find((c) => c.id === selectedId) ?? comments[0] ?? null;
+  const batchable = (c: PrComment) => c.actionable && !c.local_finding && !c.resolved;
+  const canBatch = !!target.feature_id && (view?.fix_targets?.length ?? 0) > 0;
+  // Drop marks for comments that vanished or were resolved after a refresh.
+  useEffect(() => {
+    setMarked((current) => {
+      const next = current.filter((id) => comments.some((c) => c.id === id && batchable(c)));
+      return next.length === current.length ? current : next;
+    });
+  }, [review?.comments]);
+  const fixTargetsKey = JSON.stringify((view?.fix_targets ?? []).map((t) => [t.target.session_id, t.destination_revision, t.stopped]));
+  const fixKeys = useMemo(() => new Set((view?.fix_targets ?? []).map((t) => t.target.session_id)), [fixTargetsKey]);
+  const batchTarget = resolveTarget(view?.fix_targets ?? [], batchChoice);
+  const fixTarget = resolveTarget(view?.fix_targets ?? [], fixChoice);
+  // The created session joins the catalog on a fresh read, then becomes the
+  // chosen target of the picker that asked for it. Nothing is prepared or sent.
+  const dedicatedCreated = useCallback(async (result: PrDestinationPrepared) => {
+    const created = result.created_target;
+    if (!created || !view) return;
+    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setFailure(asGuiError(err)); return; }
+    if (dedicatedFor === "batch") setBatchChoice(created.session_id); else setFixChoice(created.session_id);
+  }, [view?.workflow_id, dedicatedFor]);
+  const companionCreated = useCallback(async (result: PrDestinationPrepared) => {
+    const created = result.created_target;
+    if (!created || !view) return;
+    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setFailure(asGuiError(err)); return; }
+    if (companionFor === "batch") setBatchChoice(created.session_id); else setFixChoice(created.session_id);
+  }, [view?.workflow_id, companionFor]);
+
+  // An investigation draft belongs to one comment. Moving off an empty one
+  // drops it; a typed one stays, announced on every other comment.
+  useEffect(() => {
+    setInvestigate((current) => current && current.commentId !== selected?.id && !current.text.trim() ? null : current);
+  }, [selected?.id]);
+  const replyDirty = reply !== null && reply.text !== reply.seed;
+  const dirty = !!fixPrompt && fixPrompt.text !== fixPrompt.seed || !!batchPrompt && batchPrompt.text !== batchPrompt.seed || replyDirty || !!investigate?.text.trim();
+  const locked = busy || !!view?.precall || !!view?.write_confirm || !!view?.fix_draft || !!view?.batch_fix || review?.investigating != null;
+  const close = useCallback(() => {
+    if (dirty) setConfirmClose(true);
+    else if (view) void act({ kind: "close" }); else onClose();
+  }, [dirty, view, act, onClose]);
+  useEffect(() => { if (embedded) onEmbeddedBusyChange?.(busy); }, [embedded, busy, onEmbeddedBusyChange]);
+  useEffect(() => { if (embedded) onRequestClose?.(close); }, [embedded, close, onRequestClose]);
+
+  // The draft outlives the preview: it is cleared only once the call starts,
+  // so a refused or failed confirmation never costs the user their text.
+  function previewInvestigation() {
+    if (!investigate) return;
+    const text = investigate.text.trim();
+    void act({
+      kind: "investigate", comment_id: investigate.commentId, harness: investigate.harness,
+      note: investigate.followUp ? null : text || null, follow_up: investigate.followUp ? text : null,
+    });
+  }
+
+  async function confirmInvestigation() {
+    if (await act({ kind: "precall_confirm" })) setInvestigate(null);
+  }
+
+  // One fixable GitHub problem at a time, from whichever read hit it.
+  const githubProblem = failure?.github ?? view?.picker?.github_problem ?? view?.github_problem ?? null;
+  // Retry re-reads what failed: the list or the open PR, or PR Triage itself
+  // when it never opened. Mid-fetch there is nothing to retry yet.
+  // An open reply, fix or AI call has to be finished first, so Retry is not offered then.
+  const canRetry = view
+    ? view.stage === "pick" || (view.stage === "review" && !view.reply && !view.fix_draft && !view.batch_fix && !view.precall)
+    : !embedded;
+  function retry() {
+    if (view) { void act({ kind: "refresh" }); return; }
+    setFailure(null);
+    setBusy(true);
+    setAttempt((n) => n + 1);
+  }
+  return { act, batchChoice, batchPrompt, batchTarget, batchable, busy, canBatch, canRetry, close, closeImage, comments, companionCreated, companionFor, confirmClose, confirmDiscardBatch, confirmDiscardFix, confirmInvestigation, currentImage, dedicatedCreated, dedicatedFor, error, failure, fixChoice, fixKeys, fixPrompt, fixTarget, fixTargetsKey, githubProblem, imageIdentity, investigate, locked, marked, numberDraft, previewInvestigation, reply, retry, reveal, review, selected, setBatchChoice, setBatchPrompt, setCompanionFor, setConfirmClose, setConfirmDiscardBatch, setConfirmDiscardFix, setDedicatedFor, setFixChoice, setFixPrompt, setInvestigate, setMarked, setNumberDraft, setReply, setSelectedId, showImage, view };
+}
+
+export type PrTriageState = ReturnType<typeof usePrTriage>;
+
+/** PR Triage's content without a frame: PrTriagePanel puts it in its dialog, or inline in the workspace's Threads tab. */
+export function PrTriageBody({ triage, target, onHandoff, embedded }: { triage: PrTriageState; target: PrTriageTarget; onHandoff?: (handoff: PrFixHandoff) => void; embedded: boolean }) {
+  const { act, batchChoice, batchPrompt, batchTarget, batchable, busy, canBatch, canRetry, comments, companionCreated, companionFor, confirmClose, confirmDiscardBatch, confirmDiscardFix, confirmInvestigation, dedicatedCreated, dedicatedFor, error, failure, fixChoice, fixKeys, fixPrompt, fixTarget, fixTargetsKey, githubProblem, imageIdentity, investigate, locked, marked, numberDraft, previewInvestigation, reply, retry, reveal, review, selected, setBatchChoice, setBatchPrompt, setCompanionFor, setConfirmClose, setConfirmDiscardBatch, setConfirmDiscardFix, setDedicatedFor, setFixChoice, setFixPrompt, setInvestigate, setMarked, setNumberDraft, setReply, setSelectedId, showImage, view } = triage;
+  return <>
+    {confirmClose && <ConfirmCallout label="Discard and close Review comments" className="callout callout-warning">
+      <p>Discard your unsent fix, reply or investigation text and close Review comments?</p>
+      <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
+      <button className="btn btn-danger" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
+    </ConfirmCallout>}
+    {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy || !!view?.picker?.loading}
+      onRetry={canRetry ? retry : undefined} />}
+    {error && !failure?.github && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
+    {view?.error && !view.github_problem && view.error !== error && <div className="callout callout-danger" role="alert"><p>{view.error}</p></div>}
+    {view?.notice && <p role="status" className="muted">{view.notice}</p>}
+    {!view && busy && <p className="row"><Spinner /> Loading pull requests…</p>}
+
+    {view?.stage === "pick" && view.picker && <section aria-label="Choose a pull request" className="pr-picker">
+      <div className="pr-toolbar">
+        <label className="row small">
+          <input type="checkbox" checked={view.picker.include_closed} disabled={busy}
+            onChange={() => void act({ kind: "toggle_closed" })} /> Include closed and merged
+        </label>
+        <form className="row" onSubmit={(event) => {
+          event.preventDefault();
+          const number = Number(numberDraft);
+          if (Number.isInteger(number) && number > 0) void act({ kind: "open", number });
+        }}>
+          <Field label="PR number">
+            <input inputMode="numeric" value={numberDraft} disabled={busy} placeholder="e.g. 654"
+              onChange={(e) => setNumberDraft(e.target.value.replace(/\D/g, ""))} />
+          </Field>
+          <button className="btn btn-secondary" disabled={busy || !numberDraft}>Open by number</button>
+        </form>
+        <button type="button" className="btn btn-secondary" disabled={busy || view.picker.loading}
+          onClick={() => void act({ kind: "refresh" })}>Refresh</button>
+      </div>
+      {view.picker.error && !view.picker.github_problem && <div className="callout callout-warning github-problem-notice" role="alert">
+        <p><strong>Could not list pull requests</strong></p>
+        <p>Pull requests are read with the GitHub CLI (gh). If this keeps failing, install it from cli.github.com,
+          run <code>gh auth login</code> in a terminal, then press Refresh.</p>
+        <details className="small"><summary>Details</summary><pre className="github-problem-detail">{view.picker.error}</pre></details>
+      </div>}
+      {view.picker.loading && <p className="row"><Spinner /> Loading pull requests…</p>}
+      {view.picker.entries.length === 0 && !view.picker.error && !view.picker.loading && <p className="muted">No {view.picker.include_closed ? "" : "open "}pull requests. Open one by number instead.</p>}
+      <ul className="pr-list">
+        {view.picker.entries.map((entry) => <li key={entry.number}>
+          <button className={`pr-entry ${entry.selected_for_feature ? "pr-entry-feature" : ""}`} disabled={busy} onClick={() => void act({ kind: "open", number: entry.number })}
+            aria-current={entry.selected_for_feature ? "true" : undefined}
+            aria-label={`Open PR #${entry.number} ${entry.title}`}>
+            <span className="row pr-entry-title"><strong>#{entry.number}</strong> <span className="truncate" title={entry.title}>{entry.title}</span></span>
+            <span className="row small muted">
+              <span className="mono">{entry.head_ref}</span> · {entry.author}
+              {entry.selected_for_feature && <span className="tag tag-accent">Selected for this feature</span>}
+              {entry.mine && <span className="tag">Yours</span>}
+              {entry.is_draft && <span className="tag">Draft</span>}
+              {entry.state !== "OPEN" && <span className="tag">{entry.state.toLowerCase()}</span>}
+            </span>
+          </button>
+        </li>)}
+      </ul>
+    </section>}
+
+    {view?.stage === "loading" && <section className="pr-loading" aria-label="Loading comments">
+      <p className="row"><Spinner /> Loading review comments for PR #{view.loading_pr}…</p>
+      <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "back_to_list" })}>Back to pull requests</button>
+    </section>}
+
+    {review && <section aria-label={`PR #${review.number} review comments`}>
+      <div className="pr-toolbar">
+        <div className="pr-heading">
+          <strong>PR #{review.number}</strong> <span className="mono small">{review.head_ref} @ {review.head_sha.slice(0, 7)}</span>
+          <span className="small muted"> · {review.open_count} open of {review.total} · fetched {review.fetched_at}</span>
+        </div>
+        <label className="row small">
+          <input type="checkbox" checked={review.hide_resolved} disabled={locked}
+            onChange={(e) => void act({ kind: "view", hide_resolved: e.target.checked, sort: review.sort })} /> Hide resolved
+          {review.hidden_resolved > 0 && ` (${review.hidden_resolved} hidden)`}
+        </label>
+        <Field label="Sort">
+          <select value={review.sort} disabled={locked} onChange={(e) => void act({ kind: "view", hide_resolved: review.hide_resolved, sort: e.target.value as PrSort })}>
+            {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </Field>
+        <button className="btn btn-secondary btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "refresh" })}>Refresh comments</button>
+        <button className="btn btn-ghost btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "back_to_list" })}>Pull requests</button>
+      </div>
+      {view && <PrDescription key={imageIdentity} workflowId={view.workflow_id} identity={imageIdentity} onOpenImage={showImage} defaultOpen={!embedded} />}
+      {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
+
+      {view?.precall && <ConfirmCallout label="Investigation AI call" className="review-confirm" as="section">
+        <p>Background AI call: {view.precall.title} · {agentName(view.precall.harness)}. It only reads your files but uses your agent account's usage.</p>
+        {view.precall.viewing && <pre className="doc doc-mono">{view.precall.preview}</pre>}
+        <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_toggle_view" })}>{view.precall.viewing ? "Hide prompt" : "View prompt"}</button>
+        <button className="btn btn-primary" disabled={busy} onClick={() => void confirmInvestigation()}>Continue AI call</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_cancel" })}>Cancel AI call</button>
+      </ConfirmCallout>}
+
+      {view?.write_confirm && <ConfirmCallout label="Confirm GitHub write" className="review-confirm" as="section">
+        <p><strong>{view.write_confirm.destination}</strong>. This writes to GitHub as {view.github_user
+          ? <strong>@{view.github_user}</strong>
+          : <>your <span className="mono">gh</span> account</>}.</p>
+        {view.write_confirm.body !== null && <pre className="doc pr-posted">{view.write_confirm.body}</pre>}
+        <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_write" })}>
+          {view.write_confirm.kind === "reply" ? "Post reply to GitHub" : view.write_confirm.kind === "resolve" ? "Resolve thread on GitHub" : "Reopen thread on GitHub"}
+        </button>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_write" })}>Cancel</button>
+      </ConfirmCallout>}
+
+      {view?.fix_draft && fixPrompt && <section className="review-editor" aria-label="Fix draft" ref={reveal}>
+        <p>Prepare a fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
+          Open it in the agent composer to review and send it yourself (existing unsent text is kept), or preview and send it straight to the running agent. No agent starts and nothing posts to GitHub.</p>
+        <Field label="Fix prompt"><textarea rows={8} value={fixPrompt.text} disabled={busy || !!view.fix_draft.submission_prompt}
+          onChange={(event) => setFixPrompt({ ...fixPrompt, text: event.target.value })} /></Field>
+        <button className="btn btn-primary" disabled={busy || !!view.fix_draft.submission_prompt || !fixPrompt.text.trim() || !onHandoff}
+          onClick={() => void act({ kind: "confirm_fix_draft", prompt: fixPrompt.text })}>Open in agent composer</button>
+        {!view.fix_draft.submission_prompt && <button className="btn btn-secondary" disabled={busy || !fixPrompt.text.trim()}
+          onClick={() => void act({ kind: "prepare_fix_submission", prompt: fixPrompt.text })}>Preview send to agent…</button>}
+        {view.fix_draft.submission_prompt && <ConfirmCallout label="Send fix to agent" className="review-confirm">
+          <p>Send this exact prompt to the selected running agent and mark the comment Fixing? This clears its terminal input line. It asks the agent to return a reply draft; nothing posts to GitHub.</p>
+          <pre className="doc pr-posted">{view.fix_draft.submission_prompt}</pre>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_fix_submission" })}>Send fix to agent</button>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_fix_submission" })}>Back to fix prompt</button>
+        </ConfirmCallout>}
+        <button className="btn btn-secondary" disabled={busy} onClick={() => {
+          if (fixPrompt.text !== fixPrompt.seed) setConfirmDiscardFix(true);
+          else void act({ kind: "cancel_fix_draft" });
+        }}>Cancel fix draft</button>
+        {confirmDiscardFix && <ConfirmCallout label="Discard edited fix prompt" className="callout callout-warning">
+          <p>Discard your edited fix prompt?</p>
+          <button className="btn btn-secondary" onClick={() => setConfirmDiscardFix(false)}>Keep editing</button>
+          <button className="btn btn-danger" disabled={busy} onClick={() => { setConfirmDiscardFix(false); void act({ kind: "cancel_fix_draft" }); }}>Discard fix prompt</button>
+        </ConfirmCallout>}
+      </section>}
+
+      {view?.batch_fix && batchPrompt && <section className="review-editor" aria-label="Batch fix" ref={reveal}>
+        <p>Prepare one fix prompt for {view.batch_fix.comment_ids.length} comments, bound to <strong>{view.fix_targets.find((t) => t.target.session_id === view.batch_fix!.target.session_id)?.label ?? "the selected agent"}</strong>.
+          Nothing is sent until you preview and confirm it. No agent starts and nothing posts to GitHub.</p>
+        {view.batch_fix.warning && <div className="callout callout-warning" role="alert"><p>{view.batch_fix.warning}</p></div>}
+        <Field label="Batch fix prompt"><textarea rows={10} value={batchPrompt.text} disabled={busy || !!view.batch_fix.submission_prompt}
+          onChange={(event) => setBatchPrompt({ ...batchPrompt, text: event.target.value })} /></Field>
+        {!view.batch_fix.submission_prompt && <button className="btn btn-primary" disabled={busy || !batchPrompt.text.trim()}
+          onClick={() => void act({ kind: "prepare_batch_submission", prompt: batchPrompt.text, digest: view.batch_fix!.digest })}>Preview send to agent…</button>}
+        {view.batch_fix.submission_prompt && <ConfirmCallout label="Send batch fix to agent" className="review-confirm">
+          <p>Send this exact prompt to the selected running agent and mark {view.batch_fix.comment_ids.length} comments Fixing? This clears its terminal input line. It asks the agent to return one reply draft per comment; nothing posts to GitHub.</p>
+          <pre className="doc pr-posted">{view.batch_fix.submission_prompt}</pre>
+          <button className="btn btn-primary" disabled={busy}
+            onClick={() => void act({ kind: "confirm_batch_submission", digest: view.batch_fix!.digest }).then((ok) => { if (ok) setMarked([]); })}>Send batch fix to agent</button>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => {
+            if (batchPrompt && batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
+            else void act({ kind: "cancel_batch_fix" });
+          }}>Cancel batch fix</button>
+        </ConfirmCallout>}
+        {!view.batch_fix.submission_prompt && <button className="btn btn-secondary" disabled={busy} onClick={() => {
+          if (batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
+          else void act({ kind: "cancel_batch_fix" });
+        }}>Cancel batch fix</button>}
+        {confirmDiscardBatch && <ConfirmCallout label="Discard edited batch prompt" className="callout callout-warning">
+          <p>Discard your edited batch fix prompt?</p>
+          <button className="btn btn-secondary" onClick={() => setConfirmDiscardBatch(false)}>Keep editing</button>
+          <button className="btn btn-danger" disabled={busy} onClick={() => { setConfirmDiscardBatch(false); void act({ kind: "cancel_batch_fix" }); }}>Discard batch prompt</button>
+        </ConfirmCallout>}
+      </section>}
+
+      {review.investigating != null && <div className="callout callout-accent" role="status">
+        <p className="row"><Spinner /> Investigating comment read-only with {review.investigating_harness}…</p>
+        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void act({ kind: "cancel_investigation" })}>Cancel investigation</button>
+      </div>}
+
+      {dedicatedFor && review && view && <DedicatedSessionForm workflow={{ kind: "triage", workflow_id: view.workflow_id }}
+        expected={{ pr_number: review.number, head_sha: review.head_sha }}
+        onCreated={(result) => void dedicatedCreated(result)} onClose={() => setDedicatedFor(null)} />}
+      {companionFor && review && view && <CompanionFeatureForm workflow={{ kind: "triage", workflow_id: view.workflow_id }}
+        expected={{ pr_number: review.number, head_sha: review.head_sha }}
+        onCreated={(result) => void companionCreated(result)} onClose={() => setCompanionFor(null)} />}
+
+      <div className="pr-reader">
+        <nav className="pr-comments" aria-label="Review comments">
+          {canBatch && marked.length > 0 && !view?.batch_fix && <div className="pr-actions" role="group" aria-label="Batch fix">
+            <span className="small">{marked.length} selected</span>
+            <FixDestinationPicker label="Batch fix agent" targets={view!.fix_targets} choice={batchChoice} onChoose={setBatchChoice}
+              disabled={locked || view?.reply != null || investigate !== null} />
+            {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+              selectedKey={batchTarget ? targetKey(batchTarget) : null} choiceKey={batchChoice} onChoose={setBatchChoice} onNewCompanion={companionFor || dedicatedFor ? undefined : () => setCompanionFor("batch")} disabled={locked || view?.reply != null || investigate !== null} />}
+            <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !batchTarget}
+              onClick={() => void act({ kind: "start_batch_fix", comment_ids: marked, session_id: batchTarget!.target.session_id, destination_revision: batchTarget!.destination_revision, feature_id: batchTarget!.target.feature_id })}>Prepare batch fix…</button>
+            <button className="btn btn-ghost btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("batch")}>New dedicated session…</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setMarked([])}>Clear selection</button>
+          </div>}
+          {comments.length === 0 && <p className="muted pad">No comments to show.</p>}
+          {comments.map((comment, index) => <div key={comment.id}>
+            {index === review.conversation_start && <div className="pr-section">Conversation</div>}
+            {canBatch && batchable(comment) && <label className="row small">
+              <input type="checkbox" checked={marked.includes(comment.id)} disabled={locked || view?.reply != null || investigate !== null}
+                aria-label={`Select comment by ${comment.author} for batch fix`}
+                onChange={(event) => setMarked((current) => event.target.checked ? [...current, comment.id] : current.filter((id) => id !== comment.id))} /> Select for batch fix
+            </label>}
+            <button className={`pr-comment${comment.id === selected?.id ? " pr-comment-selected" : ""}`}
+              aria-pressed={comment.id === selected?.id} onClick={() => setSelectedId(comment.id)}>
+              <span className="row small"><strong>{comment.author}</strong>{comment.is_bot && <span className="tag">bot</span>}
+                <span className="muted truncate">{location(comment)}</span></span>
+              <span className="small truncate">{comment.snippet || comment.body.split("\n")[0]}</span>
+              <span className="row">
+                {comment.resolved && <span className="tag">resolved</span>}
+                {comment.outdated && <span className="tag">outdated</span>}
+                {comment.triage !== "untriaged" && <span className="tag tag-accent">{comment.triage}</span>}
+                {comment.investigation && <span className="tag">investigation {comment.investigation.status}</span>}
+                {comment.replies.length > 0 && <span className="tag">{comment.replies.length} repl{comment.replies.length === 1 ? "y" : "ies"}</span>}
+              </span>
+            </button>
+          </div>)}
+        </nav>
+        {selected && <article className="pr-detail" aria-label="Selected comment">
+          <header className="row">
+            <strong>{selected.author}</strong><span className="muted small">{location(selected)}</span>
+            {selected.resolved && <span className="tag">resolved</span>}
+            {selected.triage !== "untriaged" && <span className="tag tag-accent">{selected.triage}</span>}
+          </header>
+          {selected.hunk && <pre className="pr-hunk" aria-label="Diff context">
+            {selected.hunk.split("\n").map((line, i) => <code key={i} className={hunkClass(line)}>{line}{"\n"}</code>)}
+          </pre>}
+          <div className="pr-body"><PrMarkdown source={selected.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} /></div>
+          {selected.actionable && !selected.local_finding && onHandoff && target.feature_id && <div className="pr-actions">
+            {view!.fix_targets.length > 0 ? <>
+              <FixDestinationPicker label="Fix agent" targets={view!.fix_targets} choice={fixChoice} onChoose={setFixChoice}
+                disabled={locked || view?.reply != null || investigate !== null} />
+              {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+                selectedKey={fixTarget ? targetKey(fixTarget) : null} choiceKey={fixChoice} onChoose={setFixChoice} onNewCompanion={companionFor || dedicatedFor ? undefined : () => setCompanionFor("fix")} disabled={locked || view?.reply != null || investigate !== null} />}
+              <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !fixTarget}
+                onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id, destination_revision: fixTarget!.destination_revision })}>Prepare fix…</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || view?.reply != null || investigate !== null || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
+            </> : <>
+              <p className="small muted">Fixes are sent to an agent session in this feature. Add one for PR fixes to prepare a fix.</p>
+              <button className="btn btn-secondary btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
+            </>}
+          </div>}
+          {selected.actionable && !selected.local_finding && <div className="pr-actions">
+            <button className="btn btn-secondary btn-sm" disabled={locked} title="Only AMF remembers this; nothing changes on GitHub" onClick={() => void act({ kind: "toggle_done", comment_id: selected.id })}>
+              {selected.triage === "done" ? "Clear done" : "Mark done (only in AMF)"}</button>
+            <button className="btn btn-secondary btn-sm" disabled={locked} title="Only AMF remembers this; nothing changes on GitHub" onClick={() => void act({ kind: "toggle_skipped", comment_id: selected.id })}>
+              {selected.triage === "skipped" ? "Clear skip" : "Skip (only in AMF)"}</button>
+            <button className="btn btn-secondary btn-sm" disabled={locked || investigate !== null}
+              onClick={() => setInvestigate({ commentId: selected.id, harness: view!.default_harness ?? view!.harnesses[0], text: "", followUp: false })}>Investigate…</button>
+            {selected.investigation?.answer && <button className="btn btn-secondary btn-sm" disabled={locked || investigate !== null}
+              onClick={() => setInvestigate({ commentId: selected.id, harness: view!.default_harness ?? view!.harnesses[0], text: "", followUp: true })}>Ask a follow-up…</button>}
+            {selected.investigation && selected.investigation.status !== "dismissed" && selected.investigation.status !== "running" &&
+              <button className="btn btn-ghost btn-sm" disabled={locked} onClick={() => void act({ kind: "dismiss_investigation", comment_id: selected.id })}>Dismiss investigation</button>}
+            {(["done", "not_needed", "investigation"] as PrReplyKind[])
+              .filter((kind) => kind !== "investigation" || !!selected.investigation?.answer)
+              .map((kind) => <button key={kind} className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null}
+                onClick={() => void act({ kind: "start_reply", comment_id: selected.id, reply: kind })}>{REPLY_LABELS[kind]}</button>)}
+            {selected.can_resolve && <button className="btn btn-secondary btn-sm" disabled={locked}
+              onClick={() => void act({ kind: "request_resolve", comment_id: selected.id })}>{selected.resolved ? "Reopen thread…" : "Resolve thread…"}</button>}
+          </div>}
+          {!selected.actionable && <p className="small muted">AMF follow-up replies are shown for context only.</p>}
+          {investigate && investigate.commentId !== selected.id && <p className="small muted">
+            An investigation request for another comment is open.{" "}
+            {comments.some((c) => c.id === investigate.commentId) &&
+              <><button className="link-button" onClick={() => setSelectedId(investigate.commentId)}>Go to it</button>{" · "}</>}
+            <button className="link-button" disabled={busy} onClick={() => setInvestigate(null)}>Discard it</button>
+          </p>}
+          {view?.reply && view.reply.comment_id !== selected.id && <p className="small muted">
+            A reply to another comment is open.{" "}
+            <button className="link-button" onClick={() => setSelectedId(view.reply!.comment_id)}>Go to the reply</button>
+          </p>}
+
+          {investigate && investigate.commentId === selected.id && <section className="review-editor" aria-label="Investigation request" ref={reveal}>
+            <Field label="Investigate with">
+              <select value={investigate.harness} disabled={busy || !!view?.precall} onChange={(e) => setInvestigate({ ...investigate, harness: e.target.value as AgentSlug })}>
+                {view!.harnesses.map((h) => <option key={h} value={h}>{agentName(h)}</option>)}
+              </select>
+            </Field>
+            <Field label={investigate.followUp ? "Follow-up question" : "What do you suspect? (optional)"}>
+              <textarea rows={3} value={investigate.text} maxLength={1000} disabled={!!view?.precall}
+                onChange={(e) => setInvestigate({ ...investigate, text: e.target.value })} />
+            </Field>
+            <button className="btn btn-primary" disabled={locked || (investigate.followUp && !investigate.text.trim())}
+              onClick={previewInvestigation}>Preview AI call</button>
+            <button className="btn btn-ghost" disabled={busy || !!view?.precall} onClick={() => setInvestigate(null)}>Cancel</button>
+          </section>}
+
+          {view?.reply && view.reply.comment_id === selected.id && reply && <section className="review-editor" aria-label="Reply draft" ref={reveal}>
+            <Field label={REPLY_LABELS[view.reply.kind]} hint={view.reply.agent_drafted ? "Drafted by the fixing agent; editing it changes its attribution." : "Nothing is posted until you confirm."}>
+              <textarea rows={5} value={reply.text} onChange={(e) => setReply({ ...reply, text: e.target.value })} />
+            </Field>
+            <button className="btn btn-primary" disabled={locked || !reply.text.trim()}
+              onClick={() => void act({ kind: "prepare_reply", comment_id: selected.id, body: reply.text })}>Review reply…</button>
+            <button className="btn btn-ghost" disabled={locked} onClick={() => void act({ kind: "discard_reply" })}>Discard reply</button>
+          </section>}
+          {selected.local_note && <p className="small muted">Local note: {selected.local_note}</p>}
+          {selected.replies.length > 0 && <section aria-label="Thread replies" className="pr-replies">
+            {selected.replies.map((r) => <div key={r.id} className="pr-reply">
+              <strong className="small">{r.author}</strong>{r.via_amf && <span className="tag">via AMF</span>}
+              <PrMarkdown source={r.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} />
+            </div>)}
+          </section>}
+
+          {selected.investigation && <section className="review-note" aria-label="Investigation">
+            <p className="row small"><strong>Investigation (read-only)</strong>
+              <span className="tag">{selected.investigation.status}</span><span className="tag">{agentName(selected.investigation.harness)}</span>
+              {selected.investigation.stale_head && <span className="tag tag-red">older PR head</span>}</p>
+            {selected.investigation.error && <p className="error-text">{selected.investigation.error}</p>}
+            {selected.investigation.answer && <Markdown source={selected.investigation.answer} />}
+            {selected.investigation.answer && ["complete", "dismissed"].includes(selected.investigation.status) && <p className="row small">
+              {selected.investigation.kept_todo
+                ? <span className="tag tag-success" title={selected.investigation.kept_todo}>Kept as a TODO</span>
+                : <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "keep_investigation_as_todo", comment_id: selected.id, head_sha: view!.review!.head_sha })}>Keep as a TODO</button>}
+              {selected.investigation.kept_todo && <span className="muted">{selected.investigation.kept_todo}</span>}
+            </p>}
+            {selected.investigation.follow_ups.map((turn, i) => <div key={i} className="pr-follow-up">
+              <p className="small"><strong>Follow-up {i + 1}:</strong> {turn.question}</p>
+              <Markdown source={turn.answer} />
+            </div>)}
+          </section>}
+
+        </article>}
+      </div>
+    </section>}
+  </>;
+}

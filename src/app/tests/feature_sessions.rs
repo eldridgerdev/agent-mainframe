@@ -2467,7 +2467,9 @@ fn stop_feature_transitions_idle_to_stopped() {
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Feature(0, 0);
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
     app.latest_prompt_cache
         .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
     app.opencode_sidebar_cache.insert(
@@ -2506,7 +2508,11 @@ fn stop_feature_transitions_idle_to_stopped() {
     );
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 // ── stop_session (issue #634: `x` on a session must stop, not delete) ──
@@ -3150,7 +3156,9 @@ fn complete_deleting_feature_clears_sidebar_caches() {
             files: None,
         },
     );
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
     app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
         project_name: "my-project".to_string(),
         feature_name: "my-feat".to_string(),
@@ -3169,7 +3177,11 @@ fn complete_deleting_feature_clears_sidebar_caches() {
 
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]

@@ -1,20 +1,9 @@
+import ProjectView from "./ProjectView";
+import { PageHeader, StartStopButton, type Lifecycle } from "./WorkspaceControls";
 import { ReactNode, Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { listen } from "@tauri-apps/api/event";
 import {
   LibraryScope,
-  ReviewAction,
-  ReviewView,
-  reviewBegin,
-  reviewAct,
-  reviewSnapshot,
-  reviewTakeCompletion,
-  LearningView,
-  LearningAction,
-  learningBegin,
-  learningSnapshot,
-  learningAct,
-  learningLaunchAgent,
   AgentSlug,
   NewSessionKind,
   CollapseTarget,
@@ -23,7 +12,6 @@ import {
   FeatureSession,
   FeatureTarget,
   GuiError,
-  HarnessInfo,
   ModeInfo,
   ModeSlug,
   PlanAction,
@@ -43,11 +31,9 @@ import {
   asGuiError,
   createFeature,
   createProject,
-  CreateProjectRequest,
   deleteFeature,
   dormancyDelete,
   DormantDeleteRequest,
-  featurePresetsChoices,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -66,10 +52,8 @@ import {
   startSession,
   stopFeature,
   stopSession,
-  allowedHarnesses,
   supportedHarnesses,
   supportedModes,
-  terminalSubmitPrompt,
   todoLaunchAgent,
   todoLaunchNewFeature,
 } from "./api";
@@ -87,9 +71,6 @@ import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import ProjectPreferencePanel from "./ProjectPreferencePanel";
 import WelcomePanel from "./WelcomePanel";
-import { useCreationHarness } from "./useCreationHarness";
-import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
-import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import NeedsAttentionPanel, { NEEDS_ATTENTION_KEY, loadNeedsAttention } from "./NeedsAttentionPanel";
@@ -107,8 +88,9 @@ import type { PrTriageTarget } from "./prTriageApi";
 import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import { QuickTodoDialog } from "./TodoNextDialogs";
+import CreateProjectForm, { ALLOWED_HARNESSES_KEY } from "./CreateProjectForm";
+import CreateFeatureForm from "./CreateFeatureForm";
 import TodoNewFeatureForm from "./TodoNewFeatureForm";
-export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
@@ -117,30 +99,31 @@ import VscodePanel from "./VscodePanel";
 import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
 import ForkFeatureDialog from "./ForkFeatureDialog";
-import SidebarTree, { byStatus, filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
-import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
-import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
+import SidebarTree, { filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
+import { useSidebarCollapsed } from "./sidebarPrefs";
+import { useWorkspaceFilterShortcut } from "./workspaceFilterShortcut";
 import {
   SessionStartStopButton,
   SessionStateDot,
   closingStopsFeature,
   sessionRunning,
-  stoppedSessionCount,
 } from "./SessionControls";
+import { useSessionDraftState } from "./sessionDraftState";
+import { usePendingSessionState } from "./pendingSessionState";
+import { SNAPSHOT_KEY, useWorkspaceSnapshot } from "./workspaceSnapshot";
+import { useLaunchedModeState } from "./launchedModeState";
+import { useLearningWorkflow } from "./useLearningWorkflow";
+import { useReviewWorkflow } from "./useReviewWorkflow";
+import { DRAFT_SEPARATOR, useSessionDraftActions } from "./useSessionDraftActions";
+import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import {
   ApprovalDialog,
   EmptyState,
-  ExperimentalBadge,
-  Field,
   Icon,
-  IconName,
   Menu,
   Modal,
-  Segmented,
   Spinner,
   StatusBadge,
-  StatusDot,
-  Switch,
   Toast,
   Toasts,
   addToast,
@@ -151,22 +134,10 @@ const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
 const IssueBrowserPanel = lazy(() => import("./IssueBrowserPanel"));
 const PrWorkspacePanel = lazy(() => import("./PrWorkspacePanel"));
-const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
 // The VS Code windows tab: no session row and no tmux pane (gui_sessions).
 const VSCODE_TAB = "vscode";
-// A session a launch just created can take a snapshot or two to appear. Only
-// that launch's session is shown ahead of the snapshot, and only for this
-// long, so a session removed elsewhere (killed from the TUI, say) can't leave
-// a phantom tab that keeps trying to attach.
-const PENDING_SESSION_GRACE_MS = 10_000;
-
-type View =
-  | { kind: "todos" }
-  | { kind: "project"; projectId: string }
-  | { kind: "feature"; projectId: string; featureId: string };
-
 const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Changed elsewhere. Reload.",
@@ -184,17 +155,6 @@ const sessionKey = (target: { feature_id: string; session_id: string }) =>
   `${target.feature_id}:${target.session_id}`;
 
 // Joins a handoff's seed onto a draft that already has unsent text.
-const DRAFT_SEPARATOR = "\n\n";
-
-/** Drops entries whose key is not in `live`, keeping the same object when nothing goes. */
-function pruneKeys<T>(current: Record<string, T>, live: Set<string>): Record<string, T> {
-  const stale = Object.keys(current).filter((key) => !live.has(key));
-  if (stale.length === 0) return current;
-  const next = { ...current };
-  for (const key of stale) delete next[key];
-  return next;
-}
-
 /// Workspace shell: sidebar navigation (global TODOs, projects, features),
 /// a main view for the selection, and modals for creation, approvals and
 /// the plan interview. Id resolution, idempotency, and terminal correctness
@@ -203,7 +163,6 @@ export default function App() {
   const appearance = useGuiTheme();
   const [showAppearance, setShowAppearance] = useState(false);
   const queryClient = useQueryClient();
-  const [view, setView] = useState<View | null>(null);
   const [treeFilter, setTreeFilter] = useState("");
   // Filter-opened projects closed again by hand; tied to the filter text it
   // was set under, so any new filter starts with every match open.
@@ -220,33 +179,11 @@ export default function App() {
   const [collapsingAll, setCollapsingAll] = useState(false);
   const collapsingAllRef = useRef(false);
   const treeFilterInput = useRef<HTMLInputElement>(null);
+  useWorkspaceFilterShortcut(treeFilterInput);
   const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
-  useEffect(() => {
-    // "/" jumps to the project filter, as in most list-heavy apps; never from
-    // a terminal, a form field or a dialog.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
-          || keyIsForOtherInput(event)) return;
-      const input = treeFilterInput.current;
-      // A hidden sidebar keeps the input mounted; only claim the key when
-      // focus actually landed, so "/" is never swallowed with no effect.
-      if (!input || input.closest("[hidden]")) return;
-      input.focus();
-      if (document.activeElement !== input) return;
-      event.preventDefault();
-      input.select();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
-  const [pendingSessionByFeature, setPendingSessionByFeature] = useState<Record<string, string>>({});
-  const [learning, setLearning] = useState<LearningView | null>(null);
-  const [learningBusy, setLearningBusy] = useState(false);
-  const learningActionPending = useRef(false);
-  const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
   const [savePromptBody, setSavePromptBody] = useState<string | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [promptOverrides, setPromptOverrides] = useState<{
@@ -272,9 +209,6 @@ export default function App() {
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
   const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
-  const promptSendsInFlight = useRef(new Set<string>());
   /** Sessions whose composer shows the advisory steering checklist. */
   const [steeringOpen, setSteeringOpen] = useState<Record<string, boolean>>({});
   /** The creation form's coach checkbox, read when that create succeeds. */
@@ -288,8 +222,6 @@ export default function App() {
       return next;
     });
   }, []);
-  const [composerFocusKey, setComposerFocusKey] = useState<string | null>(null);
-  const composerFocusHandled = useCallback(() => setComposerFocusKey(null), []);
   const [planMinimized, setPlanMinimized] = useState(false);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<string | null>(null);
   const [recoveryDialog, setRecoveryDialog] = useState<{
@@ -369,10 +301,6 @@ export default function App() {
   const [prWorkspaceTarget, setPrWorkspaceTarget] = useState<FeatureTarget | null>(null);
   const [prWorkspaceVisible, setPrWorkspaceVisible] = useState(false);
   const [prWorkspaceStatus, setPrWorkspaceStatus] = useState<PrWorkspaceStatus>({ running: false, prNumber: null, completed: false });
-  const [review, setReview] = useState<ReviewView | null>(null);
-  const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewError, setReviewError] = useState<string | null>(null);
-  const reviewPending = useRef(false);
   const [deleteFeatureDialog, setDeleteFeatureDialog] = useState<{
     target: FeatureTarget;
     projectName: string;
@@ -402,11 +330,13 @@ export default function App() {
     queryFn: supportedHarnesses,
   });
   const modes = useQuery({ queryKey: ["supported-modes"], queryFn: supportedModes });
-  const workspace = useQuery({
-    queryKey: SNAPSHOT_KEY,
-    queryFn: getSnapshot,
-    refetchInterval: 2_000,
-  });
+  const workspace = useWorkspaceSnapshot();
+  const { view, setView, projects, selectedProject, selectedFeature } = useWorkspaceSelection(workspace.data);
+  const { pendingSessionByFeature, markPending } = usePendingSessionState(workspace.data?.projects);
+  const { launchedModes, setLaunchedModes } = useLaunchedModeState(workspace.data?.projects);
+  const { drafts, setDrafts, sendingPrompts, setSendingPrompts, composerFocusKey, setComposerFocusKey } =
+    useSessionDraftState(workspace.data, pendingSessionByFeature);
+  const composerFocusHandled = useCallback(() => setComposerFocusKey(null), []);
   const plan = useQuery({
     queryKey: PLAN_KEY,
     queryFn: async () => {
@@ -424,45 +354,11 @@ export default function App() {
     refetchInterval: planBusy ? false : 750,
   });
 
-  // "Resynchronization": every mutating command emits a fresh snapshot on
-  // `workspace-changed` after it applies -- update the cache directly from
-  // the event's payload instead of triggering a second round trip, and pick
-  // this up even for changes this window did not cause itself (such as a
-  // second window). Separate TUI processes cannot emit a Tauri event here;
-  // the periodic get_snapshot above reads their commits.
-  useEffect(() => {
-    const unlistenPromise = listen<WorkspaceSnapshot>("workspace-changed", (event) => {
-      queryClient.setQueryData(SNAPSHOT_KEY, event.payload);
-    });
-    return () => void unlistenPromise.then((unlisten) => unlisten());
-  }, [queryClient]);
-
-  const projects = workspace.data?.projects ?? [];
-  const selectedProject: Project | undefined = view && view.kind !== "todos"
-    ? projects.find((project) => project.id === view.projectId)
-    : undefined;
-  const selectedFeature: Feature | undefined = view?.kind === "feature"
-    ? selectedProject?.features.find((feature) => feature.id === view.featureId)
-    : undefined;
   const showPrWorkspace = !!prWorkspaceTarget && prWorkspaceVisible && view?.kind === "feature"
     && view.projectId === prWorkspaceTarget.project_id && view.featureId === prWorkspaceTarget.feature_id;
   const prWorkspaceFeatureName = prWorkspaceTarget
     ? projects.find((project) => project.id === prWorkspaceTarget.project_id)?.features.find((feature) => feature.id === prWorkspaceTarget.feature_id)?.name
     : undefined;
-
-  // Land on the first project, and fall back gracefully when the selected
-  // project or feature disappears (deleted from the TUI, for instance).
-  useEffect(() => {
-    if (!workspace.data) return;
-    // Query notifications can lag behind a cache write and local navigation.
-    // Wait for this render to see the latest snapshot before deleting a view.
-    if (workspace.data !== queryClient.getQueryData(SNAPSHOT_KEY)) return;
-    if (!view || (view.kind !== "todos" && !selectedProject)) {
-      setView(projects[0] ? { kind: "project", projectId: projects[0].id } : null);
-    } else if (view.kind === "feature" && !selectedFeature) {
-      setView({ kind: "project", projectId: view.projectId });
-    }
-  }, [workspace.data, view, selectedProject, selectedFeature, projects, queryClient]);
 
   useEffect(() => {
     if (!workspace.data) return;
@@ -472,37 +368,6 @@ export default function App() {
     if (screenshotTarget?.target && !exists(screenshotTarget.target)) setScreenshotTarget(null);
     if (prTriageTarget && !exists(prTriageTarget)) setPrTriageTarget(null);
   }, [workspace.data, projects, screenshotTarget, prTriageTarget]);
-
-  // A launched session that has reached the snapshot no longer needs the
-  // grace period: from here on it is shown only while the snapshot has it.
-  useEffect(() => {
-    setPendingSessionByFeature((current) => {
-      const arrived = Object.entries(current).filter(([featureId, sessionId]) =>
-        projects.some((project) => project.features.some((feature) =>
-          feature.id === featureId && feature.sessions.some((session) => session.id === sessionId))));
-      if (arrived.length === 0) return current;
-      const next = { ...current };
-      for (const [featureId] of arrived) delete next[featureId];
-      return next;
-    });
-  }, [projects]);
-
-  // A closed session or deleted feature takes its unsent draft with it, so a
-  // reused key can never resurrect stale text. A just-launched session the
-  // snapshot hasn't caught up with yet keeps its handoff draft.
-  const workspaceData = workspace.data;
-  useEffect(() => {
-    if (!workspaceData) return;
-    const live = new Set(workspaceData.projects.flatMap((project) => project.features.flatMap(
-      (feature) => feature.sessions.map((session) =>
-        sessionKey({ feature_id: feature.id, session_id: session.id })))));
-    for (const [featureId, sessionId] of Object.entries(pendingSessionByFeature)) {
-      live.add(sessionKey({ feature_id: featureId, session_id: sessionId }));
-    }
-    setDrafts((current) => pruneKeys(current, live));
-    setSendingPrompts((current) => pruneKeys(current, live));
-    setComposerFocusKey((current) => current !== null && !live.has(current) ? null : current);
-  }, [workspaceData, pendingSessionByFeature]);
 
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
@@ -538,6 +403,12 @@ export default function App() {
   // One-argument form, safe to pass where callers add their own arguments
   // (react-query's onError passes the mutation variables second).
   const reportError = useCallback((err: unknown) => reportActionError(err), [reportActionError]);
+  const { changeDraft, sendDraft } = useSessionDraftActions({
+    setDrafts,
+    setSendingPrompts,
+    onError: reportError,
+    onSent: (target) => changeSteering(target, false),
+  });
 
   /** Collapse or expand a tree row in the store shared with the TUI, showing
    *  the change at once and reloading the store's truth if the write is
@@ -606,13 +477,7 @@ export default function App() {
   function openSession(target: SessionTarget, draftPrompt?: string) {
     setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
     setTabByFeature((current) => ({ ...current, [target.feature_id]: target.session_id }));
-    setPendingSessionByFeature((current) => ({ ...current, [target.feature_id]: target.session_id }));
-    window.setTimeout(() => setPendingSessionByFeature((current) => {
-      if (current[target.feature_id] !== target.session_id) return current;
-      const next = { ...current };
-      delete next[target.feature_id];
-      return next;
-    }), PENDING_SESSION_GRACE_MS);
+    markPending(target);
     if (draftPrompt !== undefined) {
       const key = sessionKey(target);
       setDrafts((current) => ({
@@ -678,179 +543,21 @@ export default function App() {
     setPromptLibrary(null);
   }
 
-  function changeDraft(target: SessionTarget, text: string) {
-    const key = sessionKey(target);
-    if (promptSendsInFlight.current.has(key)) return;
-    setDrafts((current) => ({ ...current, [key]: text }));
-  }
-
-  async function sendDraft(target: SessionTarget, text: string) {
-    const key = sessionKey(target);
-    if (!text.trim() || promptSendsInFlight.current.has(key)) return;
-    // Lock synchronously: repeated keyboard/click events can arrive before
-    // React renders the pending state.
-    promptSendsInFlight.current.add(key);
-    setSendingPrompts((current) => ({ ...current, [key]: true }));
-    try {
-      await terminalSubmitPrompt(target, text);
-      // The coach is for the first send; the TUI closes it on inject too.
-      changeSteering(target, false);
-      // Completion belongs to the originating session, even after navigation.
-      // Edits are locked while sending, so the draft can only have grown by a
-      // handoff appending its seed: remove the delivered text and keep that.
-      setDrafts((current) => {
-        const draft = current[key];
-        if (draft === undefined || !draft.startsWith(text)) return current;
-        const rest = draft.slice(text.length);
-        return {
-          ...current,
-          [key]: rest.startsWith(DRAFT_SEPARATOR) ? rest.slice(DRAFT_SEPARATOR.length) : rest,
-        };
-      });
-    } catch (err) {
-      reportError(err);
-    } finally {
-      promptSendsInFlight.current.delete(key);
-      setSendingPrompts((current) => {
-        if (!(key in current)) return current;
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-    }
-  }
-
-  useEffect(() => {
-    if (!learning || learningBusy) return;
-    let cancelled = false;
-    const workflowId = learning.workflow_id;
-    const timer = window.setInterval(() => {
-      void learningSnapshot().then((next) => {
-        if (cancelled) return;
-        setLearning((current) => {
-          if (current?.workflow_id !== workflowId) return current;
-          if (!next) return null;
-          return next.workflow_id === current.workflow_id && next.revision >= current.revision ? next : current;
-        });
-      }).catch(() => { /* Explicit actions report deleted/stale targets. */ });
-    }, 1000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [learning?.workflow_id, learningBusy]);
-
-  async function beginLearning(target: FeatureTarget) {
-    if (learningActionPending.current) return;
-    learningActionPending.current = true;
-    setLearningBusy(true);
-    try { setLearning(await learningBegin(target)); }
-    catch (err) { reportError(err); }
-    finally { learningActionPending.current = false; setLearningBusy(false); }
-  }
-
-  // Poll while AI work, destination setup or a project check is in flight; nothing
-  // else changes the review without an explicit action.
-  useEffect(() => {
-    if (!review || reviewBusy || (!review.ai.running && !review.preparation && review.check?.status !== "running")) return;
-    let cancelled = false;
-    let polling = false;
-    const workflowId = review.workflow_id;
-    const timer = window.setInterval(() => {
-      if (polling || reviewPending.current) return;
-      polling = true;
-      void reviewSnapshot(workflowId).then(async (next) => {
-        // Null means the backend already closed this review. Always collect
-        // its one-shot result, even if an action began or this effect reset.
-        if (next === null) { await finishReview(workflowId); return; }
-        if (cancelled || reviewPending.current) return;
-        setReview((current) => current?.workflow_id === workflowId && next.workflow_id === workflowId
-          && next.revision > current.revision ? next : current);
-      }).catch(() => { /* Explicit actions report conflicts. */ }).finally(() => { polling = false; });
-    }, 1000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [review?.workflow_id, review?.ai.running, review?.check?.status, review?.preparation?.operation_id, reviewBusy]);
-
-  async function beginReview(target: FeatureTarget) {
-    if (reviewPending.current) return;
-    reviewPending.current = true;
-    setReviewBusy(true);
-    setReviewError(null);
-    try { setReview(await reviewBegin(target)); }
-    catch (err) { reportError(err); }
-    finally { reviewPending.current = false; setReviewBusy(false); }
-  }
-
-  /** Re-read the open review after a parser install so its files gain colours. */
-  async function refreshReviewSyntax() {
-    const workflowId = review?.workflow_id;
-    if (!workflowId || reviewPending.current) return;
-    try {
-      const next = await reviewSnapshot(workflowId);
-      if (next) setReview((current) => current?.workflow_id === workflowId && next.revision >= current.revision ? next : current);
-    } catch { /* The next action reports a closed or changed review. */ }
-  }
-
-  /** Close a completed review and apply its handoff exactly once. */
-  async function finishReview(workflowId: string) {
-    const done = await reviewTakeCompletion(workflowId);
-    setReview((current) => current?.workflow_id === workflowId ? null : current);
-    if (!done) return;
-    pushToast({ tone: "info", title: "Final Review", message: done.message });
-    // A submitted prompt shows its agent working; an unsent one joins the
-    // session's composer draft for the reviewer to edit and send.
-    if (done.handoff) openSession(done.handoff.target, done.handoff.draft_prompt ?? undefined);
-    void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
-  }
-
-  async function actReview(action: ReviewAction): Promise<boolean> {
-    if (!review || reviewPending.current) return false;
-    reviewPending.current = true;
-    setReviewBusy(true);
-    setReviewError(null);
-    try {
-      const next = await reviewAct(review, action);
-      if (next === null && action.kind === "complete") {
-        await finishReview(review.workflow_id);
-        return true;
-      }
-      setReview(next);
-      // A failed pause returns the retained review with its save error.
-      return !(action.kind === "pause" && next !== null);
-    } catch (err) { setReviewError(asGuiError(err).message); return false; }
-    finally { reviewPending.current = false; setReviewBusy(false); }
-  }
-
-  async function actLearning(action: LearningAction): Promise<boolean> {
-    if (!learning || learningActionPending.current) return false;
-    learningActionPending.current = true;
-    setLearningBusy(true);
-    try {
-      setLearning(await learningAct(learning, action));
-      if (action.kind === "keep_todo") void queryClient.invalidateQueries({ queryKey: ["todos"] });
-      return true;
-    }
-    catch (err) { reportError(err); return false; }
-    finally { learningActionPending.current = false; setLearningBusy(false); }
-  }
-
-  async function launchLearning(qaId: string, approved = false) {
-    if (!learning || learningActionPending.current) return;
-    learningActionPending.current = true;
-    setLearningBusy(true);
-    try {
-      const handoff = await learningLaunchAgent(learning, qaId, approved);
-      setLearning(null); setLearningApproval(null);
-      openSession(handoff.target, handoff.draft_prompt ?? undefined);
-      if (handoff.notice) pushToast({ tone: "error", title: "Learning", message: handoff.notice });
-      if (handoff.info) pushToast({ tone: "info", title: "Learning", message: handoff.info });
-      // A stopped linked session goes through the tab's own start, which
-      // offers to resume its saved conversation.
-      if (handoff.start_required) void beginSessionStart(handoff.target);
-      void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
-    } catch (err) {
-      const error = asGuiError(err);
-      if (error.kind === "needs_approval") setLearningApproval({ qaId, message: error.message });
-      else { setLearningApproval(null); reportError(err); }
-    } finally { learningActionPending.current = false; setLearningBusy(false); }
-  }
+  const learningWorkflow = useLearningWorkflow({
+    onError: reportError,
+    onOpenSession: openSession,
+    onStartSession: (target) => { void beginSessionStart(target); },
+    onNotice: (tone, message) => pushToast({ tone, title: "Learning", message }),
+  });
+  const { learning, busy: learningBusy, approval: learningApproval, begin: beginLearning, act: actLearning,
+    launch: launchLearning, cancelApproval } = learningWorkflow;
+  const reviewWorkflow = useReviewWorkflow({
+    onError: reportError,
+    onOpenSession: openSession,
+    onNotice: (message) => pushToast({ tone: "info", title: "Final Review", message }),
+  });
+  const { review, busy: reviewBusy, error: reviewError, begin: beginReview, refreshSyntax: refreshReviewSyntax,
+    act: actReview } = reviewWorkflow;
 
   function applyPlanHandoff(handoff: PlanHandoff) {
     openSession(handoff.target, handoff.draft_prompt);
@@ -1257,10 +964,6 @@ export default function App() {
     },
   });
 
-  // The mode a running feature's agents were launched with, kept from the
-  // first change until the feature stops: a live agent holds its launch flags,
-  // so the saved mode alone would misreport what is running. Window-local.
-  const [launchedModes, setLaunchedModes] = useState<Record<string, ModeSlug>>({});
   const setFeatureVibeModeMutation = useMutation({
     mutationFn: ({ target, mode }: { target: FeatureTarget; mode: ModeSlug; launched: ModeSlug | null }) =>
       setFeatureVibeMode(target, mode),
@@ -1278,15 +981,6 @@ export default function App() {
     },
     onError: reportError,
   });
-  useEffect(() => {
-    const running = new Set((workspace.data?.projects ?? []).flatMap((project) =>
-      project.features.filter((feature) => feature.status !== "stopped").map((feature) => feature.id)));
-    setLaunchedModes((previous) =>
-      Object.keys(previous).every((id) => running.has(id))
-        ? previous
-        : Object.fromEntries(Object.entries(previous).filter(([id]) => running.has(id))));
-  }, [workspace.data]);
-
   function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
@@ -1644,7 +1338,7 @@ export default function App() {
         <ApprovalDialog label="Approve Learning agent" title="Start editing agent?"
           message={learningApproval.message} confirmLabel="Start anyway" busy={learningBusy}
           onConfirm={() => void launchLearning(learningApproval.qaId, true)}
-          onCancel={() => setLearningApproval(null)} />
+          onCancel={cancelApproval} />
       )}
 
       <main className="main">
@@ -2167,200 +1861,6 @@ export default function App() {
   );
 }
 
-function PageHeader({
-  icon,
-  title,
-  subtitle,
-  badge,
-  actions,
-  crumb,
-}: {
-  icon?: IconName;
-  title: string;
-  subtitle?: ReactNode;
-  badge?: ReactNode;
-  actions?: ReactNode;
-  crumb?: ReactNode;
-}) {
-  return (
-    <header className="page-header">
-      <div className="page-title">
-        {crumb && <div className="crumb">{crumb}</div>}
-        <div className="page-title-row">
-          {icon && <span className="page-icon"><Icon name={icon} size={18} /></span>}
-          <h1 title={title}>{title}</h1>
-          {badge}
-        </div>
-        {subtitle && <div className="page-subtitle">{subtitle}</div>}
-      </div>
-      {actions && <div className="page-actions">{actions}</div>}
-    </header>
-  );
-}
-
-interface Lifecycle {
-  starting: boolean;
-  stopping: boolean;
-  onStart: () => void;
-  onStop: () => void;
-}
-
-function StartStopButton({ status, starting, stopping, onStart, onStop, size, title }: Lifecycle & {
-  status: Feature["status"];
-  size?: "sm";
-  /** Tooltip on the Stop button, e.g. how many sessions it ends. */
-  title?: string;
-}) {
-  // In lists every row has one of these, so they stay quiet; the feature
-  // header's single Start is the primary action on its page.
-  const list = size === "sm";
-  return status === "stopped" ? (
-    <button className={`btn btn-sm ${list ? "btn-secondary" : "btn-primary"}`} onClick={onStart} disabled={starting}>
-      {starting ? <Spinner /> : <Icon name="play" size={14} />}
-      {starting ? "Starting…" : "Start"}
-    </button>
-  ) : (
-    <button className={`btn btn-sm ${list ? "btn-ghost" : "btn-secondary"}`} onClick={onStop} disabled={stopping} title={title}>
-      {stopping ? <Spinner /> : <Icon name="stop" size={14} />}
-      {stopping ? "Stopping…" : "Stop"}
-    </button>
-  );
-}
-
-function ProjectView({
-  project,
-  harnessName,
-  modeName,
-  lifecycle,
-  onOpenFeature,
-  onNewFeature,
-  onPrTriage,
-  onIssues,
-  onPrReview,
-  onAgentAvailability,
-  onProjectPreference,
-  todoPanel,
-}: {
-  project: Project;
-  harnessName: (slug: AgentSlug) => string;
-  modeName: (slug: ModeSlug) => string;
-  lifecycle: (feature: Feature) => Lifecycle;
-  onOpenFeature: (feature: Feature) => void;
-  onNewFeature: () => void;
-  onPrTriage: () => void;
-  onIssues: () => void;
-  onPrReview: () => void;
-  onAgentAvailability: () => void;
-  onProjectPreference: () => void;
-  todoPanel: ReactNode;
-}) {
-  const running = project.features.filter((feature) => feature.status !== "stopped").length;
-  return (
-    <div className="page">
-      <PageHeader
-        icon="folder"
-        title={project.name}
-        subtitle={
-          <>
-            <span className="mono">{project.repo}</span>
-            {project.is_git && <span className="tag">git</span>}
-          </>
-        }
-        actions={
-          <>
-            {project.is_git && <button className="btn btn-ghost btn-sm" aria-label="Issues" title="Issues" onClick={onIssues}>
-              <Icon name="issue" size={14} /><span className="btn-label-optional">Issues</span>
-            </button>}
-            {project.is_git && <Menu
-              label="Pull request tools"
-              text="Pull request"
-              icon={null}
-              className="btn btn-ghost btn-sm"
-              title="Read feedback on a pull request, or review one"
-              items={[
-                { label: "Review comments", icon: "gitPullRequest", title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
-                { label: "Write a review", icon: "gitCompare", title: "Comment on someone else's pull request and post your review (PR Review in the terminal app)", onSelect: onPrReview },
-              ]}
-            />}
-            <Menu
-              label="Project settings"
-              className="btn btn-ghost btn-icon btn-sm"
-              title="Project settings"
-              items={[
-                { label: "Agent availability", icon: "plug", onSelect: onAgentAvailability },
-                { label: "Preferred agent", icon: "star", onSelect: onProjectPreference },
-              ]}
-            />
-            <span className="page-actions-sep" aria-hidden="true" />
-            <button className="btn btn-primary btn-sm" onClick={onNewFeature}>
-              <Icon name="plus" size={14} /> New feature
-            </button>
-          </>
-        }
-      />
-      <div className="page-body project-grid">
-        <section className="card" aria-label="Features">
-          <header className="panel-header">
-            <div>
-              <h3>Features</h3>
-            </div>
-            {project.features.length > 0 && (
-              <span className="count-pill">{running} of {project.features.length} running</span>
-            )}
-          </header>
-          {project.features.length === 0 ? (
-            <EmptyState
-              icon="branch"
-              title="No features yet"
-              action={
-                <button className="btn btn-secondary" onClick={onNewFeature}>
-                  <Icon name="plus" /> New feature
-                </button>
-              }
-            >
-              A feature is a branch with its own agent sessions.
-            </EmptyState>
-          ) : (
-            <ul className="feature-list">
-              {byStatus(project.features).map((feature) => (
-                <li key={feature.id} className="feature-row">
-                  <button className="feature-open" onClick={() => onOpenFeature(feature)}>
-                    <StatusDot status={feature.status} />
-                    <span className="feature-text">
-                      <span className="feature-name">{feature.name}</span>
-                      <span className="feature-meta">
-                        <span className="mono">{feature.branch}</span>
-                        <span className="dot-sep" />
-                        {harnessName(feature.agent)}
-                        <span className="dot-sep" />
-                        {modeName(feature.mode)}
-                        {feature.sessions.length > 0 && (
-                          <>
-                            <span className="dot-sep" />
-                            {feature.sessions.length} session{feature.sessions.length === 1 ? "" : "s"}
-                          </>
-                        )}
-                        {stoppedSessionCount(feature) > 0 && (
-                          <>
-                            <span className="dot-sep" />
-                            {stoppedSessionCount(feature)} stopped
-                          </>
-                        )}
-                      </span>
-                    </span>
-                  </button>
-                  <StartStopButton status={feature.status} size="sm" {...lifecycle(feature)} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-        <div className="card">{todoPanel}</div>
-      </div>
-    </div>
-  );
-}
-
 function FeatureView({
   project,
   feature,
@@ -2789,323 +2289,10 @@ function FeatureView({
   );
 }
 
-const ALLOWED_HARNESSES_KEY = "allowed-harnesses";
-
-/** The harnesses a creation form offers: the ones creation will accept for
- * this project, or the global choices before a project exists. Every
- * supported harness stands in until that answer arrives or if it cannot be
- * read; the backend still refuses a disallowed one. */
-function useOfferedAgents(projectId: string | null, supported: HarnessInfo[]): HarnessInfo[] {
-  const allowed = useQuery({
-    queryKey: [ALLOWED_HARNESSES_KEY, projectId],
-    queryFn: () => allowedHarnesses(projectId),
-    retry: false,
-  });
-  return allowed.data ?? supported;
-}
-
-export function CreateProjectForm({
-  agents,
-  pending,
-  error,
-  onEdit,
-  onCancel,
-  onSubmit,
-}: {
-  agents: HarnessInfo[];
-  pending: boolean;
-  /** Why the last Create failed, shown inside the form rather than as a toast. */
-  error: string | null;
-  /** The user changed something, so the last failure no longer applies. */
-  onEdit: () => void;
-  onCancel: () => void;
-  onSubmit: (request: CreateProjectRequest) => void;
-}) {
-  const [path, setPath] = useState("");
-  const [name, setName] = useState("");
-  const [nameEdited, setNameEdited] = useState(false);
-  const [agent, setAgent] = useState<AgentSlug | "">("");
-  // The last path checked on blur, and what the backend said about it.
-  const [check, setCheck] = useState<{ path: string; ok: boolean; message: string } | null>(null);
-  const offered = useOfferedAgents(null, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent) ? agent : "";
-  const trimmed = path.trim();
-  const pathCheck = check && check.path === trimmed ? check : null;
-
-  async function checkPath() {
-    if (!trimmed) { setCheck(null); return; }
-    const projectName = name.trim() || trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "project";
-    try {
-      // A dry run validates the folder and finds the repository root; it creates nothing.
-      const response = await createProject({ path: trimmed, project_name: projectName, preferred_agent: null, dry_run: true });
-      setCheck({ path: trimmed, ok: true, message: response.is_git
-        ? `Git repository found at ${response.project_path}.`
-        : "This folder is not a git repository. AMF can still use it, but features will share this folder instead of getting their own branch and checkout." });
-    } catch (cause) {
-      const message = asGuiError(cause).message;
-      // A name clash is about the name field, not the folder.
-      if (/already exists/.test(message)) setCheck({ path: trimmed, ok: true, message: "" });
-      else setCheck({ path: trimmed, ok: false, message });
-    }
-  }
-  const errorId = useId();
-
-  return (
-    <Modal
-      label="New project"
-      title="New project"
-      subtitle="A project is a git repository on this computer. AMF runs agents in it, one feature at a time."
-      onClose={onCancel}
-      onSubmit={() => onSubmit({
-        path: trimmed,
-        project_name: name.trim(),
-        preferred_agent: selectedAgent || null,
-        dry_run: false,
-      })}
-      footer={
-        <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending && <Spinner />}
-            {pending ? "Creating…" : "Create project"}
-          </button>
-        </>
-      }
-    >
-      <div className="form-stack">
-        <Field label="Repository path" hint={pathCheck?.message
-          ? <span className={pathCheck.ok ? undefined : "field-error"} role={pathCheck.ok ? "status" : "alert"}>{pathCheck.message}</span>
-          : "The folder of a git repository, for example the one you cloned."}>
-          <input
-            className="mono"
-            value={path}
-            onChange={(event) => {
-              setPath(event.target.value);
-              onEdit();
-              if (!nameEdited) {
-                setName(event.target.value.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-              }
-            }}
-            onBlur={() => void checkPath()}
-            placeholder="/home/you/code/my-repo"
-            required
-            autoFocus
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? errorId : undefined}
-          />
-        </Field>
-        {error && (
-          <p id={errorId} className="field-error" role="alert">
-            <strong>Could not add the project.</strong> {error}
-          </p>
-        )}
-        <Field label="Project name">
-          <input
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              setNameEdited(true);
-              onEdit();
-            }}
-            required
-          />
-        </Field>
-        <Field label="Preferred agent" hint="The agent new features use by default. You can change it per feature.">
-          <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-            <option value="">Default</option>
-            {offered.map((a) => (
-              <option key={a.slug} value={a.slug}>{a.display_name}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
-    </Modal>
-  );
-}
-
 const AGENT_KINDS = ["claude", "codex", "opencode", "pi"];
 
 /** What a session tab's tooltip calls its kind (never the raw id). */
 function sessionKindName(kind: string): string {
   const names: Record<string, string> = { terminal: "Terminal", nvim: "Neovim", vscode: "VS Code", todos: "TODOs" };
   return AGENT_KINDS.includes(kind) ? `${agentName(kind)} agent` : names[kind] ?? "Custom session";
-}
-
-type PlanKind = "none" | "quick" | "full";
-
-export function CreateFeatureForm({
-  projectId,
-  projectName,
-  agents,
-  modes,
-  isGit,
-  defaultUseWorktree,
-  pending,
-  hidden = false,
-  onOpenAvailability,
-  onCancel,
-  onSubmit,
-}: {
-  projectId: string;
-  projectName: string;
-  agents: HarnessInfo[];
-  modes: ModeInfo[];
-  isGit: boolean;
-  defaultUseWorktree: boolean;
-  pending: boolean;
-  /** Kept mounted, with its edits, while Agent availability is in front. */
-  hidden?: boolean;
-  onOpenAvailability?: () => void;
-  onCancel: () => void;
-  onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind, options?: { steering: boolean }) => void;
-}) {
-  const [branch, setBranch] = useState("");
-  const [steering, setSteering] = useState(false);
-  const harness = useCreationHarness(projectId);
-  const agent = harness.agent;
-  const setAgent = harness.choose;
-  const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
-  const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
-  const [planKind, setPlanKind] = useState<PlanKind>("none");
-  const [review, setReview] = useState(false);
-  const [chrome, setChrome] = useState(false);
-  const [remoteControl, setRemoteControl] = useState(false);
-  const [presetIndex, setPresetIndex] = useState("");
-  // Prefix the last applied preset put on the branch, so the next one can swap it out.
-  const [appliedPrefix, setAppliedPrefix] = useState<string | null>(null);
-  const [presetNotice, setPresetNotice] = useState<string | null>(null);
-  const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
-  const unsupportedMode = agent === "codex" && mode === "vibeless";
-  const modeInfo = modes.find((candidate) => candidate.slug === mode);
-  const selectedAgent = agent;
-  const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
-
-  return (
-    <Modal
-      size="lg"
-      label="New feature"
-      title="New feature"
-      subtitle={`in ${projectName}. A feature is a branch with its own agent sessions, so work stays separate.`}
-      onClose={onCancel}
-      dismissable={!pending}
-      hidden={hidden}
-      onSubmit={() => {
-        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
-        const request = {
-          branch: branch.trim(),
-          agent: selectedAgent,
-          mode,
-          review,
-          plan_mode: planKind !== "none",
-          create_terminal: false,
-          use_worktree: useWorktree,
-          enable_chrome: chrome,
-          hook_choice: hook.choice || null,
-          dry_run: false,
-        };
-        if (steering && planKind === "none") onSubmit(request, planKind, { steering: true });
-        else onSubmit(request, planKind);
-      }}
-      footer={
-        <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready}>
-            {pending && <Spinner />}
-            {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
-          </button>
-        </>
-      }
-    >
-      <div className="form-stack">
-        <Field label="Feature preset" hint="A preset fills in the fields below; you can still edit them. Project presets override global ones with the same name.">
-          <select aria-label="Feature preset" value={presetIndex} disabled={pending || presets.isPending} onChange={(event) => {
-            const value = event.target.value; setPresetIndex(value); setPresetNotice(null);
-            if (!value) return;
-            const preset = presets.data?.[Number(value)];
-            if (!preset) return;
-            setAgent(preset.agent);
-            if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available agent.`);
-            setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
-            setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full"); if (preset.plan_mode) setSteering(false);
-            // Keep the name the user typed; only the preset's prefix changes.
-            const prefix = preset.branch_prefix?.trim() || null;
-            setBranch((current) => {
-              const base = appliedPrefix && current.startsWith(`${appliedPrefix}/`) ? current.slice(appliedPrefix.length + 1) : current;
-              return prefix ? `${prefix}/${base}` : base;
-            });
-            setAppliedPrefix(prefix);
-          }}>
-            <option value="">Custom settings</option>
-            {(presets.data ?? []).map((preset, index) => <option key={`${index}:${preset.name}`} value={String(index)}>{preset.name}</option>)}
-          </select>
-        </Field>
-        {presets.error && <p className="callout callout-danger" role="alert">Could not load presets: {asGuiError(presets.error).message}</p>}
-        {presetNotice && <p className="callout callout-warning" role="alert">{presetNotice}</p>}
-        {remoteControl && <p className="callout callout-warning" role="alert">Remote Control presets can be created in AMF's terminal app. The desktop app does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
-        {unsupportedMode && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another agent.</p>}
-        <Field label="Branch / feature name">
-          <input
-            className="mono"
-            value={branch}
-            onChange={(event) => setBranch(event.target.value)}
-            placeholder="fix-login-redirect"
-            required
-            autoFocus
-          />
-        </Field>
-        <div className="form-row creation-agent-mode">
-          <CreationHarnessSelect harness={harness} supported={agents} disabled={pending} />
-          <Field label="Mode" hint={modeInfo?.description}>
-            <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-              {modes.map((m) => (
-                <option key={m.slug} value={m.slug}>{m.display_name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <CreationHarnessNotices harness={harness} disabled={pending} onOpenAvailability={onOpenAvailability} />
-        <Field label="Planning" hint={PLAN_HINTS[planKind]}>
-          <Segmented
-            label="Planning"
-            value={planKind}
-            onChange={(next) => {
-              // Planning owns the startup prompt, so the coach goes back to its
-              // default (off) instead of silently returning when planning is cleared.
-              if (next !== "none") setSteering(false);
-              setPlanKind(next);
-            }}
-            options={[
-              { value: "none", label: "Start directly" },
-              { value: "quick", label: "Quick Plan" },
-              { value: "full", label: "Full Plan" },
-            ]}
-          />
-        </Field>
-        <Switch
-          checked={steering && planKind === "none"}
-          disabled={planKind !== "none"}
-          onChange={setSteering}
-          label="Steering coach"
-          badge={<ExperimentalBadge />}
-          hint={planKind !== "none"
-            ? "Planning already shapes the startup prompt, so the coach is off while Quick or Full Plan is chosen."
-            : "After the agent starts, get feedback on your first message: is the goal clear, how will you know it is done, what could go wrong. Nothing is sent until you send it."}
-        />
-        {isGit && (
-          <Switch
-            checked={useWorktree}
-            onChange={setUseWorktree}
-            label="Use a separate checkout (worktree)"
-            hint="Gives the feature its own folder and branch so agents don't collide."
-          />
-        )}
-        <div className="form-row">
-          <Switch checked={review} onChange={setReview} label="Review" hint={REVIEW_HINT} />
-          <Switch checked={chrome} onChange={setChrome} label="Chrome" hint={CHROME_HINT} />
-        </div>
-        {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
-        <WorktreeHookField hook={hook} disabled={pending} />
-      </div>
-    </Modal>
-  );
 }

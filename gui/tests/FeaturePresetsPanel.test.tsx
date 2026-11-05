@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import FeaturePresetsPanel from "../src/FeaturePresetsPanel";
-import { CreateFeatureForm } from "../src/App";
+import CreateFeatureForm from "../src/CreateFeatureForm";
 import type { FeaturePreset } from "../src/api";
 import { getConfirm } from "./confirmCallout";
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));

@@ -1,306 +1,110 @@
 # Architecture
 
-AMF is a Cargo workspace with separate `amf` terminal and `amf-gui` Tauri
-executables. They share the `agent-mainframe` library, persistence and tmux
-integration. The TUI retains its event loop and presentation modules; GUI
-adapters expose shared operations through semantic commands and snapshots.
-See [checks.md](checks.md) for setup, focused suites, CI and contribution guidance.
-The [baseline inventory](baseline/README.md) records the pre-refactor ownership map
-and complete test preservation evidence.
+AMF has `amf` terminal and `amf-gui` Tauri executables sharing the
+`agent-mainframe` library, SQLite persistence, and tmux integration. Start with
+this map, then read only the relevant owner and workflow reference.
+See [checks.md](checks.md) for validation and [the organization audit](code-organization-audit.md)
+for the staged refactoring plan. Historical inventories live under [baseline/](baseline/README.md).
 
 ## Runtime and dependency directions
 
 ```text
-main (startup, events, deadlines, worker polling)
-  -> handlers (key/mouse dispatch) -> App feature methods
-  -> ui (dashboard, pane, pickers, dialogs) -> display state/helpers
-App feature methods -> project/domain data + feature state
-                    -> db::AmfDb + feature persistence modules
-                    -> external managers / TmuxOps / WorktreeOps
-workers -> channels/mailbox -> feature poll/apply methods -> AppMode/display state
+cli -> handlers -> App feature operations -> domain, persistence, external adapters
+cli -> ui -> display state and presentation helpers
+GUI components -> API contracts -> Tauri commands -> GUI adapters -> App operations
+workers -> channels/mailbox -> poll/apply -> matching feature state
 ```
 
-`src/main.rs` is a thin binary that calls `agent_mainframe::cli::run`;
-`src/cli.rs` owns CLI dispatch, terminal setup/teardown and `run_loop`. The loop
-reads terminal/IPC events, polls workers, reconciles session state, schedules
-pane refreshes and redraws. It uses deadlines and mode-dependent work; Viewing
-and Compose both keep the pane live. Active PR sweeps have their own cadence.
+- `src/main.rs` delegates to `cli::run`. `src/cli.rs` owns startup, terminal
+  teardown, event deadlines, worker polling, session reconciliation, and redraws.
+- `src/handlers/mod.rs` routes by `AppMode`; `src/ui/dashboard.rs` dispatches
+  renderers. Input handlers translate input into operations. Renderers own
+  presentation; neither layer should acquire persistence or process launching.
+- `src/app/mod.rs` constructs App/AppConfig and owns shared pane/sidebar runtime,
+  configuration, and logging. Feature modules implement App orchestration.
+  `src/app/state.rs` retains shared routing and some feature state; PR Triage,
+  Final Review, and Learning already own their state in feature directories.
+- `gui/src/App.tsx` owns shell navigation, cross-feature handoffs, and remaining
+  frontend workflow orchestration. Components and feature API modules live in
+  `gui/src/`; `gui/src-tauri/src/main.rs` binds commands to Rust adapters.
+- `src/gui_contract.rs` owns common GUI targets/errors, snapshots, and `GuiHandle`,
+  which hides a private App. `src/gui_*.rs` adapt shared operations by stable IDs.
+  Preserve this shared engine instead of duplicating TUI behavior in the GUI.
 
-`src/handlers/mod.rs` routes by AppMode. Handlers translate input into feature
-operations and sometimes edit dialog fields directly. `src/ui/dashboard.rs`
-dispatches renderers; `ui/dialogs/` renders overlays. Neither layer should gain
-persistence or process-launch responsibilities.
+## Find the owner for a task
 
-`src/app/mod.rs` constructs App/AppConfig, declares features and owns shared
-pane/sidebar infrastructure, logging and configuration access. Features remain
-`impl App` orchestration. `src/app/state.rs` keeps AppMode and shared routing,
-configuration, session and TODO/plan state, with compatibility re-exports of the
-three extracted features' types. Cross-feature mode transitions remain on App.
+Paths below are relative to `src/` unless prefixed with `gui/`. Within a cell,
+abbreviated filenames or suite names inherit the preceding directory or module.
+Test entries are existing suites or files; use the focused commands in
+[checks.md](checks.md).
 
-The desktop prompt-library adapter in `src/gui_prompts.rs` reads the same
-source merge as Remote Control and the TUI, and calls the shared search,
-placeholder/default and substitution helpers in `src/prompt_library.rs`.
-Content keys exclude generated config IDs/dates and include checkout paths;
-insertion reloads templates and allowed session targets before returning an
-unsent string. `PromptLibraryPanel.tsx` owns only local selection/fill state,
-while `App.tsx` appends the handoff to the session draft after a final workspace
-cache check. Neither browsing nor preparation launches a process or writes the
-library. Library authoring remains a separate workflow.
-
-`src/gui_syntax.rs` highlights GUI diffs, reviews and the Learning reader
-through the TUI's `highlight` service (detection, installed tree-sitter
-parsers, cache). It highlights each diff file's whole base and current
-contents and sends per-line token spans that must reproduce the line text
-exactly, so multi-line strings and comments are classified with full-file
-context. Per-file size limits and a per-projection byte budget bound the
-first, uncached load. `SyntaxInfo` explains plain-text fallbacks, and
-`install` runs the TUI picker's installer on a background thread. The
-frontend's `SyntaxCode.tsx` renders spans as `syn-*` classes coloured by the
-`--syn-*` tokens in `syntax.css`.
-
-`src/gui_prompt_overrides.rs` adapts the headless-prompt override manager
-without touching `App::mode`, so it can sit above an open interview or review
-and its pre-call notice. Rows come from the shared registry and
-`resolve_template_layered` over the same DB and `amf.json` layers the call sites
-read. Each row carries a revision fingerprint of that prompt's stored overrides
-and context paths; saves and clears re-resolve the stable context and refuse a
-mismatch. Project writes go through `prompts::project::update_in_repo`, which
-the TUI manager also uses. It changes only the `prompt_overrides` key and
-refuses a malformed config. `precall_target` maps a pending
-`AppMode::PromptPrecall` to its prompt, harness and feature/project context.
-
-`gui_review/summary.rs` projects the shared TUI pre-finish summary rows and
-calls its suggestion-preparation step after checking the stable workflow,
-reviewed changeset and saved progress. The GUI confirms source writes and
-keeps review open for another look at changed code. Reading or closing the
-summary preserves unsaved editors and never saves progress.
-
-`gui_pr_triage.rs` drives the TUI's PR Triage modes (`PrPicker`,
-`PrReviewLoading`, `PrReview`, `PrInvestigationLoading`) by stable workflow id
-and revision. Reads and writes go through `pr_review/github_access.rs`'s
-`TriageGithub` boundary, which production backs with the unchanged `gh` calls
-and tests replace with an offline fixture. Each step's `gh` reads run without
-the GUI handle lock: `plan_begin`/`plan_poll`/`plan_act` name them under the
-lock, `PrTriageReads::run` performs them on a blocking thread, and the
-`*_prefetched` call applies the results (reading live only what the plan
-missed). A pull request list that must be re-read after a failed comment fetch
-is left `loading` for the next poll. Investigations and GitHub writes are
-two-step: the adapter records the exact prompt or posted body, and confirmation
-re-reads the PR (head, metadata or thread) before calling the shared engine.
-`try_pr_review_post_reply`/`try_pr_review_toggle_resolve` return failures instead
-of the TUI's dashboard reset, so the GUI keeps the pane and draft.
-A thread batch fix (TUI `B`) marks several unresolved GitHub comments, builds the
-TUI's combined prompt, and sends it to one explicitly chosen agent session. The
-preview carries a SHA-256 digest of the PR head, each comment as fetched, the
-session and its `destination_revision`; confirmation recomputes it, re-reads the
-PR head and refuses any difference, a missing/replaced/stopped session (never
-retargeting) or a missing reply-draft store. One reply draft is registered per
-comment before sending and all earlier ones are restored if any registration or
-the paste fails. At most 50 comments; the TUI's soft ceilings only warn.
-Existing-agent fix submission uses the TUI's receipt-prompt builder and stored
-provenance, with an exact-prompt confirmation and fresh PR/session checks.
-`TmuxOps` delivers a bracketed paste only to an existing running window; sending
-never creates an agent. Successful Enter marks Fixing through the shared
-persistence path. A failed Enter retires the confirmation while keeping the fix
-editor because terminal delivery can be ambiguous. `amf reply-draft` first sends
-to the TUI socket, then falls back to the same SQLite request-id capture guard
-when that socket is unavailable. The GUI's existing Done-reply engine reads the
-returned draft and its fixing-session attribution; no GUI IPC socket or schema
-is added.
-
-`gui_pr_review.rs` opens the project's repository directly on the shared Review
-PR list, without choosing a feature or resolving the checkout's branch PR.
-The GUI's PR Review panel reads the fetched PR revisions, saves file comments
-and a summary in the shared SQLite drafts, and previews the exact GitHub
-submission before confirming. List/open/post workers retain the TUI's request
-identity and head checks; workflow revisions and a saved-draft baseline reject
-stale edits and submissions. Project PR Triage uses the same repository scope
-and goes directly to its picker without a branch lookup.
-
-`app/review/checks.rs` owns the shared build/test runner: it drains both output
-streams while retaining bounded text and terminates/reaps owned processes on
-cancellation or close. `gui_review/checks.rs` previews the effective project
-command, rechecks confirmation and workflow freshness, and returns transient
-results without saving progress or completing the review.
-
-`gui_review/complete.rs` completes a review through the TUI finish engine. The
-TUI's `complete_final_review` is now `record_final_review_round` (write the
-round, clear progress, record the snapshot, optional PR post) followed by
-`dispatch_review_feedback`; the GUI calls the recording half itself, after
-rechecking the confirmed check command, suggestion opt-in batch and handoff
-session. Like the TUI it applies the saved opt-in batch and reruns the
-configured check rather than trusting a transient GUI result. An actionable
-round's prompt goes to the reviewed feature's first agent session only when
-the reviewer chose handoff: submitted through `deliver_review_prompt` when the
-TUI setting submits and the session runs, otherwise returned once (via
-`take_completion`) as an unsent composer draft.
-
-`app/supervised_edits.rs` owns Vibeless per-edit approval shared by both
-interfaces: the hook reply format, its IPC-or-file delivery and the captured
-diff loader. `App::read_notification_files` is the one reader of hook
-notification files; the TUI scan and `gui_supervised_edits.rs` both use it.
-The GUI binds no IPC socket, so it answers only file-fallback requests, by a
-stable edit ID and a revision hashed over the request and both captured
-copies. It refuses changed, already-answered and abandoned edits and never
-recreates a departed hook's files.
-Responders hold a shared file lock through validation and delivery and publish
-responses without overwriting an existing decision. A failed signal can retry
-only that original decision; TUI delivery failures keep the review and feedback
-open. OpenCode uses reply paths unique to each change and a waiting lease with
-process, session and change ownership, refreshed while its hook polls. The GUI
-requires a live owner and a fresh lease before answering OpenCode requests.
-
-`gui_sessions.rs` gives the GUI the rest of the TUI's session picker. VS Code
-goes through `App::launch_vscode_window`, the picker's tracked launch (the
-`code` CLI is a test seam, `session_ops::vscode_cli`). The feature's
-`launched_editors` rows are projected into the sidebar snapshot, and closing
-them calls `App::kill_tracked_editors` after checking the rows the user
-confirmed. Custom sessions are re-read from the effective `amf.json` and
-matched by a config revision. Their `pre_check` runs between two holds of the
-GUI lock, and they are created by `App::add_custom_session_identified`, which
-shares its window launch with the TUI's add. `with_feature_started_for_add`
-stops a feature that an add started, if the add then fails, for terminals,
-editors and custom sessions alike.
-
-`gui_fork.rs` sequences the shared fork foundation (`fork_snapshot`:
-snapshot, transfer, `populate`; `transcript::CapturedContext`;
-`WorktreeOps::create_fork_base`) for the desktop. `prepare` captures the
-snapshot and exact-session transcript off the GUI lock and stores them under a
-single-use token; `confirm` must echo the previewed project, feature, session,
-branch and HEAD, re-verifies them, then creates, populates, registers the
-feature stopped, runs the worktree hook (cancellable) and only then, if asked,
-starts the harness through `ensure_feature_running`. Outcomes (`Created`,
-`Cancelled`, `Failed` with the retained checkout) are recorded per token so a
-repeat confirm never forks twice. The TUI's `F` path in `app/feature_ops.rs`
-shares `fork_snapshot::populate`, `ProjectSettings` and `remove_checkout`.
-
-`gui_dormancy.rs` lists the shared `app::dormant` scan with the readings
-each row was decided on. Its confirmed stop re-checks every selected feature
-against those readings and the current scan, then calls the TUI's stop
-(`App::stop_feature_reporting`), whose editor cleanup keeps its ownership
-rules; the module signals no process itself. Dormant-list deletion shares
-the same observation validation before every TODO-disposition/host choice or
-deletion. It also checks the confirmed name
-and checkout, then calls the existing GUI/TUI deletion engine on that refreshed
-store. The confirmation does not touch attention. Terminal attachment records
-`last_accessed`, as TUI view entry does.
+| Task | Start here | Relevant tests |
+| --- | --- | --- |
+| Startup, event timing, worker polling | `cli.rs`, `app/mod.rs` | `app::tests::startup_navigation`, `pane_input` |
+| Feature/session creation, start, stop, recovery | `app/feature_ops.rs`, `app/session_ops.rs`, `gui_contract.rs`, `gui_sessions.rs` | `app::tests::feature_sessions`, `gui_sessions` |
+| GUI creation forms | `gui/src/CreateProjectForm.tsx`, `CreateFeatureForm.tsx`, `useCreationHarness.ts` | `gui/tests/FirstRun.test.tsx`, `WorktreeHooks.test.tsx`, `OfferedAgents.test.tsx` |
+| GUI project page and shared header/start-stop controls | `gui/src/ProjectView.tsx`, `WorkspaceControls.tsx` | `gui/tests/App.test.tsx`, `SidebarWorkflow.test.tsx`, `SessionControls.test.tsx` |
+| GUI workspace selection and recovery | `gui/src/useWorkspaceSelection.ts`, `workspaceSnapshot.ts` | `gui/tests/App.test.tsx` |
+| Session drafts and cross-feature handoff | `gui/src/useSessionDraftActions.ts`, `sessionDraftState.ts`, `App.tsx`, `PromptComposer.tsx` | `gui/tests/PromptComposer.test.tsx`, `App.test.tsx` |
+| Plan questions, answer navigation, launch | `app/plan_interview.rs`, `app/plan_interview_state.rs`, `plan_interview.rs`, `gui_plans.rs` | `app::tests::plans`, `gui/tests/PlanPanel.test.tsx` |
+| PR comments, replies, investigation, fix handoff | `app/pr_review/`, `gui_pr_triage.rs` | `app::pr_review`, `app::tests::pr_triage`, `gui_pr_triage` |
+| Final Review and PR review drafts/submission | `app/review/`, `gui_review/`, `gui_pr_review.rs` | `app::review`, `app::tests::final_review`, `gui_pr_review` |
+| Learning questions and session lifecycle | `app/learning/`, `gui_learning.rs` | `app::learning`, `gui/tests/LearningWorkflow.test.tsx` |
+| Diff layout, wrapping, navigation | `ui/dialogs/diff.rs`, `handlers/diff.rs`, `app/review/state.rs` | `ui::dialogs::diff`, `handlers::diff` |
+| Shared syntax and word differences | `highlight/`, `worddiff.rs`, `gui_syntax.rs` | `highlight`, `worddiff`, `gui/tests/SyntaxHighlighting.test.tsx` |
+| TODO editing and launching | `app/todo_state.rs`, `app/todos.rs`, `db/todos.rs`, `gui_todos.rs`, `gui_contract.rs` | `app::tests::todos`, `gui/tests/TodoNext.test.tsx` |
+| Compose editor and command state | `app/compose_state.rs`, `app/compose.rs` | `app::tests::compose`, `ui::dialogs::compose` |
+| Prompt library and overrides | `app/prompt_library_state.rs`, `app/prompt_override_state.rs`, `prompt_library/`, `prompts/`, `gui_prompts/`, `gui_prompt_overrides.rs` | `app::tests::prompts_configuration`, `gui/tests/PromptLibraryPanel.test.tsx` |
+| Config Wizard | `app/config_wizard.rs` | No focused App suite is currently defined |
+| Harness command/protocol or headless process lifetime | `headless.rs`, `claude.rs`, `codex.rs`, `pi.rs`, `app/opencode.rs` | `headless`, corresponding harness module tests |
+| Persistence and concurrent writers | `db/`, `app/feature_ops.rs`, `app/mod.rs` | `db`, `app::tests::store_sync` |
+| Resource admission and owned processes | `resources/`, `app/resource_gate.rs`, `app/editor_ops.rs` | `app::tests::resources`, `editor_lifecycle` |
 
 ## Feature modules
 
-| Feature | Files under `src/app/` | Responsibility |
-| --- | --- | --- |
-| PR Triage | `pr_review/domain.rs` | Comment/review model, attribution, prompt/hunk transforms |
-| | `pr_review/fetch.rs` | GitHub normalization, fetch/cache and PR picker coordination |
-| | `pr_review/actions.rs` | Selection, marks and action orchestration |
-| | `pr_review/reply.rs` | Reply drafting, provenance and posting |
-| | `pr_review/investigation.rs` | Read-only investigation requests, results and follow-ups |
-| | `pr_review/integration.rs` | Fix target/harness selection, injection and linked session navigation |
-| | `pr_review/memory.rs` | Review-memory bootstrap, compact and append workflows |
-| | `pr_review/review_tab.rs` | "Review a PR" tab: open-PR list, tab switching, opening a PR into the viewer and leaving it |
-| | `pr_review/revisions.rs` | Object-only PR fetch into `refs/amf/review/N/*`, head check, merge-base, ref cleanup |
-| | `pr_review/github_access.rs` | `TriageGithub` read/write boundary (`gh` in production, fixtures in tests) and the investigation runner seam |
-| | `pr_review/state.rs`, `runtime.rs` | Dialog types and background work ownership |
-| Final Review | `review/preparation.rs` | Diff snapshots, persisted progression/history and review notes |
-| | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |
-| | `review/history.rs` | Read-only round browsing, lazy archive loading and shared current-review projection |
-| | `review/comments.rs` | Anchors, comments, suggestions and editor operations |
-| | `review/headless.rs` | Walkthrough/co-review workers, completion and feedback dispatch |
-| | `review/checks.rs` | Shared build/test check execution, bounded output and process ownership |
-| | `review/pr_drafts.rs` | PR review drafts in SQLite: save, resume, PR-update flags and outdated comments |
-| | `review/pr_submit.rs` | PR review submit dialog, GitHub payload and posting |
-| | `review/state.rs` | Viewer/comment/undo/history state and mode-owned child handles |
-| Learning | `learning/lifecycle.rs` | Open/close, reload, settings and persistence coordination |
-| | `learning/navigation.rs` | File trees, anchors, selection and answer navigation |
-| | `learning/workers.rs` | Question prompts, execution and answer application |
-| | `learning/follow_up.rs` | TODO creation and agent-session handoffs |
-| | `learning/state.rs`, `runtime.rs` | Session/display types and persistent answer tracking |
+[Feature ownership and runtime lifetimes](feature-ownership.md) maps the PR Triage,
+Final Review, and Learning submodules and explains their different close/reopen
+and stale-result rules. [GUI workflow boundaries](gui-workflows.md) describes
+adapter confirmation, revision, delivery, and locking invariants by feature.
 
-Feature roots expose consumed entrypoints and compatibility re-exports. Free
-helpers are imported from their owning sibling module; new private helper access
-is bounded to the original feature. Extracted modules import explicit App types.
-Pure transformations take data rather than an all-purpose App/context object.
-State/domain code does not import handlers or renderers. Orchestration may use
-existing cross-feature APIs for TODO/plan/session handoffs.
-
-The neighboring `ai_review.rs`, `review_destination.rs`, `review_memory.rs` and
-`triage_feature.rs` retain their existing responsibilities. Extraction does not
-absorb them just to shrink a file. Shared DiffScope/layout concepts remain
-available to ordinary diff browsing rather than becoming private to Final Review.
+Keep pure transformations independent of App. Import helpers from their owning
+module, expose only consumed entrypoints, and keep private feature helpers private.
+Shared diff/layout concepts belong to ordinary diff browsing as well as reviews.
+Do not absorb neighboring features merely to reduce file length.
 
 ## Runtime ownership and stale results
 
-App now has 125 fields, down from the 130 recorded in
-[app-fields.tsv](baseline/app-fields.tsv). Three groups establish concrete
-boundaries with private fields and shared production/test defaults:
-
-- `PrReviewWork`: independent fetch/investigation receivers; begin, poll and
-  cancel methods. Cancel drops the receiver without killing the spawned worker.
-  AppMode still determines whether a result has a live target. The "Review a
-  PR" list, open, and post slots tag each result with a request id so a retry
-  or a closed tab drops a stale one; their blocking loaders are plain `fn`s,
-  swapped in tests. A finished post is recorded even with no live target.
-- `AiReviewRun`: receiver, pending origin and live progress. Completion or PR
-  invalidation clears them together; closing the running screen preserves them
-  for later result application and reopening. Existing PR/workdir/head matching
-  stays in feature orchestration, including successor invalidation.
-- `LearningRuns`: persistent answer channel and in-flight question IDs. Delivery
-  retires its matching ID, then orchestration updates the visible matching row
-  or the original DB row when the overlay has closed/switched. Closing the
-  overlay does not cancel the worker or erase its pending identity.
-
-Final Review already owns its children in mode state; it keeps that boundary.
-No second authoritative copy was added. Shared routing/store/configuration,
-manager injection, IPC/watcher/observer guards, pane/sidebar queues and debug/perf
-remain on App. Review-memory jobs, refresh caches and cross-feature notification
-state remain available for later incremental ownership work.
+Keep one authoritative owner for state. AppMode remains the central routing
+boundary; cross-feature transitions remain on App. Worker completion must check
+its request, workflow, repository/head, or session identity before applying data.
+Closing a view does not universally cancel work: consult the feature's lifecycle
+before moving channels or child guards. Preserve process lifetimes, wakeups,
+queue behavior, and cleanup order during extraction.
 
 ## Data and side effects
 
-`src/project.rs` models projects, features and sessions. `db/mod.rs` owns the
-SQLite connection and open/seed entrypoints; `migrations.rs` owns schema changes;
-`store.rs` persists projects. Other DB modules persist session status, tokens,
-debug logs, editors, prompt templates/overrides, TODOs, plan interviews, Learning,
-PR triage/investigations/terminal state, PR/AI review caches and manual PR review
-drafts (`pr_review_drafts.rs`, keyed by repository and PR number). DB code knows
-project/domain types and uses WorktreeManager to resolve legacy stores.
+`project.rs` models projects, features, and sessions. `db/mod.rs` owns connections;
+`db/migrations.rs` owns schema changes; feature DB modules own persistence.
+`App::save` reports conflicting concurrent writes, backed by the version check
+and write transaction in `db::store::save_checked`. Preserve that check and
+stable-ID selection restoration when refreshing another process's changes.
 
-`src/traits.rs` provides mockable TmuxOps and WorktreeOps, implemented by
-`tmux.rs` and `worktree.rs`. GitHub calls live in `github.rs`; its
-`GithubTransport` trait is the shared boundary for GitHub-backed workflows,
-with `GhCli` as the production adapter. PR Triage keeps its existing CLI
-behavior while issue workflows can reuse authentication, repository-context,
-and list transport. Compact companion-feature setup state and row rendering
-live in `app/feature_setup.rs` and `ui/dialogs/feature_setup.rs`, shared by PR
-Triage and Final Review. Headless execution is in `headless.rs`; harness
-integration supports Claude Code, Codex, OpenCode and Pi. IPC, filesystem
-watching, tmux observation, editors and resource inspection have dedicated
-modules. Injection is partial: App workflows still call concrete managers and
-filesystem APIs. Preserve those boundaries and process lifetimes; introduce an
-adapter only where it establishes a concrete dependency boundary.
+`traits.rs` provides `TmuxOps` and `WorktreeOps`, backed by `tmux.rs` and
+`worktree.rs`. `github.rs` owns `GithubTransport`/`GhCli`; PR Triage adds
+`pr_review/github_access.rs`'s `TriageGithub` boundary. Headless execution,
+IPC, filesystem observation, editors, and resource inspection have dedicated
+modules. Injection remains partial: add adapters for concrete boundaries rather
+than introducing an all-purpose service container.
 
 ## Tests
 
-`src/app/tests/mod.rs` declares behavior suites and shared `support.rs`:
+`app/tests/mod.rs` declares behavior suites; shared fixtures live in `support.rs`.
+Feature-local unit suites stay with their owners. Share helpers only when several
+suites consume them. Each test retains its temporary directories, databases,
+process guards, and original lifetimes. Use `App::new_for_test` and shared group
+defaults, and keep normal parallel execution. When moving tests, capture the
+current runnable inventory and compare names through an explicit move map.
 
-| Suite | Coverage |
-| --- | --- |
-| `startup_navigation`, `pane_input` | Startup, dashboard navigation, view/mailbox/input and Compose |
-| `status_sidebar`, `attention` | Sync, IPC status, sidebar caches, badges and attention reconciliation |
-| `feature_sessions`, `hooks_setup`, `automation` | Creation/recovery/start/stop, local hooks and automation entrypoints |
-| `prompts_configuration`, `plans`, `todos` | Configuration/prompts, plan interviews and scoped TODO workflows |
-| `pr_triage`, `final_review` | PR/AI/investigation/memory/integration and diff review workflows |
-| `resources`, `editor_lifecycle` | Admission, process identity and editor stop races |
-
-Each extracted feature also retains its own `tests.rs`; Learning's suite was
-already local and its handler fixture paths remain stable. Four branch-matching
-tests moved with PR state. Preserve the old/new path maps when auditing coverage.
-Shared helpers belong in support only when multiple suites consume them. Temporary
-repositories, DBs and process guards remain per-test, with their original lifetimes.
-
-## Deferred reliability work
-
-Store overwrite, migration atomicity, repository cache identity, IPC socket
-ownership, startup resource handling and synchronous GitHub-call findings remain
-separate reliability work. This refactor changes no persistence schema or user
-workflow to address them. No extraction blocker was found; inspect exact identity
-and cleanup guards before any future ownership change.
+Historical reliability findings and past validation results are evidence about
+their recorded revisions, not a current backlog or a green check for this branch.
+Recheck the implementation before carrying them into a new change.

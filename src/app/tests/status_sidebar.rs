@@ -51,8 +51,11 @@ fn poll_sidebar_load_results_updates_feature_caches() {
         Box::new(MockWorktreeOps::new()),
     );
 
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
-    app.sidebar_load_tx
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .sidebar_load_tx
         .send(crate::app::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
             signature: 7,
@@ -106,7 +109,11 @@ fn poll_sidebar_load_results_updates_feature_caches() {
             .map(String::as_str),
         Some("Model: openai/gpt-5.5")
     );
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 // ── thinking hint parsing ─────────────────────────────────
@@ -152,7 +159,9 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
 
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
     app.latest_prompt_cache
         .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
     app.opencode_sidebar_cache.insert(
@@ -185,7 +194,11 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
     );
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]
@@ -859,8 +872,11 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
         Box::new(MockWorktreeOps::new()),
     );
 
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
-    app.sidebar_load_tx
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .sidebar_load_tx
         .send(crate::app::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
             signature: 9,
@@ -902,7 +918,11 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
         Some("Warm cache")
     );
     assert!(app.is_feature_thinking("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]
@@ -924,7 +944,11 @@ fn ipc_opencode_sidebar_update_queues_sidebar_refresh() {
         "cwd": repo.path(),
     }));
 
-    assert!(app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]
@@ -2115,25 +2139,34 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
     let signature =
         crate::app::SidebarLoadRequest::from_feature(&app.store.projects[0].features[0])
             .signature();
-    app.sidebar_load_signatures
+    app.sidebar_runtime
+        .sidebar_load_signatures
         .insert("amf-my-feat".to_string(), signature);
 
     let mut tracker = SessionTokenTracker::default();
     app.sync_session_status_with_tracker(&mut tracker);
 
     assert!(
-        app.pending_sidebar_loads.contains("amf-my-feat"),
+        app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat"),
         "sidebar input checks should be queued off the UI thread"
     );
     for _ in 0..20 {
         app.poll_sidebar_load_results();
-        if !app.pending_sidebar_loads.contains("amf-my-feat") {
+        if !app
+            .sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(
-        !app.pending_sidebar_loads.contains("amf-my-feat"),
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat"),
         "unchanged sidebar input check should complete"
     );
     assert!(
@@ -2147,12 +2180,18 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
     app.sync_session_status_with_tracker(&mut tracker);
 
     assert!(
-        app.pending_sidebar_loads.contains("amf-my-feat"),
+        app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat"),
         "changed prompt inputs should queue a fresh sidebar load"
     );
     for _ in 0..20 {
         app.poll_sidebar_load_results();
-        if !app.pending_sidebar_loads.contains("amf-my-feat") {
+        if !app
+            .sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2313,7 +2352,11 @@ fn sync_session_status_skips_sidebar_refresh_when_sidebar_hidden() {
 
     app.sync_session_status();
 
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]
@@ -2340,7 +2383,11 @@ fn toggling_sidebar_back_on_triggers_sidebar_refresh() {
 
     app.toggle_sidebar_in_view();
 
-    assert!(app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]

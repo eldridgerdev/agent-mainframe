@@ -50,7 +50,7 @@ fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
     app.pane_content = "same formatted content".to_string();
     app.pane_lines = vec![ratatui::text::Line::from("ABCD")];
 
-    app.view_snapshot_tx.send(ViewSnapshot {
+    app.pane_runtime.view_snapshot_tx.send(ViewSnapshot {
         session: "amf-my-feat".to_string(),
         window: "terminal".to_string(),
         pane_content: Some("same formatted content".to_string()),
@@ -104,8 +104,12 @@ fn snapshot_mailbox_merges_cursor_only_update_with_pending_content() {
 
     // Content snapshot followed by a cursor-only snapshot before the
     // main loop drains: the merged slot must keep both.
-    app.view_snapshot_tx.send(base(Some("hello"), None));
-    app.view_snapshot_tx.send(base(None, Some(Some((2, 0)))));
+    app.pane_runtime
+        .view_snapshot_tx
+        .send(base(Some("hello"), None));
+    app.pane_runtime
+        .view_snapshot_tx
+        .send(base(None, Some(Some((2, 0)))));
 
     let (pane_changed, cursor_changed) = app.drain_view_snapshots();
     assert!(pane_changed);
@@ -140,7 +144,7 @@ fn frozen_display_holds_last_frame_until_freeze_lapses() {
     app.pane_content_rows = 1;
     app.pane_lines = vec![ratatui::text::Line::from("OLD ")];
 
-    app.view_snapshot_tx.send(ViewSnapshot {
+    app.pane_runtime.view_snapshot_tx.send(ViewSnapshot {
         session: "amf-my-feat".to_string(),
         window: "terminal".to_string(),
         pane_content: Some("new".to_string()),
@@ -160,7 +164,7 @@ fn frozen_display_holds_last_frame_until_freeze_lapses() {
     assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("OLD ")]);
 
     // Once the freeze lapses, the freshest frame is revealed.
-    app.view_display_frozen_until = Some(std::time::Instant::now());
+    app.pane_runtime.view_display_frozen_until = Some(std::time::Instant::now());
     let (pane_changed, _) = app.drain_view_snapshots();
     assert!(pane_changed);
     assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("NEW ")]);
@@ -1413,7 +1417,8 @@ fn status_file_cleanup_during_remove() {
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.db = Some(db);
-    app.pending_sidebar_loads
+    app.sidebar_runtime
+        .pending_sidebar_loads
         .insert("amf-custom-cleanup-test-sess".to_string());
     app.latest_prompt_cache
         .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
@@ -1462,7 +1467,11 @@ fn status_file_cleanup_during_remove() {
     );
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
 }
 
 #[test]

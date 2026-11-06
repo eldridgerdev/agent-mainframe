@@ -1088,3 +1088,11 @@ One-hundred-third increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundred-fourth increment (2026-11-06):
+
+- Grouped PR Review pane selection, detail scrolling, feature resolution, and
+  dedicated-session status tests in `app/tests/pr_triage/review_pane.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.

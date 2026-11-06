@@ -977,3 +977,12 @@ Ninetieth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninety-first increment (2026-11-06):
+
+- Grouped PR comment ordering, conversation grouping, and resolved-item
+  selection tests in `app/tests/pr_triage/review_sort.rs` with their scoped
+  fixtures.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

@@ -1188,3 +1188,12 @@ One-hundred-sixteenth increment (2026-11-06):
   behavior modules.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-seventeenth increment (2026-11-06):
+
+- Moved patch-panel rendering, row-cache ownership, unified/side-by-side row
+  construction, gutter rendering, and patch-specific styles to
+  `ui/dialogs/diff_patch.rs`; `diff.rs` retains its facade and orchestrates the
+  existing call sites. Shared row/status helpers are scoped to `ui::dialogs`.
+- Validation: `cargo check --tests --locked` passed; focused diff renderer tests
+  passed (34 passed); formatting and `git diff --check` passed.

@@ -15,9 +15,13 @@
 //! The summary is a headless AI call. The TUI announces it with a toast; the
 //! GUI is stricter and requires an acknowledgement of the exact prompt and
 //! harness shown by [`summary_notice`] before anything is spawned.
-use crate::app::{App, Selection};
-use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
-use crate::project::AgentKind;
+use crate::app::resource_gate::{StartPreconditions, describe_tripped};
+use crate::app::{App, Selection, StartIntent};
+use crate::gui_contract::{
+    FeatureTarget, GuiError, GuiErrorKind, GuiHandle, GuiResult, SessionTarget,
+    StartFeatureResponse, StopFeatureResponse,
+};
+use crate::project::{AgentKind, ProjectStatus};
 use crate::prompts::PromptId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -319,6 +323,141 @@ pub(crate) fn summary_generate_with(
         return Err(GuiError::conflict(reason));
     }
     load(gui, target)
+}
+
+impl GuiHandle {
+    /// The `(project_id, workdir)` pair that keys a feature's worktree TODO
+    /// scope (`db::todos::TodoScope::Worktree`) -- exposed so `gui_todos`
+    /// (a sibling module, not a descendant of this one) can resolve a
+    /// feature-relative TODO scope without `App` itself needing to leave
+    /// this module. See the module doc for why `App` never appears directly
+    /// in a public signature here.
+    pub fn worktree_scope_for_feature(
+        &self,
+        target: &FeatureTarget,
+    ) -> GuiResult<(String, String)> {
+        let (pi, fi) = self.locate(target)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        Ok((
+            self.app.store.projects[pi].id.clone(),
+            feature.workdir.to_string_lossy().into_owned(),
+        ))
+    }
+
+    /// Access to the attached database for `gui_todos`, which is not
+    /// coupled to `App`'s project/feature store at all (TODO lists live
+    /// outside it -- see `db::todos`'s own module doc) and so has no other
+    /// reason to reach into `App`.
+    pub(crate) fn db(&self) -> GuiResult<&crate::db::AmfDb> {
+        self.app.db.as_ref().ok_or_else(|| GuiError {
+            github: None,
+            kind: GuiErrorKind::Internal,
+            message: "No database attached to this session".to_string(),
+        })
+    }
+
+    /// Narrow crate-internal bridge for GUI workflow adapters. The App type
+    /// remains absent from every public GUI contract signature.
+    pub(crate) fn app_for_workflow(&mut self) -> &mut App {
+        &mut self.app
+    }
+
+    pub(crate) fn app_and_pr_workspace(
+        &mut self,
+    ) -> (
+        &mut App,
+        &mut Option<crate::gui_pr_workspace::PrWorkspaceContext>,
+    ) {
+        (&mut self.app, &mut self.pr_workspace_context)
+    }
+
+    pub fn start_feature(&mut self, target: FeatureTarget) -> GuiResult<StartFeatureResponse> {
+        self.start_feature_with_approval(target, false)
+    }
+
+    pub fn start_feature_with_approval(
+        &mut self,
+        target: FeatureTarget,
+        approved: bool,
+    ) -> GuiResult<StartFeatureResponse> {
+        self.refresh_store()?;
+        let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let already_running = self.app.tmux.session_exists(&feature.tmux_session);
+        if !already_running && !approved {
+            self.require_start_approval(&format!("Starting '{}'", feature.name))?;
+        }
+
+        // The GUI has either passed the precondition check or obtained an
+        // explicit approval. `ensure_feature_running` still checks tmux's
+        // real session state and no-ops on a repeated submission.
+        self.app
+            .ensure_feature_running(pi, fi, StartIntent::Approved)?;
+        // `save_reporting_conflict` rather than `save`: this call is entirely
+        // ours (unlike `stop_feature`'s, which goes through `do_stop_feature`'s
+        // own internal save), so it can report `GuiErrorKind::Conflict`
+        // directly instead of relying on `From<anyhow::Error>`'s message match.
+        if !self.app.save_reporting_conflict()? {
+            return Err(GuiError::conflict(
+                "Workspace changed elsewhere (another AMF window or process) before this start \
+                 was saved. The view has been refreshed with the current state -- please retry.",
+            ));
+        }
+
+        let name = self.app.store.projects[pi].features[fi].name.clone();
+        Ok(StartFeatureResponse {
+            feature_id: target.feature_id,
+            already_running,
+            message: if already_running {
+                format!("'{name}' is already running")
+            } else {
+                format!("Started '{name}'")
+            },
+        })
+    }
+
+    pub(crate) fn require_start_approval(&self, action: &str) -> GuiResult<()> {
+        if let StartPreconditions::NeedsConfirm {
+            over_limit,
+            low_memory,
+        } = self.app.check_start_preconditions()
+        {
+            let reason = describe_tripped(over_limit, low_memory);
+            return Err(GuiError::needs_approval(format!(
+                "{action} would exceed AMF's resource warning: {reason}. Start anyway?"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn stop_feature(&mut self, target: FeatureTarget) -> GuiResult<StopFeatureResponse> {
+        self.refresh_store()?;
+        let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let name = self.app.store.projects[pi].features[fi].name.clone();
+
+        if self.app.store.projects[pi].features[fi].status == ProjectStatus::Stopped {
+            return Ok(StopFeatureResponse {
+                feature_id: target.feature_id,
+                already_stopped: true,
+                message: format!("'{name}' is already stopped"),
+            });
+        }
+
+        let editors = self.app.stop_feature_reporting(pi, fi)?;
+        // Carry the editor cleanup's outcome (a window left running because
+        // AMF did not open it, say) instead of dropping it with the status line.
+        let message = match editors.as_ref().and_then(|report| report.summary()) {
+            Some(detail) => format!("Stopped '{name}' - {detail}"),
+            None => format!("Stopped '{name}'"),
+        };
+        Ok(StopFeatureResponse {
+            feature_id: target.feature_id,
+            already_stopped: false,
+            message,
+        })
+    }
 }
 
 #[cfg(test)]

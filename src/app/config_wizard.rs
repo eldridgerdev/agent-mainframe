@@ -6,11 +6,82 @@ use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
 
 use super::*;
+use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, ExtensionConfig, FeaturePreset, HookConfig,
     HookPrompt, LifecycleHooks, save_project_extension_config,
 };
 use crate::project::{AgentKind, VibeMode};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigCategory {
+    CustomSessions,
+    FeaturePresets,
+    PlanQuestions,
+    LifecycleHooks,
+    Keybindings,
+    AllowedAgents,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigScope {
+    Global,
+    Project(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigWizardStep {
+    CategoryPicker,
+    ScopePicker,
+    ItemList,
+    EditItem,
+    ConfirmSave,
+}
+
+pub struct ConfigWizardState {
+    pub step: ConfigWizardStep,
+    pub category: ConfigCategory,
+    pub scope: ConfigScope,
+    pub selected: usize,
+    pub field_focus: usize,
+    pub input_mode: bool,
+    pub sessions: Vec<CustomSessionConfig>,
+    pub presets: Vec<FeaturePreset>,
+    pub plan_questions: Vec<ConfiguredPlanQuestion>,
+    pub skip_builtin_questions: Option<bool>,
+    pub hooks: LifecycleHooks,
+    pub keybindings: HashMap<String, char>,
+    pub allowed_agents: Option<Vec<AgentKind>>,
+    pub editing_index: Option<usize>,
+    pub field_values: Vec<String>,
+    pub field_editor: Option<ConfigWizardFieldEditor>,
+    pub icon_picker: Option<ConfigWizardIconPicker>,
+    pub field_toggles: Vec<bool>,
+    pub agent_toggles: Vec<bool>,
+    pub agent_toggles_dirty: bool,
+    pub keybinding_actions: Vec<String>,
+    pub capturing_key: bool,
+    pub original_json: String,
+    pub modified_json: String,
+    pub confirm_diff: Option<crate::diff::DiffFile>,
+    pub preview_scroll: usize,
+    pub project_repo: Option<PathBuf>,
+    pub project_name: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigWizardIconPicker {
+    pub selected: usize,
+}
+
+pub struct ConfigWizardFieldEditor {
+    pub field_index: usize,
+    pub label: String,
+    pub editor: TextEditor,
+    pub scroll_offset: usize,
+    pub sync_scroll_to_cursor: bool,
+}
 
 impl App {
     pub fn start_config_wizard(&mut self) {

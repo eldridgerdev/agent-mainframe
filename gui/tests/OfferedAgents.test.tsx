@@ -4,7 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { CreateFeatureForm, TodoNewFeatureForm } from "../src/App";
+import CreateFeatureForm from "../src/CreateFeatureForm";
+import TodoNewFeatureForm from "../src/TodoNewFeatureForm";
 import type { HarnessInfo, Project } from "../src/api";
 
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BrowseButton } from "../src/BrowseButton";
-import { CreateProjectForm } from "../src/App";
+import CreateProjectForm from "../src/CreateProjectForm";
 import type { HarnessInfo } from "../src/api";
 
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));

@@ -285,7 +285,9 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_runtime
+        .pending_sidebar_loads
+        .insert("amf-my-feat".to_string());
     app.latest_prompt_cache
         .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
     app.opencode_sidebar_cache.insert(
@@ -336,7 +338,11 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
 
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
-    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(
+        !app.sidebar_runtime
+            .pending_sidebar_loads
+            .contains("amf-my-feat")
+    );
     assert!(app.store.projects[0].features[0].pending_worktree_script);
     assert_eq!(
         app.store.projects[0].features[0].status,

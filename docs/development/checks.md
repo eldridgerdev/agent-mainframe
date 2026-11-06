@@ -88,13 +88,23 @@ worker ownership, exercise closing with pending work, switching target/session,
 reopening, and stale or disconnected results. Tests for an existing regression
 should remain intact; do not add tests merely for a file's location.
 
-For this refactor's preservation check, capture `cargo test --workspace --locked
--- --list`. Transform the original names in [baseline/tests.txt](baseline/tests.txt)
-through [the M2 mapping](baseline/app-tests.tsv) and
-[the state mapping](state-test-paths.tsv), then compare the full sets and counts.
-The sole M4 addition is
-`app::tests::pr_triage::closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result`.
-All 2,511 originals remain accounted for (2,512 total).
+For a new extraction, capture the current `cargo test --workspace --locked
+-- --list` output before moving tests. Record an explicit old-to-new path map,
+then compare transformed name sets and counts afterward. Account for every
+addition or removal; matching counts alone do not prove preservation. Keep test
+assertions and per-test fixture lifetimes intact. The September 2026 inventories
+in [baseline/README.md](baseline/README.md) document that earlier refactor and
+must not be treated as the current branch's test inventory.
+
+For frontend changes, install the locked dependencies and run the relevant
+existing suites while iterating, then the complete suite and production build:
+
+```sh
+cd gui
+npm ci
+npm test
+npm run build
+```
 
 Never use `println!`/`eprintln!` in TUI code. Use App's `log_debug`, `log_info`,
 `log_warn`, or `log_error` with a short context such as `sync` or `worktree`.
@@ -162,7 +172,7 @@ advisory ID, rationale, owner, tracking issue and expiry in `.cargo/audit.toml`
 and these notes; review it on every scheduled finding and remove it when fixed
 or expired. Do not silence all warnings or use a blanket ignore.
 
-## Verification status
+## Historical verification — September 2026
 
 Final local validation on 2026-09-08 passed all 2,512 tests (22.82s, no failures
 or ignored tests), formatting, strict locked all-target Clippy, Actionlint 1.7.7,
@@ -172,5 +182,5 @@ zero blocking findings and five documented nonfatal warnings.
 Local Linux/WSL baseline and inventory evidence are in
 [baseline/README.md](baseline/README.md). Hosted Linux/macOS/audit runs must be
 inspected for the published commit before CI is called green. Workflow linting
-and a local audit do not establish macOS execution or hosted success. Publishing
-this work remains a separate authorized step under `AMF_PLAN.md`.
+and a local audit do not establish macOS execution or hosted success. These results
+describe the September 2026 refactor only; run fresh checks for the current change.

@@ -5,7 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { ReactNode } from "react";
-import { CreateFeatureForm, TodoNewFeatureForm } from "../src/App";
+import CreateFeatureForm from "../src/CreateFeatureForm";
+import TodoNewFeatureForm from "../src/TodoNewFeatureForm";
 import FeaturePresetsPanel from "../src/FeaturePresetsPanel";
 import ReviewFeedbackDestinationDialog from "../src/ReviewFeedbackDestinationDialog";
 import { reviewDestinationCatalog, type ReviewDestinationCatalog, type ReviewView } from "../src/api";

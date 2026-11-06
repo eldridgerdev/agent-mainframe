@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { FeaturePreset, Project } from "../src/api";
-import { TodoNewFeatureForm } from "../src/App";
+import TodoNewFeatureForm from "../src/TodoNewFeatureForm";
 
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async (command) => command === "project_harness_choices" ? creationChoices(["claude"]) : command === "allowed_harnesses" ? [{ slug: "claude", display_name: "Claude" }] : command === "feature_presets_choices" ? [] : null) }));

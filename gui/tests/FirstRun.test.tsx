@@ -4,7 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { CreateFeatureForm, CreateProjectForm } from "../src/App";
+import CreateFeatureForm from "../src/CreateFeatureForm";
+import CreateProjectForm from "../src/CreateProjectForm";
 import WelcomePanel from "../src/WelcomePanel";
 import type { HarnessInfo } from "../src/api";
 

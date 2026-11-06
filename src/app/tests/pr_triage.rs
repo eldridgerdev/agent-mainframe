@@ -2467,14 +2467,20 @@ fn pr_review_schedules_sidebar_load_for_dedicated_opencode_session() {
     app.schedule_sidebar_load_for_feature(0, 0);
     for _ in 0..20 {
         app.poll_sidebar_load_results();
-        if !app.pending_sidebar_loads.contains(&tmux_session) {
+        if !app
+            .sidebar_runtime
+            .pending_sidebar_loads
+            .contains(&tmux_session)
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
     assert_eq!(
-        app.sidebar_load_signatures.get(&tmux_session),
+        app.sidebar_runtime
+            .sidebar_load_signatures
+            .get(&tmux_session),
         Some(&expected_signature)
     );
 }

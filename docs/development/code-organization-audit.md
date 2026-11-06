@@ -1180,3 +1180,11 @@ One-hundred-fifteenth increment (2026-11-06):
   parent test module.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-sixteenth increment (2026-11-06):
+
+- Moved shared diff-handler app, key, patch, and Git fixtures into
+  `handlers/diff/tests/support.rs`; the root test module now wires support and
+  behavior modules.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

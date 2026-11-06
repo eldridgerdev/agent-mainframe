@@ -404,3 +404,40 @@ fn pr_review_i_is_noop_for_comment_without_file_path() {
         std::mem::discriminant(&app.mode)
     );
 }
+
+#[test]
+fn pr_review_jump_sibling_cycles_within_the_batch_and_hints_otherwise() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 4);
+    // Comments 1 and 3 (indices 0 and 2) were fixed in one combined batch.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[0].batch_id = Some("batch-x".to_string());
+        state.review.comments[2].batch_id = Some("batch-x".to_string());
+        state.selected = 0;
+    }
+
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(state.selected, 2, "forward jump lands on the other sibling");
+
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(state.selected, 0, "jump cycles back around");
+
+    // A comment that isn't part of any batch: no move, and a hint toast.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+    }
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(
+        state.selected, 1,
+        "no sibling jump off a non-batched comment"
+    );
+}

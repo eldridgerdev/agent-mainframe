@@ -143,3 +143,45 @@ fn review_list_errors_are_classified_by_what_the_user_can_do() {
 }
 
 // ── Opening a PR for review from the Review tab ─────────────────────────────
+
+#[test]
+fn closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result() {
+    let mut app = pr_review_test_app();
+    let workdir = tempfile::TempDir::new().unwrap();
+    let old_review = pr_review_with_comments(1);
+    let (old_tx, old_rx) = std::sync::mpsc::channel();
+    app.pr_review_work.begin_fetch(old_rx);
+    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
+        workdir: workdir.path().to_path_buf(),
+        pr: old_review.pr.clone(),
+        usage_baselines: HashMap::new(),
+    });
+    old_tx.send(Ok(old_review)).unwrap();
+
+    app.close_pr_review();
+    assert!(!app.poll_pr_review_bg());
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    let mut new_review = pr_review_with_comments(0);
+    new_review.pr.number = 2;
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    app.pr_review_work.begin_fetch(new_rx);
+    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
+        workdir: workdir.path().to_path_buf(),
+        pr: new_review.pr.clone(),
+        usage_baselines: HashMap::new(),
+    });
+    assert!(
+        old_tx
+            .send(Err(anyhow::anyhow!("late old failure")))
+            .is_err()
+    );
+    new_tx.send(Ok(new_review)).unwrap();
+    assert!(app.poll_pr_review_bg());
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected the reopened PR");
+    };
+    assert_eq!(state.review.pr.number, 2);
+    assert!(state.review.comments.is_empty());
+    assert!(!app.pr_review_work.fetch_pending());
+}

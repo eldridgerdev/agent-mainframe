@@ -35,119 +35,9 @@ fn pr_review_selected(app: &App) -> usize {
     }
 }
 
-#[test]
-fn pr_review_jump_sibling_cycles_within_the_batch_and_hints_otherwise() {
-    let mut app = pr_review_test_app();
-    enter_pr_review(&mut app, 4);
-    // Comments 1 and 3 (indices 0 and 2) were fixed in one combined batch.
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.review.comments[0].batch_id = Some("batch-x".to_string());
-        state.review.comments[2].batch_id = Some("batch-x".to_string());
-        state.selected = 0;
-    }
-
-    app.pr_review_jump_sibling(true);
-    let AppMode::PrReview(state) = &app.mode else {
-        panic!("expected PR review pane");
-    };
-    assert_eq!(state.selected, 2, "forward jump lands on the other sibling");
-
-    app.pr_review_jump_sibling(true);
-    let AppMode::PrReview(state) = &app.mode else {
-        panic!("expected PR review pane");
-    };
-    assert_eq!(state.selected, 0, "jump cycles back around");
-
-    // A comment that isn't part of any batch: no move, and a hint toast.
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.selected = 1;
-    }
-    app.pr_review_jump_sibling(true);
-    let AppMode::PrReview(state) = &app.mode else {
-        panic!("expected PR review pane");
-    };
-    assert_eq!(
-        state.selected, 1,
-        "no sibling jump off a non-batched comment"
-    );
-}
-
-/// Enter the review pane with comments built from `(id, path, author, is_bot)`
-/// tuples, in that fetch order, for exercising `sort_mode`.
-#[test]
-fn pr_review_open_fix_confirm_without_comments_shows_message() {
-    let mut app = pr_review_test_app();
-    enter_pr_review(&mut app, 0);
-
-    app.pr_review_open_fix_confirm();
-    assert_eq!(app.pr_review_fix_editing(), None);
-    assert!(app.message.is_some());
-}
-
-#[test]
-fn pr_picker_choose_ai_review_is_noop_outside_picker_mode() {
-    let store = store_with_feature(ProjectStatus::Idle);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
-    app.pr_picker_choose_ai_review();
-    assert!(matches!(&app.mode, AppMode::Normal));
-}
-
-// ---------------------------------------------------------------------------
-// PR Triage: the `New feature…` fix target (companion triage feature)
-// ---------------------------------------------------------------------------
-
 /// An app whose single feature lives at `/tmp/test-workdir`, with a worktree
 /// mock that resolves the repo root — enough for the fix-target picker and the
 /// triage-feature setup overlay, neither of which touches git.
-#[test]
-fn closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result() {
-    let mut app = pr_review_test_app();
-    let workdir = tempfile::TempDir::new().unwrap();
-    let old_review = pr_review_with_comments(1);
-    let (old_tx, old_rx) = std::sync::mpsc::channel();
-    app.pr_review_work.begin_fetch(old_rx);
-    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
-        workdir: workdir.path().to_path_buf(),
-        pr: old_review.pr.clone(),
-        usage_baselines: HashMap::new(),
-    });
-    old_tx.send(Ok(old_review)).unwrap();
-
-    app.close_pr_review();
-    assert!(!app.poll_pr_review_bg());
-    assert!(matches!(app.mode, AppMode::Normal));
-
-    let mut new_review = pr_review_with_comments(0);
-    new_review.pr.number = 2;
-    let (new_tx, new_rx) = std::sync::mpsc::channel();
-    app.pr_review_work.begin_fetch(new_rx);
-    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
-        workdir: workdir.path().to_path_buf(),
-        pr: new_review.pr.clone(),
-        usage_baselines: HashMap::new(),
-    });
-    assert!(
-        old_tx
-            .send(Err(anyhow::anyhow!("late old failure")))
-            .is_err()
-    );
-    new_tx.send(Ok(new_review)).unwrap();
-    assert!(app.poll_pr_review_bg());
-    let AppMode::PrReview(state) = &app.mode else {
-        panic!("expected the reopened PR");
-    };
-    assert_eq!(state.review.pr.number, 2);
-    assert!(state.review.comments.is_empty());
-    assert!(!app.pr_review_work.fetch_pending());
-}
-
-use crate::app::pr_review::runtime::ReviewListLoaded;
-use crate::app::pr_review::runtime::{PrPostOutcome, PrPostRequest};
-
 fn reviewable(number: u32, title: &str) -> crate::github::ReviewablePr {
     crate::github::ReviewablePr {
         number,
@@ -464,112 +354,32 @@ fn reviewed_two_file_pr(
     app
 }
 
-#[test]
-fn tui_reply_and_resolve_write_through_the_shared_github_boundary() {
-    use crate::app::pr_review::github_access::fake::FakeGithub;
-    let fake = FakeGithub::default();
-    let mut app = pr_review_test_app();
-    app.pr_review_work
-        .set_github_for_test(std::sync::Arc::new(fake.clone()));
-    enter_pr_review(&mut app, 2);
-
-    // A failed write keeps the TUI's existing behaviour: back to the
-    // dashboard with the error, nothing recorded as posted.
-    fake.state().fail_writes = true;
-    app.pr_review_open_reply_not_needed();
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.reply.as_mut().unwrap().editor =
-            crate::editor::TextEditor::new("Already handled upstream.".into());
-    }
-    app.pr_review_post_reply().unwrap();
-    assert!(matches!(app.mode, AppMode::Normal));
-    assert!(fake.state().writes.is_empty());
-
-    fake.state().fail_writes = false;
-    enter_pr_review(&mut app, 2);
-    app.pr_review_open_reply_not_needed();
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.reply.as_mut().unwrap().editor =
-            crate::editor::TextEditor::new("Already handled upstream.".into());
-        state.review.comments[1].thread_id = Some("THREAD".into());
-    }
-    app.pr_review_post_reply().unwrap();
-    assert_eq!(
-        fake.state().writes,
-        ["reply 1: Already handled upstream.\n\n— posted via AMF"]
-    );
-    app.pr_review_select_next();
-    app.pr_review_toggle_resolve();
-    assert_eq!(fake.state().writes.len(), 2);
-    assert_eq!(fake.state().writes[1], "resolve THREAD: true");
-    let AppMode::PrReview(state) = &app.mode else {
-        panic!("triage stays open after a successful write");
-    };
-    assert!(state.review.comments[1].is_resolved);
-}
-
-#[test]
-fn tui_comment_fetch_failure_still_returns_to_the_dashboard() {
-    use crate::app::pr_review::github_access::fake::FakeGithub;
-    let fake = FakeGithub::default();
-    fake.state().fail_fetch = Some("HTTP 502".into());
-    let mut app = pr_review_test_app();
-    app.pr_review_work
-        .set_github_for_test(std::sync::Arc::new(fake.clone()));
-    let pr = fake.pr_ref(9);
-    app.start_pr_review_fetch(std::path::PathBuf::from("/tmp/wd"), pr);
-    assert!(app.pr_review_loading());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !app.poll_pr_review_bg() {
-        assert!(std::time::Instant::now() < until, "fetch never finished");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(matches!(app.mode, AppMode::Normal));
-    assert_eq!(fake.state().fetches, 1);
-}
-
-mod navigation;
-
-mod investigations;
-
-mod fix_handoff;
-
-mod review_memory;
-
-mod session_activity;
-
-mod fix_batch;
-
-mod fix_editor;
-
-mod review_sort;
-
-mod replies;
-
-mod memory_workflows;
-
-mod ai_review_picker;
-
-mod ai_review_workflow;
-
-mod companion_feature;
-
 mod ai_review_fix_handoff;
-
-mod review_list;
-
+mod ai_review_picker;
+mod ai_review_workflow;
+mod companion_feature;
+mod fix_batch;
+mod fix_editor;
+mod fix_handoff;
+mod investigations;
+mod memory_workflows;
+mod navigation;
 mod open_pr;
+mod replies;
+mod review_list;
+mod review_memory;
+mod review_sort;
+mod session_activity;
 use open_pr::{
     open_teammate_pr, repo_with_teammate_pr, review_tab_on, settle_review_open,
     two_open_prs_at_real_heads, viewer,
 };
-
-mod draft_persistence;
-
-mod pr_updates;
-
-mod review_posting;
-
 mod acceptance;
-
+mod draft_persistence;
+mod github_boundary;
+mod pr_updates;
 mod review_pane;
+mod review_posting;
+mod triage_routing;
+
+use crate::app::pr_review::runtime::{PrPostOutcome, PrPostRequest, ReviewListLoaded};

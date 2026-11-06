@@ -1096,3 +1096,13 @@ One-hundred-fourth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundred-fifth increment (2026-11-06):
+
+- Moved remaining PR Triage mode-routing guards to `triage_routing.rs`, the
+  delayed closed-fetch test into `review_list.rs`, the sibling-finding jump
+  test into `fix_batch.rs`, and GitHub reply/resolve adapter tests into
+  `github_boundary.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.

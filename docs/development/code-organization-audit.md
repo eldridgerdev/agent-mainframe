@@ -1197,3 +1197,13 @@ One-hundred-seventeenth increment (2026-11-06):
   existing call sites. Shared row/status helpers are scoped to `ui::dialogs`.
 - Validation: `cargo check --tests --locked` passed; focused diff renderer tests
   passed (34 passed); formatting and `git diff --check` passed.
+
+One-hundred-eighteenth increment (2026-11-06):
+
+- Moved GitHub read planning/prefetch and PR fix plus batch-fix handoffs into
+  `gui_pr_triage/reads.rs` and `gui_pr_triage/fix.rs`; the adapter keeps its
+  orchestration and two-phase gate/apply flow.
+- Moved investigation prompt confirmation, execution, and TODO reconciliation
+  into `gui_pr_triage/investigation.rs`.
+- Validation: `cargo check --tests --locked` and focused
+  `cargo test --locked gui_pr_triage` passed (41 tests); formatting passed.

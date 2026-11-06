@@ -902,3 +902,11 @@ Eighty-first increment (2026-11-06):
 - Validation: all 112 test names remain present and unique; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-second increment (2026-11-06):
+
+- Grouped walkthrough request handling and changeset/interdiff overview modal
+  tests in `handlers/diff/tests/overview.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

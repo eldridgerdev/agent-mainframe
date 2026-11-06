@@ -52,6 +52,8 @@
   --red-soft: rgba(184, 41, 41, 0.08);
   --amber-soft: rgba(128, 89, 9, 0.1);
   --green-soft: rgba(25, 110, 57, 0.1);
+  --success: var(--green);
+  --warning: var(--amber);
   --kind-claude: var(--sb-harness-claude);
   --kind-codex: var(--sb-harness-codex);
   --kind-opencode: var(--sb-harness-opencode);
@@ -115,6 +117,8 @@
     --red-soft: rgba(255, 170, 162, 0.1);
     --amber-soft: rgba(255, 209, 125, 0.1);
     --green-soft: rgba(136, 224, 168, 0.1);
+    --success: var(--green);
+    --warning: var(--amber);
     --kind-claude: var(--sb-harness-claude);
     --kind-codex: var(--sb-harness-codex);
     --kind-opencode: var(--sb-harness-opencode);
@@ -159,6 +163,8 @@
   --red-soft: rgba(255, 170, 162, 0.1);
   --amber-soft: rgba(255, 209, 125, 0.1);
   --green-soft: rgba(136, 224, 168, 0.1);
+  --success: var(--green);
+  --warning: var(--amber);
   --kind-claude: var(--sb-harness-claude);
   --kind-codex: var(--sb-harness-codex);
   --kind-opencode: var(--sb-harness-opencode);

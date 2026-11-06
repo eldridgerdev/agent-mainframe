@@ -350,6 +350,7 @@ impl GuiHandle {
     /// reason to reach into `App`.
     pub(crate) fn db(&self) -> GuiResult<&crate::db::AmfDb> {
         self.app.db.as_ref().ok_or_else(|| GuiError {
+            github: None,
             kind: GuiErrorKind::Internal,
             message: "No database attached to this session".to_string(),
         })

@@ -102,6 +102,9 @@ import ForkFeatureDialog from "./ForkFeatureDialog";
 import SidebarTree, { filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
 import { useSidebarCollapsed } from "./sidebarPrefs";
 import { useWorkspaceFilterShortcut } from "./workspaceFilterShortcut";
+import { useShortcut } from "./shortcuts";
+import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
+import HelpMenu from "./HelpMenu";
 import {
   SessionStartStopButton,
   SessionStateDot,
@@ -181,6 +184,8 @@ export default function App() {
   const treeFilterInput = useRef<HTMLInputElement>(null);
   useWorkspaceFilterShortcut(treeFilterInput);
   const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  useShortcut("help.shortcuts", () => { setShowShortcuts(true); });
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
@@ -1247,6 +1252,12 @@ export default function App() {
             <span className="plan-pill-open">Open</span>
           </button>
         )}
+        {/* Pinned below the scrolling nav, outside the collapsible Tools
+            group, so Help is always one click away. */}
+        <div className="sidebar-footer">
+          <HelpMenu onShortcuts={() => setShowShortcuts(true)} onFirstRun={() => setView({ kind: "welcome" })}
+            onError={reportError} />
+        </div>
       </ProjectsSidebar>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
@@ -1297,6 +1308,7 @@ export default function App() {
         onClose={() => setFeatureActions(null)} onChanged={() => void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY })} />}
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
+      {showShortcuts && <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
       {prReviewProject && <Suspense fallback={<Modal label="Loading Write a review" title="Loading Write a review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
         <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
@@ -1527,7 +1539,7 @@ export default function App() {
           />
         )}
 
-        {workspace.data && projects.length === 0 && !view && (
+        {workspace.data && ((projects.length === 0 && !view) || view?.kind === "welcome") && (
           <WelcomePanel onAddProject={() => setShowCreateProject(true)}
             onOpenAvailability={() => setAgentAvailabilityScope({})} />
         )}

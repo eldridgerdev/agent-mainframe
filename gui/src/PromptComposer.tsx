@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import SteeringPanel from "./SteeringPanel";
+import { isMacPlatform, shortcutAria, shortcutLabel } from "./shortcuts";
 import { Icon, Menu, Spinner } from "./ui";
 
 export default function PromptComposer({
@@ -25,8 +26,7 @@ export default function PromptComposer({
   const canSend = ready && !sending && text.trim().length > 0;
   const textarea = useRef<HTMLTextAreaElement>(null);
   const shortcutsId = useId();
-  const isMac = navigator.platform.startsWith("Mac");
-  const sendModifier = isMac ? "Cmd" : "Ctrl";
+  const sendModifier = isMacPlatform() ? "Cmd" : "Ctrl";
 
   // Focus only on an explicit handoff. Switching tabs or returning to a
   // feature must leave focus where the user put it -- often the terminal.
@@ -89,8 +89,8 @@ export default function PromptComposer({
           {!ready && <span className="muted small">{connectionMessage}</span>}
         </div>
         <button className="btn btn-primary" disabled={!canSend} onClick={onSend}
-          aria-keyshortcuts={isMac ? "Meta+Enter" : "Control+Enter"}
-          title={`Send prompt (${sendModifier}+Enter)`}>
+          aria-keyshortcuts={shortcutAria("composer.send")}
+          title={`Send prompt (${shortcutLabel("composer.send")})`}>
           {sending ? <Spinner /> : <Icon name="send" />}
           {sending ? "Sending…" : "Send prompt"}
         </button>

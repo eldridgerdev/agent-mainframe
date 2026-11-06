@@ -185,7 +185,10 @@
 .review-inline-thread p { margin: 4px 0 0; }
 .review-inline-thread pre { margin: 4px 0 0; overflow-x: auto; }
 .review-inline-resolved { opacity: .65; border-left-color: var(--text-muted); }
-.pr-review-embedded { display: grid; gap: 8px; min-width: 0; }
+/* The Files tab scrolls itself, so the comment box and "Preview and post" below the diff stay reachable. */
+.pr-review-embedded { display: flex; flex-direction: column; flex: 1; gap: 8px; min-width: 0; min-height: 0; overflow: auto; }
+.pr-review-embedded > * { flex-shrink: 0; }
+.pr-review-embedded > .btn { align-self: flex-start; }
 .review-line-controls { padding: 8px; }
 
 /* Saved prompt browser: scan sources on the left, prepare a draft on the right. */

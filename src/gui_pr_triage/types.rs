@@ -3,6 +3,7 @@ use serde::Serialize;
 use crate::{gui_contract::SessionTarget, gui_plans::PrecallView, project::AgentKind};
 
 use super::PrTriageTarget;
+use crate::gui_github_errors::GithubProblem;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PrBatchFixView {
@@ -66,6 +67,8 @@ pub struct PrPickerView {
     pub entries: Vec<PrEntryView>,
     pub include_closed: bool,
     pub error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    pub github_problem: Option<GithubProblem>,
     pub branch_pr: Option<u32>,
     /// The list is still being read; poll for it.
     pub loading: bool,
@@ -187,5 +190,9 @@ pub struct PrTriageView {
     pub harnesses: Vec<AgentKind>,
     pub default_harness: Option<AgentKind>,
     pub error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    pub github_problem: Option<GithubProblem>,
+    /// The GitHub account `gh` writes as, when it could be read.
+    pub github_user: Option<String>,
     pub notice: Option<String>,
 }

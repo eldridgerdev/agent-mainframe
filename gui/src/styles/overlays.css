@@ -138,6 +138,8 @@
 .field-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .field-hint { display: block; font-size: var(--fs-sm); color: var(--text-muted); }
 .mode-hint { margin-top: -8px; }
+/* SuperVibe's inline risk note, under the mode's own description. */
+.supervibe-note { display: block; margin-top: 2px; color: var(--red); font-weight: 600; }
 
 .field input, .field select, .attach-row input, .plan-textarea {
   width: 100%;
@@ -159,7 +161,33 @@
   outline-offset: 1px;
 }
 .field input[aria-invalid="true"] { border-color: var(--red); }
+/* Multi-line fields match the single-line controls. :where() keeps the rule at zero specificity so a
+   textarea with its own class (.plan-textarea, .overrides-textarea) still sets its own size. */
+:where(.field textarea, textarea.input) {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+/* An explicit rows= sets the height (the supervised-edits feedback box is rows=2); only an unsized one gets a floor. */
+:where(.field textarea:not([rows]), textarea.input:not([rows])) { min-height: calc(var(--h-md) * 3); }
+:where(.field textarea, textarea.input):focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+:where(.field textarea, textarea.input):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .field-error { margin-top: -8px; font-size: var(--fs-sm); color: var(--red); overflow-wrap: anywhere; }
+/* A path input with its Browse… button (BrowseButton.tsx); a picker failure wraps under the row. */
+.path-input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.path-input-row > input { flex: 1 1 0; min-width: 0; }
+.path-browse { flex: none; height: var(--h-md); }
+/* `order` keeps it below the whole row even when a sibling (the plan panel's Attach) follows the button. */
+.path-browse-error { order: 1; flex-basis: 100%; margin-top: 0; }
 
 .segmented {
   display: inline-flex;
@@ -241,6 +269,8 @@
 .callout-success { background: var(--green-soft); }
 .callout-success > .icon { color: var(--green); }
 .callout-danger { background: var(--red-soft); flex-direction: column; }
+.supervibe-confirm strong { color: var(--red); }
+.supervibe-confirm strong + p { color: var(--text); }
 
 .empty {
   flex: 1;
@@ -294,3 +324,26 @@
 .toast-error > .icon { color: var(--red); }
 .toast-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: var(--fs-md); }
 .toast-text span { color: var(--text-muted); overflow-wrap: anywhere; }
+
+/* Keyboard shortcuts dialog: one section per group, keys left, action right. */
+.shortcut-group { margin-top: 16px; }
+.shortcut-group h3 { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--text-muted); }
+.shortcut-list { display: grid; gap: 2px; margin: 0; }
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row:last-child { border-bottom: 0; }
+.shortcut-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; }
+.shortcut-binding { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.shortcut-plus, .shortcut-then, .shortcut-or { color: var(--text-faint); font-size: var(--fs-xs); }
+.shortcut-then { margin: 0 2px; }
+.shortcut-row dd { display: flex; flex-direction: column; margin: 0; }
+.shortcut-when { color: var(--text-muted); font-size: var(--fs-xs); }
+@media (max-width: 560px) {
+  .shortcut-row { grid-template-columns: 1fr; gap: 2px; }
+}

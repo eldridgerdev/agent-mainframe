@@ -59,6 +59,7 @@ impl GuiHandle {
     ) -> GuiResult<FreshContextResponse> {
         if request.prompt.trim().is_empty() {
             return Err(GuiError {
+                github: None,
                 kind: GuiErrorKind::Internal,
                 message: "Enter a continuation prompt before starting".into(),
             });

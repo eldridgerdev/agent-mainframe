@@ -1,4 +1,5 @@
 import type { PrFixTarget } from "./prTriageApi";
+import { Field } from "./ui";
 
 /** Read-only catalog picker shared by every PR fix handoff (batch fix, single
  * comment fix, AI finding fix). It lists agent sessions in the opened feature
@@ -44,8 +45,7 @@ export default function FixDestinationPicker({ targets, choice, onChoose, label,
   const companions = group("companion");
   const companionNames = [...new Set(companions.map((t) => t.feature_name))];
   return (
-    <label className="fix-destination-picker">
-      <span>{label}</span>
+    <Field label={label} hint={selected?.destination_kind === "companion" ? <>Companion feature {selected.feature_name}. Nothing is sent until you confirm.</> : undefined}>
       <select aria-label={label} value={stale ? "__stale" : selected ? targetKey(selected) : ""} disabled={disabled}
         onChange={(event) => onChoose(event.target.value)}>
         <option value="">{placeholder}</option>
@@ -55,7 +55,6 @@ export default function FixDestinationPicker({ targets, choice, onChoose, label,
           <optgroup key={name} label={`Triage companion: ${name}`}>{companions.filter((t) => t.feature_name === name).map(option)}</optgroup>
         ))}
       </select>
-      {selected?.destination_kind === "companion" && <span className="muted small"> Companion feature {selected.feature_name}. Nothing is sent until you confirm.</span>}
-    </label>
+    </Field>
   );
 }

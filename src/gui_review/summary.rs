@@ -8,7 +8,11 @@ use crate::app::{App, AppMode, DiffViewerState, ReviewDecision, SummaryItem};
 #[derive(Debug, Serialize)]
 pub struct ReviewSummaryView {
     pub rows: Vec<ReviewSummaryRow>,
+    /// Every file with no verdict, AMF-generated ones included.
     pub undecided: usize,
+    /// How many of `undecided` are AMF-generated, so the interface can leave
+    /// them out while it keeps those files folded away.
+    pub amf_undecided: usize,
     pub pending_suggestions: usize,
     pub failures: Vec<String>,
 }
@@ -90,6 +94,7 @@ pub(super) fn view(s: &DiffViewerState) -> Option<ReviewSummaryView> {
             .iter()
             .filter(|f| !s.decisions.contains_key(&f.path))
             .count(),
+        amf_undecided: s.undecided_counts().1,
         pending_suggestions: s.pending_suggestion_count(),
         failures: s.open_suggestion_apply_failures(),
     })

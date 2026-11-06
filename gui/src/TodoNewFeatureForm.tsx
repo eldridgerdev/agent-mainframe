@@ -9,6 +9,7 @@ import { Field, Modal, Segmented, Spinner, Switch } from "./ui";
 import { useCreationHarness } from "./useCreationHarness";
 import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
 import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
+import { SuperVibeConfirm, modeHint, useSuperVibeConfirm } from "./SuperVibeWarning";
 
 type PlanKind = "none" | "full" | "quick";
 
@@ -41,6 +42,8 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   const [discard, setDiscard] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
+  const [confirmSuperVibe, setConfirmSuperVibe] = useSuperVibeConfirm(mode);
+  const modeSelect = useRef<HTMLSelectElement>(null);
   // A deleted destination must never silently fall back to another project.
   const project = projects.find((candidate) => candidate.id === projectId);
   const harness = useCreationHarness(projectId, !!project);
@@ -63,19 +66,24 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   }
   const planning = planKind !== "none";
 
+  async function create(confirmed: boolean) {
+    if (busy || inFlight.current || !ready || !project || !selectedAgent) return;
+    // As in the terminal app, SuperVibe asks once more before creating.
+    if (mode === "supervibe" && !confirmed) { setConfirmSuperVibe(true); return; }
+    setConfirmSuperVibe(false);
+    inFlight.current = true; setSubmitting(true);
+    try {
+      await onSubmit({ project_name: project.name, branch: branch.trim(), agent: selectedAgent, mode,
+        review, plan_mode: planning, create_terminal: false, use_worktree: true,
+        enable_chrome: chrome, hook_choice: hook.choice || null, dry_run: false }, planKind);
+    } finally { inFlight.current = false; setSubmitting(false); }
+  }
+
   return <>
     <Modal size="lg" label={planning ? "Plan TODO in a new feature" : "Start TODO in a new feature"}
       title={planning ? "Plan in a new feature" : "Start in a new feature"} subtitle={todoTitle}
       hidden={discard} dismissable={!busy} onClose={close}
-      onSubmit={async () => {
-        if (busy || inFlight.current || !ready || !project || !selectedAgent) return;
-        inFlight.current = true; setSubmitting(true);
-        try {
-          await onSubmit({ project_name: project.name, branch: branch.trim(), agent: selectedAgent, mode,
-            review, plan_mode: planning, create_terminal: false, use_worktree: true,
-            enable_chrome: chrome, hook_choice: hook.choice || null, dry_run: false }, planKind);
-        } finally { inFlight.current = false; setSubmitting(false); }
-      }}
+      onSubmit={() => void create(false)}
       footer={<>
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={close}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={busy || !ready}>
@@ -127,10 +135,12 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
         <Field label="Branch"><input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} required autoFocus /></Field>
         <div className="form-row creation-agent-mode">
           <CreationHarnessSelect harness={harness} supported={agents} disabled={busy} />
-          <Field label="Mode" hint={modes.find((candidate) => candidate.slug === mode)?.description}><select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
+          <Field label="Mode" hint={modeHint(selectedMode?.description, mode)}><select ref={modeSelect} value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
             {modes.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>)}
           </select></Field>
         </div>
+        {confirmSuperVibe && <SuperVibeConfirm busy={busy}
+          onSafer={() => { modeSelect.current?.focus(); setConfirmSuperVibe(false); }} onConfirm={() => void create(true)} />}
         <CreationHarnessNotices harness={harness} disabled={busy} />
         <div className="field"><span className="field-label">Planning</span><Segmented label="Planning" value={planKind} onChange={setPlanKind} options={[
           { value: "none", label: "Start directly" }, { value: "quick", label: "Quick Plan" }, { value: "full", label: "Full Plan" },

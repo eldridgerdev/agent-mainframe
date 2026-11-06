@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DiffFile, ReviewSeverity, ReviewSpan } from "./api";
+import type { DiffFile, GithubProblem, ReviewSeverity, ReviewSpan } from "./api";
 
 /** A saved line thread; `inline` false means it will be folded into the summary (see `note`). */
 export type PrReviewThread = ReviewSpan & {
@@ -27,9 +27,11 @@ export interface PrReviewView {
     event: string; body: string;
     comments: { path: string; line: number; side: string; start_line: number | null; body: string }[];
     file_comments: { path: string; body: string }[];
-    posting: boolean; error: string | null; head_moved: boolean;
+    posting: boolean; error: string | null; github_problem?: GithubProblem | null; head_moved: boolean;
   } | null;
   error: string | null;
+  /** `error` as a fixable GitHub problem, when it is one. */
+  github_problem?: GithubProblem | null;
   notice: string | null;
 }
 export type PrReviewAction =

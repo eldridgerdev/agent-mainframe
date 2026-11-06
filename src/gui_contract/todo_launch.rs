@@ -215,12 +215,14 @@ impl GuiHandle {
         let title = title.trim();
         if title.is_empty() {
             return Err(GuiError {
+                github: None,
                 kind: GuiErrorKind::InvalidInput,
                 message: "A TODO needs a title".to_string(),
             });
         }
         if title.contains(['\n', '\r']) {
             return Err(GuiError {
+                github: None,
                 kind: GuiErrorKind::InvalidInput,
                 message: "Quick capture is one line; add notes by editing the TODO".to_string(),
             });

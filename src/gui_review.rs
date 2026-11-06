@@ -145,6 +145,11 @@ pub enum ReviewAction {
         deliver: bool,
         #[serde(default)]
         handoff_revision: Option<String>,
+        /// The reviewer's file list had AMF-generated files folded away, so
+        /// undecided ones are left out of the round's tally rather than
+        /// recorded as skipped (`RoundTally::ExcludeHiddenAmf`).
+        #[serde(default)]
+        amf_hidden: bool,
     },
     CancelPreparation {
         operation_id: String,
@@ -744,6 +749,7 @@ pub fn act(
         handoff_session,
         deliver,
         handoff_revision,
+        amf_hidden,
     } = action
     {
         return match complete::start(
@@ -753,6 +759,7 @@ pub fn act(
             handoff_session,
             deliver,
             handoff_revision,
+            amf_hidden,
         )? {
             complete::Started::Completed => Ok(None),
             complete::Started::Checking | complete::Started::Stopped => {

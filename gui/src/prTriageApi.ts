@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentSlug, PrecallView, SessionTarget } from "./api";
+import type { AgentSlug, GithubProblem, PrecallView, SessionTarget } from "./api";
 
 // Mirrors `src/gui_pr_triage.rs`. Kept beside, not inside, api.ts so the PR
 // Triage contract can grow without touching the shared type module.
@@ -22,6 +22,8 @@ export interface PrPicker {
   entries: PrEntry[];
   include_closed: boolean;
   error: string | null;
+  /** `error` as a fixable GitHub problem, when it is one. */
+  github_problem?: GithubProblem | null;
   branch_pr: number | null;
   /** The list is still being read; keep polling. */
   loading: boolean;
@@ -120,6 +122,10 @@ export interface PrTriageView {
   harnesses: AgentSlug[];
   default_harness: AgentSlug | null;
   error: string | null;
+  /** `error` as a fixable GitHub problem, when it is one. */
+  github_problem?: GithubProblem | null;
+  /** The GitHub account `gh` writes as, when it could be read. */
+  github_user?: string | null;
   notice: string | null;
 }
 

@@ -185,7 +185,7 @@ it("names the dialog by its heading when the label repeats the title", () => {
 function menuEntries(onSelect = vi.fn()): MenuEntry[] {
   return [
     { section: "Plan" },
-    { label: "Plan interview", onSelect, shortcut: "P" },
+    { label: "Plan interview", onSelect, shortcut: "help.shortcuts" },
     { label: "Quick Plan", onSelect, disabled: true, hint: "Working…" },
     "separator",
     { section: "Review" },
@@ -205,7 +205,7 @@ it("renders sections, separators, shortcuts and a trigger tooltip", () => {
   expect(screen.getByRole("group", { name: "Plan" })).toBeTruthy();
   expect(screen.getByRole("group", { name: "Review" })).toBeTruthy();
   expect(screen.getAllByRole("separator")).toHaveLength(1);
-  expect(screen.getByRole("menuitem", { name: /Plan interview/ }).querySelector("kbd")?.textContent).toBe("P");
+  expect(screen.getByRole("menuitem", { name: /Plan interview/ }).querySelector("kbd")?.textContent).toBe("?");
   expect(screen.getByRole("menuitem", { name: /Learning/ }).getAttribute("title")).toBe("Ask about the code");
 });
 

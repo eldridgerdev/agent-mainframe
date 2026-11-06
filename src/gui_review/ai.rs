@@ -186,12 +186,19 @@ pub(super) fn fresh(s: &DiffViewerState) -> GuiResult<()> {
     current
         .files
         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
+    // Compare by path, not position: the open review orders AMF's own files
+    // after the reviewer's (`DiffViewerState::group_amf_files`), while a
+    // fresh snapshot is in plain path order.
+    fn by_path(files: &[crate::diff::DiffFile]) -> Vec<&crate::diff::DiffFile> {
+        let mut files: Vec<_> = files.iter().collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    }
     if current.base_commit != s.base_commit
         || current.files.len() != s.files.len()
-        || !current
-            .files
-            .iter()
-            .zip(&s.files)
+        || !by_path(&current.files)
+            .into_iter()
+            .zip(by_path(&s.files))
             .all(|(a, b)| same_file(a, b))
     {
         return Err(GuiError::conflict(
@@ -602,6 +609,26 @@ mod tests {
         gui.app_for_workflow().worktree = std::sync::Arc::new(worktree);
         let view = begin(&mut gui, target).unwrap();
         (dir, gui, view)
+    }
+
+    /// The open review lists AMF's own files after the reviewer's, while a
+    /// fresh snapshot is in path order (`.amf/…` sorts before `code.txt`), so
+    /// an unchanged worktree must still read as fresh.
+    #[test]
+    fn freshness_ignores_the_review_grouping_amf_files_last() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".amf")).unwrap();
+        std::fs::write(repo.join(".amf/scratch.txt"), "generated\n").unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        let paths: Vec<_> = view.files.iter().map(|f| f.diff.path.as_str()).collect();
+        assert_eq!(paths.last(), Some(&".amf/scratch.txt"), "{paths:?}");
+        let AppMode::DiffViewer(s) = &gui.app_for_workflow().mode else {
+            panic!("review");
+        };
+        assert!(fresh(s).is_ok());
+        std::fs::write(repo.join(".amf/scratch.txt"), "changed\n").unwrap();
+        assert!(fresh(s).is_err());
     }
 
     fn ask(harness: AgentKind) -> ReviewAction {

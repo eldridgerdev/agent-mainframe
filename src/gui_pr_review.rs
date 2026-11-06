@@ -8,6 +8,7 @@ use crate::app::{AppMode, DiffScope, PrReviewListLoad, PrSubmitStatus};
 use crate::diff::DiffLineLocation;
 use crate::gui_contract::{GuiError, GuiHandle, GuiResult};
 use crate::gui_diff::{DiffFileView, file_view_budgeted};
+use crate::gui_github_errors::{GithubProblem, github_problem};
 use crate::gui_review::Severity;
 use crate::gui_syntax::HighlightBudget;
 
@@ -124,6 +125,8 @@ pub struct PrReviewSubmission {
     file_comments: Vec<crate::github::PrFileComment>,
     posting: bool,
     error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    github_problem: Option<GithubProblem>,
     head_moved: bool,
 }
 
@@ -150,6 +153,8 @@ pub struct PrReviewView {
     summary: String,
     submission: Option<PrReviewSubmission>,
     error: Option<String>,
+    /// `error` as a GitHub problem the user can fix, when it is one.
+    github_problem: Option<GithubProblem>,
     notice: Option<String>,
 }
 
@@ -932,6 +937,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
         summary: String::new(),
         submission: None,
         error: None,
+        github_problem: None,
         notice: app.message.clone(),
     };
     match &app.mode {
@@ -1003,6 +1009,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
                     comments: submission.comments,
                     file_comments: submission.file_comments,
                     posting: matches!(submit.status, PrSubmitStatus::Posting { .. }),
+                    github_problem: error.as_deref().and_then(github_problem),
                     error,
                     head_moved,
                 });
@@ -1010,6 +1017,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
         }
         _ => return Err(GuiError::conflict("PR Review is no longer open")),
     }
+    view.github_problem = view.error.as_deref().and_then(github_problem);
     Ok(view)
 }
 

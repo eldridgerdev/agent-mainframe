@@ -57,8 +57,10 @@ const preset: FeaturePreset = { name: "Ship", branch_prefix: "feat", agent: "cod
   review: true, plan_mode: true, quick_plan: true, enable_chrome: true, remote_control: false };
 const clients: QueryClient[] = [];
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); });
-const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+const change = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+/** SuperVibe asks once more before creating, as the terminal app does. */
+const confirmSuperVibe = () => click("Create in SuperVibe");
 function mount(overrides: Partial<Parameters<typeof TodoNewFeatureForm>[0]> = {}, presets: FeaturePreset[] = [preset]) {
   vi.mocked(invoke).mockImplementation(async (command) => command === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : command === "allowed_harnesses" ? agents : command === "feature_presets_choices" ? presets : null);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
@@ -77,7 +79,7 @@ it.each(["none", "full", "quick"] as const)("honors a preset's %s route and subs
   expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   change("Branch", "edited/meaningful-name"); fireEvent.click(screen.getByRole("switch", { name: /^Chrome/ }));
   const button = kind === "none" ? "Create and start" : kind === "full" ? "Start plan" : "Start Quick Plan";
-  await ready(button); click(button);
+  await ready(button); click(button); confirmSuperVibe();
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "edited/meaningful-name", agent: "codex", mode: "supervibe", review: true, enable_chrome: false, plan_mode: kind !== "none" }), kind);
 });
 it("uses Full Plan initially for Plan TODO and allows intentional direct opt-out", async () => {
@@ -100,7 +102,7 @@ it("retains Remote Control intent through edits, custom settings and project swi
   expect(screen.getByText(/does not support Remote Control yet/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("switch", { name: /^Remote Control/ })); await ready(); click("Create and start");
+  fireEvent.click(screen.getByRole("switch", { name: /^Remote Control/ })); await ready(); click("Create and start"); confirmSuperVibe();
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "second", branch: "edited" }), "none");
 });
 it("never submits an unavailable preset harness or an unsupported mode", async () => {
@@ -110,21 +112,21 @@ it("never submits an unavailable preset harness or an unsupported mode", async (
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   change("Feature preset", "1"); expect(screen.getByText(/Vibeless is unavailable with Codex/)).toBeTruthy();
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  change("Mode", "vibe"); await ready(); click("Create and start");
+  change(/^Mode/, "vibe"); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "vibe" }), "none");
 });
 it("leaves the mode unchanged and says why when a preset's mode is not listed", async () => {
   const { onSubmit } = mount({}, [{ ...preset, mode: "retired" as FeaturePreset["mode"], plan_mode: false },
     { ...preset, name: "Both", agent: "pi", mode: "retired" as FeaturePreset["mode"], plan_mode: false }]);
-  await ready(); change("Mode", "supervibe"); change("Feature preset", "0");
+  await ready(); change(/^Mode/, "supervibe"); change("Feature preset", "0");
   expect(screen.getByText(/Ship uses the retired mode, which is not available here/)).toBeTruthy();
-  expect(screen.getByLabelText("Mode")).toHaveProperty("value", "supervibe");
+  expect(screen.getByLabelText(/^Mode/)).toHaveProperty("value", "supervibe");
   expect(screen.getByLabelText("Agent")).toHaveProperty("value", "codex");
   change("Feature preset", "1");
   expect(screen.getByText(/Both uses pi, which is not offered.*It also uses the retired mode/)).toBeTruthy();
   expect(screen.getByLabelText("Agent")).toHaveProperty("value", "pi");
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
-  change("Agent", "codex"); await ready(); click("Create and start");
+  change("Agent", "codex"); await ready(); click("Create and start"); confirmSuperVibe();
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "supervibe", review: true }), "none");
 });
 it("loads the chosen project's presets without discarding its edited branch", async () => {

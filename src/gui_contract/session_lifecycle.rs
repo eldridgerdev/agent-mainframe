@@ -251,6 +251,7 @@ impl GuiHandle {
 
     fn stop_failed_recovery(&mut self, tmux_session: &str) -> GuiResult<()> {
         self.app.tmux.kill_session(tmux_session).map_err(|error| GuiError {
+            github: None,
             kind: GuiErrorKind::Internal,
             message: format!(
                 "Recovery could not be saved, and the newly started background session '{tmux_session}' could not be stopped: {error}"

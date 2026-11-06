@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { reviewDestinationCatalog, reviewDestinationPreview, type AgentSlug, type ModeSlug, type ReviewAction, type ReviewDestinationCatalog, type ReviewDestinationChoice, type ReviewDestinationPreview, type ReviewView } from "./api";
 import { ConfirmCallout, Field, Modal, Spinner } from "./ui";
+import { modeHint } from "./SuperVibeWarning";
 
 /** Preview and prepare a destination. Editing these fields never creates or starts anything. */
 export default function ReviewFeedbackDestinationDialog({ view, error, onAct, onClose }: {
@@ -139,7 +140,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
       </select></Field>}
       {kind === "companion" && <>
         <Field label="Companion branch"><input value={branch} disabled={busy} onChange={event => edit(() => setBranch(event.target.value))} /></Field>
-        <Field label="Mode"><select value={mode} disabled={busy} onChange={event => edit(() => setMode(event.target.value as ModeSlug))}><option value="supervibe">SuperVibe</option><option value="vibe">Vibe</option><option value="vibeless">Vibeless</option></select></Field>
+        <Field label="Mode" hint={modeHint(undefined, mode)}><select value={mode} disabled={busy} onChange={event => edit(() => setMode(event.target.value as ModeSlug))}><option value="supervibe">SuperVibe</option><option value="vibe">Vibe</option><option value="vibeless">Vibeless</option></select></Field>
         <label className="checkbox"><input type="checkbox" checked={review} disabled={busy} onChange={event => edit(() => setReview(event.target.checked))} /> Review workflow</label>
         <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Chrome</label>
         {catalog.hook_prompt && <Field label={catalog.hook_prompt.title}><select value={hookChoice} disabled={busy} onChange={event => edit(() => setHookChoice(event.target.value))}><option value="">Choose a worktree setup option</option>{catalog.hook_prompt.options.map(option => <option key={option}>{option}</option>)}</select></Field>}

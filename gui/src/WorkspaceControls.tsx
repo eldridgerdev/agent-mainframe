@@ -1,37 +1,7 @@
-import type { ReactNode } from "react";
 import type { Feature } from "./api";
-import { Icon, Spinner, type IconName } from "./ui";
+import { Icon, Spinner } from "./ui";
 
-export function PageHeader({
-  icon,
-  title,
-  subtitle,
-  badge,
-  actions,
-  crumb,
-}: {
-  icon?: IconName;
-  title: string;
-  subtitle?: ReactNode;
-  badge?: ReactNode;
-  actions?: ReactNode;
-  crumb?: ReactNode;
-}) {
-  return (
-    <header className="page-header">
-      <div className="page-title">
-        {crumb && <div className="crumb">{crumb}</div>}
-        <div className="page-title-row">
-          {icon && <span className="page-icon"><Icon name={icon} size={18} /></span>}
-          <h1 title={title}>{title}</h1>
-          {badge}
-        </div>
-        {subtitle && <div className="page-subtitle">{subtitle}</div>}
-      </div>
-      {actions && <div className="page-actions">{actions}</div>}
-    </header>
-  );
-}
+export { PageHeader } from "./ui";
 
 export interface Lifecycle {
   starting: boolean;

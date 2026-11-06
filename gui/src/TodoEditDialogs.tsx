@@ -219,7 +219,7 @@ export function ScratchpadDialog({
             </div>
           </div>
         )}
-        <Field label="Scratchpad" hint={`A free-form note for where you left off. ${SHARED_WITH_TERMINAL}`}>
+        <Field label="Scratchpad" hint={`A free-form note for where you left off. It is included when you start a plan from a TODO in this list. ${SHARED_WITH_TERMINAL}`}>
           <textarea
             className="plan-textarea todo-notes-input"
             rows={8}

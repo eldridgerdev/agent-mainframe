@@ -1,0 +1,281 @@
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { type GuiError, asGuiError } from "./api";
+import GithubProblemNotice from "./GithubProblemNotice";
+import { DiffLine, ReviewLocation, ReviewSeverity, ReviewSpan } from "./api";
+import { Hunk } from "./DiffPanel";
+import Markdown from "./Markdown";
+import { ConfirmCallout, Field, Spinner } from "./ui";
+import { workspaceReviewOpen } from "./prWorkspaceApi";
+import { PrReviewAction, PrReviewThread, PrReviewView, prReviewAct, prReviewBegin, prReviewSnapshot } from "./prReviewApi";
+
+type Editor = { kind: "line_comment" | "suggestion"; span: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
+const SEVERITIES: ReviewSeverity[] = ["blocker", "suggestion", "nit", "question", "praise"];
+const locationLabel = (l: ReviewLocation) => l.new_line !== null ? `line ${l.new_line}` : `base line ${l.old_line}`;
+const locationKey = (l: ReviewLocation) => `${l.old_line}:${l.new_line}`;
+
+/** PR Workspace's Files tab hosts this panel without its dialog frame: the PR and head come from the workspace. */
+export type EmbeddedReview = {
+  workflowId: string; number: number;
+  /** Shown when the PR cannot be reviewed from Files, so the tab still has a diff to read. */
+  fallback?: ReactNode;
+  onDirtyChange: (dirty: boolean) => void;
+  /** Leave Files and open the PR Review dialog, where the summary is written and the review is previewed and posted. */
+  onOpenReview: () => void;
+};
+
+/** The state and actions of one PR review: the standalone Write a review dialog and the workspace's Files tab share it. */
+export function usePrReview({ projectId, onClose, embedded }: { projectId: string; onClose: () => void; embedded?: EmbeddedReview }) {
+  const [view, setView] = useState<PrReviewView | null>(null);
+  const [busy, setBusy] = useState(true);
+  // The last refusal, kept whole so a GitHub problem can name its fix.
+  const [failure, setFailure] = useState<GuiError | null>(null);
+  const error = failure?.message ?? null;
+  // Bumped by Retry when PR Review itself could not open.
+  const [attempt, setAttempt] = useState(0);
+  const [path, setPath] = useState<string | null>(null);
+  const [comment, setComment] = useState("");
+  const [summary, setSummary] = useState("");
+  const [event, setEvent] = useState("COMMENT");
+  const [discard, setDiscard] = useState<"back" | "close" | null>(null);
+  const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const pending = useRef(false);
+  useEffect(() => {
+    let live = true;
+    (embedded ? workspaceReviewOpen(embedded.workflowId, embedded.number) : prReviewBegin(projectId)).then((next) => { if (live) setView(next); })
+      .catch((err) => { if (live) setFailure(asGuiError(err)); })
+      .finally(() => { if (live) setBusy(false); });
+    return () => { live = false; };
+  }, [projectId, embedded?.workflowId, embedded?.number, attempt]);
+  // A Files review opens its one PR by itself, so the pick stage is only a wait.
+  const waiting = !!view?.loading || !!view?.submission?.posting || (!!embedded && view?.stage === "pick" && !view.pin_error && !view.error);
+  useEffect(() => {
+    if (!view || !waiting || busy) return;
+    const id = view.workflow_id;
+    const timer = window.setInterval(() => {
+      void prReviewSnapshot(id).then((next) => {
+        setView((current) => current?.workflow_id === id && next.revision >= current.revision && !pending.current ? next : current);
+      }).catch((err) => setFailure(asGuiError(err)));
+    }, 700);
+    return () => window.clearInterval(timer);
+  }, [view?.workflow_id, waiting, busy]);
+  const file = view?.files.find((f) => f.diff.path === path) ?? view?.files[0];
+  useEffect(() => { setComment(file?.comment ?? ""); }, [view?.number, file?.diff.path, file?.comment]);
+  useEffect(() => { setSummary(view?.summary ?? ""); }, [view?.number, view?.summary]);
+  const editorDirty = !!editor && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
+  const dirty = comment !== (file?.comment ?? "") || summary !== (view?.summary ?? "") || editorDirty;
+  const locked = busy || !!view?.submission || !!view?.pin_error;
+  const onDirtyChange = embedded?.onDirtyChange;
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+  // Selections and editors belong to one file of one PR head.
+  useEffect(() => { setSelection(null); setEditor(null); setNotice(null); }, [view?.number, view?.head_sha, file?.diff.path]);
+  const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
+  const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
+  const lineIndex = (l: ReviewLocation) => lineIndices.get(locationKey(l)) ?? -1;
+  // Hunks of the PR's own diff; expanded context is not part of it.
+  const prHunks = new Map((file?.pr_lines ?? []).map((l) => [locationKey(l), l.hunk]));
+  const hunkIndex = (l: ReviewLocation) => prHunks.get(locationKey(l)) ?? -1;
+  const span: ReviewSpan | null = !selection ? null : lineIndex(selection.anchor) <= lineIndex(selection.cursor)
+    ? { start: selection.anchor, end: selection.cursor } : { start: selection.cursor, end: selection.anchor };
+  function selectLine(line: DiffLine, extend: boolean) {
+    if (locked || editorDirty) return;
+    setEditor(null);
+    setNotice(null);
+    const location = { old_line: line.old_line, new_line: line.new_line };
+    setSelection({ anchor: extend && selection ? selection.anchor : location, cursor: location });
+  }
+  function editSpan(kind: Editor["kind"], selected: ReviewSpan) {
+    if (!file || locked || editorDirty) return;
+    selected = { start: selected.start, end: selected.end };
+    const lo = lineIndex(selected.start), hi = lineIndex(selected.end);
+    // Saving replaces every thread overlapping the span, so only edit a thread
+    // at its own span: a selection inside one snaps to it, other overlap is refused.
+    const overlapping = file.line_comments.filter((c) => {
+      const s = lineIndex(c.start), e = lineIndex(c.end);
+      return s >= 0 && e >= 0 && s <= hi && e >= lo;
+    });
+    const existing: PrReviewThread | undefined = overlapping.length === 1 && overlapping[0].editable
+      && lineIndex(overlapping[0].start) <= lo && lineIndex(overlapping[0].end) >= hi ? overlapping[0] : undefined;
+    if (overlapping.length > 0 && !existing) {
+      setNotice(`Selection overlaps saved ${overlapping.length === 1 ? "thread" : "threads"} at ${overlapping.map((c) => c.anchor).join(", ")}, and saving would replace ${overlapping.length === 1 ? "it" : "them"}. Select lines within one thread to edit it, or lines clear of saved threads.`);
+      return;
+    }
+    if (hunkIndex(selected.start) < 0 || hunkIndex(selected.end) < 0) {
+      setNotice("GitHub takes comments on the PR's own diff lines; these lines were only reached by expanding context.");
+      return;
+    }
+    if (hunkIndex(selected.start) !== hunkIndex(selected.end)) {
+      setNotice("GitHub only accepts a range inside one hunk; select lines within a single hunk.");
+      return;
+    }
+    if (kind === "suggestion" && lines.slice(lo, hi + 1).some((line) => line.new_line === null)) {
+      setNotice("A suggestion replaces current lines; the selection includes a removed (base-only) line, so select current lines or comment instead.");
+      return;
+    }
+    setNotice(null);
+    if (existing) selected = { start: existing.start, end: existing.end };
+    setSelection({ anchor: selected.start, cursor: selected.end });
+    const text = kind === "line_comment" ? existing?.text ?? ""
+      : existing?.suggestion ?? lines.slice(lineIndex(selected.start), lineIndex(selected.end) + 1).map((line) => line.text.slice(1)).join("\n");
+    const severity = existing?.severity ?? "suggestion";
+    setEditor({ kind, span: selected, path: file.diff.path, text, severity, original: text, originalSeverity: severity });
+  }
+  async function submitEditor() {
+    if (!editor || locked) return;
+    const base = { path: editor.path, ...editor.span, text: editor.text };
+    if (await act(editor.kind === "line_comment" ? { kind: "line_comment", ...base, severity: editor.severity } : { kind: "suggestion", ...base })) {
+      setEditor(null);
+    }
+  }
+  async function act(action: PrReviewAction): Promise<boolean> {
+    if (!view || pending.current) return false;
+    pending.current = true;
+    setBusy(true);
+    try {
+      const next = await prReviewAct(view, action);
+      setFailure(null);
+      setDiscard(null);
+      if (next) setView(next); else onClose();
+      return true;
+    } catch (err) {
+      setFailure(asGuiError(err));
+      try {
+        const next = await prReviewSnapshot(view.workflow_id);
+        // Failed draft writes can leave unpersisted text in the backend snapshot.
+        // Refresh the revision for retries, but retain the last saved baseline.
+        if (action.kind === "summary") next.summary = view.summary;
+        if (action.kind === "file_comment") next.files = next.files.map((f) =>
+          f.diff.path === action.path ? { ...f, comment: view.files.find((saved) => saved.diff.path === action.path)?.comment ?? "" } : f);
+        setView(next);
+      } catch { /* retain editors */ }
+      return false;
+    } finally { pending.current = false; setBusy(false); }
+  }
+  function leave(kind: "back" | "close") {
+    if (dirty) setDiscard(kind); else if (view) void act({ kind }); else onClose();
+  }
+  const threadsByEnd = new Map<string, PrReviewThread[]>();
+  for (const thread of file?.line_comments ?? []) threadsByEnd.set(locationKey(thread.end), [...(threadsByEnd.get(locationKey(thread.end)) ?? []), thread]);
+  // Files shows the saved threads where they sit in the diff; the list below still edits them.
+  const inlineThreads = embedded ? (line: DiffLine) => {
+    const here = line.kind === "marker" ? undefined : threadsByEnd.get(locationKey(line));
+    return here && <div className="review-inline-threads">{here.map((thread, index) => <div key={index} className={`review-inline-thread${thread.resolved ? " review-inline-resolved" : ""}`}>
+      <strong>{thread.anchor}</strong> <span className="tag">{thread.severity}</span>{thread.resolved && <span className="tag">resolved</span>}{thread.anchor_lost && <span className="tag">anchor lost</span>}
+      <p>{thread.text}</p>{thread.suggestion !== null && <pre>{thread.suggestion}</pre>}{thread.note && <p className="muted small">{thread.note}</p>}
+    </div>)}</div>;
+  } : undefined;
+  const githubProblem = failure?.github ?? view?.github_problem ?? null;
+  function reopen() {
+    setFailure(null);
+    setBusy(true);
+    setAttempt((n) => n + 1);
+  }
+  return { view, busy, failure, error, waiting, discard, setDiscard, file, locked, comment, setComment, editorDirty, dirty, setPath, lines, span, notice, editSpan, editor, setEditor, submitEditor, inlineThreads, selectLine, lineIndex, summary, setSummary, event, setEvent, act, leave, reopen, githubProblem };
+}
+
+export type PrReviewState = ReturnType<typeof usePrReview>;
+
+/** A PR review's content without a frame: PrReviewPanel puts it in a dialog, or in the Files tab's section when embedded. */
+export function PrReviewBody({ review, embedded }: { review: PrReviewState; embedded?: EmbeddedReview }) {
+  const { view, busy, failure, error, waiting, discard, setDiscard, file, locked, comment, setComment, editorDirty, dirty, setPath, lines, span, notice, editSpan, editor, setEditor, submitEditor, inlineThreads, selectLine, lineIndex, summary, setSummary, event, setEvent, act, leave, reopen, githubProblem } = review;
+  return <>
+    {githubProblem && <GithubProblemNotice problem={githubProblem} retrying={busy || waiting}
+      onRetry={!view ? (embedded ? undefined : reopen) : view.stage === "pick" && !embedded ? () => void act({ kind: "retry" }) : undefined} />}
+    {/* A local refusal is shown even beside the view's GitHub problem. */}
+    {(error ? !failure?.github : view?.error && !view?.github_problem) && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
+    {view?.notice && <p role="status">{view.notice}</p>}
+    {discard && <ConfirmCallout label="Discard unsaved editor text" className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
+      <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>
+      <button className="btn btn-danger" onClick={() => void act({ kind: discard })}>Discard and leave</button>
+    </ConfirmCallout>}
+    {(!view || waiting) && <p role="status"><Spinner /> Loading pull requests…</p>}
+    {embedded && !view && error && embedded.fallback}
+    {embedded && view?.pin_error && <p className="callout callout-danger" role="alert">{view.pin_error}</p>}
+    {embedded && view?.pin_error && view.stage === "pick" && embedded.fallback}
+    {!embedded && view?.stage === "pick" && <section aria-label="Choose a pull request">
+      <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "retry" })}>Refresh pull requests</button>
+      {!waiting && !view.error && view.entries.length === 0 && <p>No open pull requests.</p>}
+      <ul className="pr-list">{view.entries.map((entry) => <li key={entry.number}>
+        <button className="pr-entry" disabled={busy || waiting} onClick={() => void act({ kind: "open", number: entry.number })}>
+          <span className="row"><strong>#{entry.number}</strong> {entry.title}</span>
+          <span className="row small muted">{entry.head_ref} · {entry.author}
+            {entry.is_draft && <span className="tag">Draft PR</span>}
+            {entry.has_draft && <span className="tag">Saved review</span>}
+            {entry.updated && <span className="tag">Updated since review</span>}
+          </span>
+        </button>
+      </li>)}</ul>
+    </section>}
+    {view?.stage === "review" && <>
+      <h3>#{view.number} {view.title}</h3>
+      {view.head_sha && <p className="muted small">Comments are pinned to head <code>{view.head_sha.slice(0, 8)}</code>; posting is refused if the PR moves.</p>}
+      <div className="diff-reader">
+        <nav className="diff-files" aria-label="Changed files">{view.files.map((f) => <button key={f.diff.path}
+          className={`diff-file ${file === f ? "diff-file-selected" : ""}`} disabled={locked || comment !== (file?.comment ?? "") || editorDirty}
+          onClick={() => setPath(f.diff.path)}>{f.diff.path}<small>+{f.diff.additions} −{f.diff.deletions}</small></button>)}</nav>
+        <section className="diff-content" aria-label="File diff">{file && <>
+          <strong>{file.diff.path}</strong>
+          {!file.diff.is_binary && lines.length > 0 && <div className="review-line-controls">
+            <p className="muted small">Click a line number to select it; Shift-click another to select a range inside one hunk. Base-only (removed) lines comment on the base side.</p>
+            {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
+            {notice && <p role="alert">{notice}</p>}
+            <button className="btn btn-secondary btn-sm" disabled={locked || editorDirty || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
+            <button className="btn btn-secondary btn-sm" disabled={locked || editorDirty || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
+          </div>}
+          {editor && <form className="review-editor" onSubmit={(event) => { event.preventDefault(); void submitEditor(); }}>
+            <Field label={editor.kind === "line_comment" ? "Line comment" : "Suggested replacement"}>
+              <textarea rows={5} value={editor.text} disabled={locked} onChange={(event) => setEditor({ ...editor, text: event.target.value })} />
+            </Field>
+            {editor.kind === "line_comment" && <Field label="Severity"><select value={editor.severity} disabled={locked} onChange={(event) => setEditor({ ...editor, severity: event.target.value as ReviewSeverity })}>
+              {SEVERITIES.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
+            </select></Field>}
+            <button className="btn btn-primary" disabled={locked}>Save {editor.kind === "line_comment" ? "line comment" : "suggestion"}</button>
+            <button type="button" className="btn btn-secondary" disabled={locked} onClick={() => setEditor(null)}>Cancel edit</button>
+            <p className="muted small">Anchored to {locationLabel(editor.span.start)} – {locationLabel(editor.span.end)}. An empty save removes this {editor.kind === "suggestion" ? "suggestion" : "comment's prose"}; the other part of the thread is kept. Posts only after you confirm the submission preview.</p>
+          </form>}
+          <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} annotate={inlineThreads} selection={{ disabled: locked || editorDirty, select: selectLine,
+            contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
+          {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
+            {file.line_comments.map((thread, index) => <div key={index}>
+              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
+              {thread.suggestion !== null && <pre>{thread.suggestion}</pre>}
+              {thread.note && <p className="muted small">{thread.note}</p>}
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("line_comment", thread)}>Edit line comment</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("suggestion", thread)}>Edit suggestion</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable}
+                onClick={() => void act({ kind: "toggle_line_resolved", path: file.diff.path, start: thread.start, end: thread.end })}>{thread.resolved ? "Reopen thread" : "Resolve thread"}</button>
+            </div>)}
+          </details>}
+        </>}</section>
+      </div>
+      {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>
+        <button className="btn btn-secondary" disabled={locked || comment === file.comment} onClick={() => void act({ kind: "file_comment", path: file.diff.path, text: comment })}>Save file comment</button></>}
+      {embedded ? <div className="row"><p className="muted small">Comments save to the shared review draft, the same one Write a review and AMF's terminal app use. Write the summary, preview and post from Write a review.</p>
+        <button className="btn btn-secondary" disabled={locked || dirty} onClick={embedded.onOpenReview}>Preview and post in Write a review…</button></div> : <>
+      <Field label="Review summary"><textarea value={summary} disabled={locked} onChange={(e) => setSummary(e.target.value)} /></Field>
+      <button className="btn btn-secondary" disabled={locked || summary === view.summary} onClick={() => void act({ kind: "summary", text: summary })}>Save summary</button>
+      <Field label="Review event"><select value={event} disabled={locked} onChange={(e) => setEvent(e.target.value)}>
+        <option value="COMMENT">Comment</option><option value="APPROVE">Approve</option><option value="REQUEST_CHANGES">Request changes</option>
+      </select></Field>
+      <div className="row"><button className="btn btn-secondary" disabled={locked} onClick={() => leave("back")}>Back to pull requests</button>
+        <button className="btn btn-primary" disabled={locked || dirty} onClick={() => void act({ kind: "preview", event })}>Preview submission</button></div>
+      </>}
+    </>}
+    {!embedded && view?.submission && <section aria-label="Confirm PR review" className="callout">
+      <h3>Post {view.submission.event.replaceAll("_", " ").toLowerCase()} review to PR #{view.number}</h3>
+      <Markdown source={view.submission.body || "No summary."} />
+      {view.submission.comments.map((c, i) => <div key={i}>
+        <strong>{c.path}:{c.start_line != null ? `${c.start_line}–${c.line}` : c.line} ({c.side === "LEFT" ? "base" : "current"})</strong>
+        <Markdown source={c.body} />
+      </div>)}
+      {view.submission.file_comments.map((c, i) => <div key={i}><strong>{c.path}</strong><Markdown source={c.body} /></div>)}
+      {view.submission.github_problem ? <GithubProblemNotice problem={view.submission.github_problem} />
+        : view.submission.error && <p role="alert">{view.submission.error}</p>}
+      <button className="btn btn-secondary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "cancel_submit" })}>Keep editing</button>
+      {view.submission.head_moved ? <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "reopen" })}>Reopen updated PR</button>
+        : <button className="btn btn-primary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "confirm_submit" })}>{view.submission.posting ? "Posting…" : "Confirm and post to GitHub"}</button>}
+    </section>}
+  </>;
+}

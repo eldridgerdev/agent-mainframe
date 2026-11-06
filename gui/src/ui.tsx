@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { FeatureStatus } from "./api";
+import { shortcutAria, shortcutLabel, type ShortcutId } from "./shortcuts";
 
 // Shared presentation primitives. Everything here is stateless or owns only
 // its own open/closed state; workflow state stays in App and the panels.
@@ -65,6 +66,9 @@ const ICONS = {
   appWindow: "M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 9h18M7 6.5h.01M10 6.5h.01",
   gitPullRequest: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v6M18 15V9a3 3 0 0 0-3-3h-4M13 3l-3 3 3 3",
   gitCompare: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 15V9a3 3 0 0 0-3-3h-4M13 3l-3 3 3 3M6 9v6a3 3 0 0 0 3 3h4M11 15l3 3-3 3",
+  help: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01",
+  keyboard: "M2 6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2zM6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10",
+  flag: "M4 22V4M4 4h13l-2 4 2 4H4",
   gitPullRequestDraft: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v6M18 5v.01M18 9v.01M18 13v.01",
 } as const;
 
@@ -94,6 +98,7 @@ export type IconName = keyof typeof ICONS;
  * | appWindow | VS Code windows |
  * | gitPullRequest / gitCompare / gitPullRequestDraft | PR triage / PR review / PR workspace |
  * | sparkles / zap | AI planning and vibe modes / quick plan |
+ * | help / keyboard / flag | Help menu / keyboard shortcuts / first-run steps |
  * | terminal | Agent and terminal sessions |
  * | file | A document or file |
  */
@@ -575,8 +580,9 @@ export interface MenuItem {
   danger?: boolean;
   disabled?: boolean;
   hint?: string;
-  /** Keyboard shortcut shown at the right edge, e.g. "Ctrl+S". Display only. */
-  shortcut?: string;
+  /** Registry shortcut shown at the right edge (display only; the binding
+   *  lives in `shortcuts.ts`, so the hint cannot drift from the key). */
+  shortcut?: ShortcutId;
   /** Tooltip for the item (a disabled reason belongs in `hint`, which is visible). */
   title?: string;
 }
@@ -732,6 +738,7 @@ export function Menu({
       title={item.title}
       aria-labelledby={`${menuId}-label-${index}`}
       aria-describedby={item.hint ? `${menuId}-hint-${index}` : undefined}
+      aria-keyshortcuts={item.shortcut ? shortcutAria(item.shortcut) : undefined}
       className={`menu-item${item.danger ? " menu-item-danger" : ""}`}
       disabled={item.disabled}
       onClick={() => {
@@ -744,7 +751,7 @@ export function Menu({
       {item.icon && <Icon name={item.icon} />}
       <span id={`${menuId}-label-${index}`} className="menu-item-label">{item.label}</span>
       {item.hint && <span id={`${menuId}-hint-${index}`} className="menu-item-hint">{item.hint}</span>}
-      {item.shortcut && <kbd className="menu-item-shortcut">{item.shortcut}</kbd>}
+      {item.shortcut && <kbd className="menu-item-shortcut" aria-hidden="true">{shortcutLabel(item.shortcut)}</kbd>}
     </button>
   );
 
@@ -1059,5 +1066,37 @@ export function Toasts({
         <ToastView key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
     </div>
+  );
+}
+
+/** A page's title block: optional crumb, icon, title, badge and subtitle, with actions on the right. */
+export function PageHeader({
+  icon,
+  title,
+  subtitle,
+  badge,
+  actions,
+  crumb,
+}: {
+  icon?: IconName;
+  title: string;
+  subtitle?: ReactNode;
+  badge?: ReactNode;
+  actions?: ReactNode;
+  crumb?: ReactNode;
+}) {
+  return (
+    <header className="page-header">
+      <div className="page-title">
+        {crumb && <div className="crumb">{crumb}</div>}
+        <div className="page-title-row">
+          {icon && <span className="page-icon"><Icon name={icon} size={18} /></span>}
+          <h1 title={title}>{title}</h1>
+          {badge}
+        </div>
+        {subtitle && <div className="page-subtitle">{subtitle}</div>}
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </header>
   );
 }

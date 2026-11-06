@@ -130,7 +130,7 @@ it("shows the side and full line range of each inline comment before posting", a
   } });
   render(<PrReviewPanel projectId="project" onClose={vi.fn()} />);
   await screen.findByRole("region", { name: "Confirm PR review" });
-  for (const target of ["lib.rs:8 (base · LEFT)", "lib.rs:10–12 (base · LEFT)", "lib.rs:20 (current · RIGHT)", "lib.rs:22–25 (current · RIGHT)", "other.rs"]) {
+  for (const target of ["lib.rs:8 (base)", "lib.rs:10–12 (base)", "lib.rs:20 (current)", "lib.rs:22–25 (current)", "other.rs"]) {
     expect(screen.getByText(target)).toBeTruthy();
   }
   expect(screen.getByText("replacement")).toBeTruthy();

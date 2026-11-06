@@ -883,6 +883,37 @@ shared history and a failed refresh with labeled previous results. It uses
 private fixtures and a separate development port, without calling AI agents.
 macOS runtime validation remains open.
 
+### Help and keyboard shortcuts
+
+**Help**, pinned at the bottom of the projects sidebar (outside the
+collapsible **Tools** group, so it is always visible), opens
+**Keyboard shortcuts**, this guide (**Documentation**, in your browser) and
+**Show first-run steps again**, which reopens the welcome steps until you pick
+a project or another page. Press **?** outside terminals, text inputs and
+dialogs to open the shortcut list directly. It groups every key the GUI
+handles (sidebar, prompt composer, terminal scrolling, dialogs and menus,
+Changes, screenshots), says where each one works, and filters by action,
+group or key.
+
+Every shortcut lives in one typed registry, `src/shortcuts.ts`. The dialog,
+menu hints (`MenuItem.shortcut` takes a registry id), tooltips and
+`aria-keyshortcuts` read from it, so a hint cannot drift from its key. To add
+a shortcut:
+
+1. Add one entry to `BASE_SHORTCUTS`: `id`, `keys` (e.g. `"Mod+K"`, `"?"`,
+   or a leader sequence such as `"Ctrl+Space G"`), `label`, `group`, `scope`
+   and `handler`.
+2. For `handler: "dispatch"` (the `workspace` and `global` scopes), call
+   `useShortcut(id, handler)` in the component that owns the action; return
+   `false` to let the key through. Keys handled by their own component use
+   `handler: "external"` and name the file in `source`.
+3. Run `npm test`: `tests/Shortcuts.test.tsx` fails when two entries share a
+   key in scopes that can be active together, or when one binding starts
+   another.
+
+`Mod` is Cmd on macOS and Ctrl elsewhere. A bare character matches what is
+typed, case included, so `g` and `G` are different keys, as in the TUI.
+
 ## Checks
 
 ```sh
@@ -979,3 +1010,15 @@ recorded head branch on `origin` and is refused when that branch is missing
 the triage source checkout has out, which the preview names. The workflow makes
 no GitHub call and starts no agent. Creating triage companions in the GUI remains
 TUI-only. See [feedback destination validation](../docs/development/gui-review-feedback-destinations.md).
+
+### Browse for paths
+
+**New project**'s repository path and the Plan interview's reference document
+field have a **Browse…** button that opens the system folder or file picker
+(Tauri's dialog plugin; on Linux and WSLg this is the GTK3 file chooser, which
+the WebKitGTK prerequisites already install). A chosen folder is checked the
+same way as leaving the field, and cancelling the picker leaves the field as it
+was. Typing or pasting a path still works, and is the only way in a plain
+browser (`npm run dev` without Tauri), where the button is hidden. The app's
+capability grants only `dialog:allow-open`: the picker returns a path to the
+page and gives it no filesystem access.

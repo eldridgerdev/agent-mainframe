@@ -74,6 +74,7 @@ fn terminal_key(target: &SessionTarget) -> String {
 
 fn not_found(message: impl Into<String>) -> GuiError {
     GuiError {
+        github: None,
         kind: GuiErrorKind::NotFound,
         message: message.into(),
     }

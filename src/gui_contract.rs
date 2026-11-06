@@ -39,6 +39,11 @@ pub mod sidebar;
 pub struct GuiError {
     pub kind: GuiErrorKind,
     pub message: String,
+    /// Set when the failure is a GitHub problem the user can fix (no `gh`,
+    /// not signed in, rate limited, offline, no GitHub remote), so a PR panel
+    /// can name the fix and offer Retry instead of showing `gh`'s stderr.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<Box<crate::gui_github_errors::GithubProblem>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -68,6 +73,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::NotFound,
             message: message.into(),
+            github: None,
         }
     }
 
@@ -75,6 +81,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::Conflict,
             message: message.into(),
+            github: None,
         }
     }
 
@@ -82,6 +89,7 @@ impl GuiError {
         Self {
             kind: GuiErrorKind::NeedsApproval,
             message: message.into(),
+            github: None,
         }
     }
 }
@@ -120,9 +128,19 @@ impl From<anyhow::Error> for GuiError {
         {
             return Self::conflict(err.to_string());
         }
+        // A `gh` failure is shown as its fix; the raw text stays in
+        // `github.detail`.
+        if let Some(problem) = crate::gui_github_errors::github_problem_of(&err) {
+            return Self {
+                kind: GuiErrorKind::Internal,
+                message: problem.summary(),
+                github: Some(Box::new(problem)),
+            };
+        }
         Self {
             kind: GuiErrorKind::Internal,
             message: err.to_string(),
+            github: None,
         }
     }
 }
@@ -1273,6 +1291,22 @@ mod tests {
 
         let other = anyhow::anyhow!("disk full").context("feature was not saved");
         assert_eq!(GuiError::from(other).kind, GuiErrorKind::Internal);
+    }
+
+    #[test]
+    fn a_gh_failure_carries_its_fix_and_keeps_the_raw_text_as_detail() {
+        let missing = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("Failed to run `gh pr view`.");
+        let error = GuiError::from(missing);
+        let problem = error.github.expect("gh spawn failure is typed");
+        assert_eq!(
+            problem.kind,
+            crate::gui_github_errors::GithubProblemKind::CliMissing
+        );
+        assert!(error.message.contains("Install it from cli.github.com"));
+        assert!(problem.detail.contains("Failed to run `gh pr view`."));
+        let json = serde_json::to_value(GuiError::from(anyhow::anyhow!("disk full"))).unwrap();
+        assert!(json.get("github").is_none(), "absent, not null: {json}");
     }
 
     fn store_with_one_feature(status: ProjectStatus) -> ProjectStore {

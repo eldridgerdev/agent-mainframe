@@ -431,7 +431,8 @@ fn closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result() {
     assert!(!app.pr_review_work.fetch_pending());
 }
 
-/// PR Triage opened, then AI Review opened over it from `A`, with `n` findings.
+use crate::app::pr_review::runtime::ReviewListLoaded;
+
 fn reviewable(number: u32, title: &str) -> crate::github::ReviewablePr {
     crate::github::ReviewablePr {
         number,
@@ -447,8 +448,6 @@ fn reviewable(number: u32, title: &str) -> crate::github::ReviewablePr {
         head_owner: "acme".to_string(),
     }
 }
-
-use crate::app::pr_review::runtime::ReviewListLoaded;
 
 /// The draft key the test loaders report, and the test opener pins.
 const TEST_REPO_KEY: &str = "github.com/acme/widgets";
@@ -2291,3 +2290,5 @@ mod ai_review_workflow;
 mod companion_feature;
 
 mod ai_review_fix_handoff;
+
+mod review_list;

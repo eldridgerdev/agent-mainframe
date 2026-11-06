@@ -1036,3 +1036,12 @@ Ninety-seventh increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninety-eighth increment (2026-11-06):
+
+- Moved PR Review tab selection, list loading/retry, and error-state tests to
+  `app/tests/pr_triage/review_list.rs`. Shared review-list loaders and key
+  helpers stay in the parent because downstream integration cases reuse them.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

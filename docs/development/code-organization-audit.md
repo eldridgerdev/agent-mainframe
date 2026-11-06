@@ -1080,3 +1080,11 @@ One-hundred-second increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundred-third increment (2026-11-06):
+
+- Moved the real-PR acceptance scenario and its checkout/GitHub state
+  verification helpers to `app/tests/pr_triage/acceptance.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.

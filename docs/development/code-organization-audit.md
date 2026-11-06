@@ -1106,3 +1106,12 @@ One-hundred-fifth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundred-sixth increment (2026-11-06):
+
+- Moved shared PR Triage test fixtures and poster/database helpers into the
+  scoped `app/tests/pr_triage/support.rs`; `pr_triage.rs` now owns imports,
+  shared fixture exports, and behavior-module wiring.
+- Validation: all 220 PR Triage test names remain present and unique; the
+  focused suite passed (220 passed, one ignored); `cargo check --tests
+  --locked`, formatting, and `git diff --check` passed.

@@ -1028,3 +1028,11 @@ Ninety-sixth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninety-seventh increment (2026-11-06):
+
+- Grouped AI Review finding-to-fix handoff, batch selection, and refusal tests
+  in `app/tests/pr_triage/ai_review_fix_handoff.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

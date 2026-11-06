@@ -868,3 +868,12 @@ Seventy-seventh increment (2026-11-06):
   parent test module.
 - Validation: all 112 test names are still present; `cargo check --tests
   --locked`, formatting, and `git diff --check` passed. Tests were not run.
+
+Seventy-eighth increment (2026-11-06):
+
+- Grouped diff search and context-expansion helpers with their six tests in
+  `handlers/diff/tests/search.rs`; the shared search patch fixture stays with
+  the adjacent editor tests.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

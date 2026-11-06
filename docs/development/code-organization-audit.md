@@ -1165,3 +1165,10 @@ One-hundred-thirteenth increment (2026-11-06):
   `handlers/diff/tests/comment_navigation.rs` with their focused patch fixture.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-fourteenth increment (2026-11-06):
+
+- Grouped undo history, implicit verdict restoration, and no-op deduplication
+  tests in `handlers/diff/tests/undo.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

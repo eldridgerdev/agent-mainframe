@@ -1121,3 +1121,11 @@ One-hundred-seventh increment (2026-11-06):
 - Ran the focused diff-handler suite after grouping its test files.
 - Validation: `cargo test --locked handlers::diff::tests` passed (113 passed);
   formatting and `git diff --check` passed.
+
+One-hundred-eighth increment (2026-11-06):
+
+- Grouped diff feedback-editor and Vim behavior tests in
+  `handlers/diff/tests/editor_behavior.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+  The focused suite passed in the previous increment (113 tests).

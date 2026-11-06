@@ -1137,3 +1137,9 @@ One-hundred-ninth increment (2026-11-06):
   `handlers/diff/tests/completion_handoff.rs`.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-tenth increment (2026-11-06):
+
+- Grouped base-ref override prompt tests in `handlers/diff/tests/base_ref.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

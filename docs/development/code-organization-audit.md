@@ -953,3 +953,11 @@ Eighty-seventh increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-eighth increment (2026-11-06):
+
+- Grouped PR review dedicated-session status, usage accounting, and draft
+  provenance tests in `app/tests/pr_triage/session_activity.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

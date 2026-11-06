@@ -1150,3 +1150,11 @@ One-hundred-eleventh increment (2026-11-06):
   and draft-comment tests in `handlers/diff/tests/comment_verdicts.rs`.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-twelfth increment (2026-11-06):
+
+- Grouped file-tree focus/folding behavior and generated-AMF-file tree tests in
+  `handlers/diff/tests/file_tree.rs`; the shared two-file patch fixture remains
+  in the parent for comment-navigation tests.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

@@ -1054,3 +1054,12 @@ Ninety-ninth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundredth increment (2026-11-06):
+
+- Grouped persisted PR review draft lifecycle and reload tests in
+  `app/tests/pr_triage/draft_persistence.rs`; the shared database and review
+  helpers remain in the parent for posting checks.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.

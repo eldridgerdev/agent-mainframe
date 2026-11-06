@@ -910,3 +910,11 @@ Eighty-second increment (2026-11-06):
 - Validation: all 112 test names remain present and unique; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-third increment (2026-11-06):
+
+- Grouped final-review layout, file navigation, and filtering tests in
+  `handlers/diff/tests/file_navigation.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

@@ -860,3 +860,11 @@ Seventy-sixth increment (2026-11-06):
 - Validation: test-name comparison found the same 112 tests; `cargo check
   --tests --locked`, `cargo fmt`, and `git diff --check` passed. Tests were not
   executed.
+
+Seventy-seventh increment (2026-11-06):
+
+- Grouped 10 diff-handler viewport scrolling and help-overlay tests in
+  `handlers/diff/tests/viewport_navigation.rs`; shared fixtures remain in the
+  parent test module.
+- Validation: all 112 test names are still present; `cargo check --tests
+  --locked`, formatting, and `git diff --check` passed. Tests were not run.

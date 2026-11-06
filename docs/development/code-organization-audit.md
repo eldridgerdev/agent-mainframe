@@ -925,6 +925,14 @@ Eighty-fourth increment (2026-11-06):
   resolution, list navigation, and return-to-pane tests to
   `app/tests/pr_triage/navigation.rs`; shared selection helper stays in the
   parent suite.
-- Validation: the 218 PR Triage test names are unchanged; `cargo check
+- Validation: the 220 PR Triage test names are unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-fifth increment (2026-11-06):
+
+- Moved PR Triage investigation reconciliation, action, reply, and follow-up
+  tests to `app/tests/pr_triage/investigations.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.

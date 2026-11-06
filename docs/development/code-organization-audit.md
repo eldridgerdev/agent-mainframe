@@ -1063,3 +1063,11 @@ One-hundredth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain present and unique; `cargo
   check --tests --locked`, formatting, and `git diff --check` passed. Tests were
   not run.
+
+One-hundred-first increment (2026-11-06):
+
+- Grouped PR head refresh, outdated-comment, and updated-notes panel tests in
+  `app/tests/pr_triage/pr_updates.rs`; database and post helpers remain shared.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.

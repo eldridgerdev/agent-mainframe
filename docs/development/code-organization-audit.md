@@ -893,3 +893,12 @@ Eightieth increment (2026-11-06):
 - Validation: all 112 test names remain present and unique; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-first increment (2026-11-06):
+
+- Grouped diff review comment and suggestion workflows, including Git-backed
+  suggestion application, in `handlers/diff/tests/comment_suggestions.rs`.
+  Shared fixtures used by other groups remain in the parent module.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

@@ -885,3 +885,11 @@ Seventy-ninth increment (2026-11-06):
 - Validation: all 112 test names remain present and unique; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eightieth increment (2026-11-06):
+
+- Grouped final-review finish confirmation, summary navigation, and pause
+  behavior tests in `handlers/diff/tests/finish_flow.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

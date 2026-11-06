@@ -851,3 +851,12 @@ Seventy-fifth increment (2026-11-05):
   Clippy and formatting passed. GUI build passed. The full GUI suite has one
   repeatable `PrWorkspacePanel` failure under the full run; that file passes
   when run alone (9/9).
+
+Seventy-sixth increment (2026-11-06):
+
+- Moved the inline diff-handler test module to `handlers/diff/tests.rs`. The
+  production dispatcher is now 866 lines; its 112 tests remain in one sibling
+  module with unchanged names and bodies.
+- Validation: test-name comparison found the same 112 tests; `cargo check
+  --tests --locked`, `cargo fmt`, and `git diff --check` passed. Tests were not
+  executed.

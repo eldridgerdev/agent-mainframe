@@ -1158,3 +1158,10 @@ One-hundred-twelfth increment (2026-11-06):
   in the parent for comment-navigation tests.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-thirteenth increment (2026-11-06):
+
+- Grouped cross-file comment cursor traversal and comment-navigation tests in
+  `handlers/diff/tests/comment_navigation.rs` with their focused patch fixture.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

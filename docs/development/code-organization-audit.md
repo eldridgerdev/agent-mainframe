@@ -936,3 +936,12 @@ Eighty-fifth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-sixth increment (2026-11-06):
+
+- Grouped PR review fix handoff and per-comment targeting tests in
+  `app/tests/pr_triage/fix_handoff.rs`; the shared AI-review finding fixture
+  remains available from the parent suite.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

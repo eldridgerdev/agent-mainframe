@@ -986,3 +986,12 @@ Ninety-first increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninety-second increment (2026-11-06):
+
+- Grouped PR reply drafting, attribution, commit context, editing, and posting
+  precondition tests in `app/tests/pr_triage/replies.rs`; the editor-text helper
+  remains shared from the parent suite.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

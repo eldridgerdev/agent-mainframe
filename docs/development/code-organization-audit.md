@@ -969,3 +969,11 @@ Eighty-ninth increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninetieth increment (2026-11-06):
+
+- Grouped PR fix-confirm editor, scroll, target-switch, and target-picker tests
+  in `app/tests/pr_triage/fix_editor.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

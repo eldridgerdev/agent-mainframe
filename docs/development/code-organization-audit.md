@@ -1172,3 +1172,11 @@ One-hundred-fourteenth increment (2026-11-06):
   tests in `handlers/diff/tests/undo.rs`.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-fifteenth increment (2026-11-06):
+
+- Moved archived-review history navigation into
+  `handlers/diff/tests/history.rs`; shared app and key fixtures remain in the
+  parent test module.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

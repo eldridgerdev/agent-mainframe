@@ -995,3 +995,11 @@ Ninety-second increment (2026-11-06):
 - Validation: all 220 PR Triage test names remain unchanged; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Ninety-third increment (2026-11-06):
+
+- Grouped PR Review Memory add/edit, AI summary, and generated-content
+  persistence tests in `app/tests/pr_triage/memory_workflows.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

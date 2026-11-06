@@ -1143,3 +1143,10 @@ One-hundred-tenth increment (2026-11-06):
 - Grouped base-ref override prompt tests in `handlers/diff/tests/base_ref.rs`.
 - Validation: all 112 named diff-handler tests remain present and unique;
   `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-eleventh increment (2026-11-06):
+
+- Grouped diff line-comment verdicts, auto-reject behavior, severity changes,
+  and draft-comment tests in `handlers/diff/tests/comment_verdicts.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.

@@ -918,3 +918,13 @@ Eighty-third increment (2026-11-06):
 - Validation: all 112 test names remain present and unique; `cargo check
   --tests --locked`, formatting, and `git diff --check` passed. Tests were not
   run.
+
+Eighty-fourth increment (2026-11-06):
+
+- Began splitting the oversized PR Triage integration suite. Moved repository
+  resolution, list navigation, and return-to-pane tests to
+  `app/tests/pr_triage/navigation.rs`; shared selection helper stays in the
+  parent suite.
+- Validation: the 218 PR Triage test names are unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.

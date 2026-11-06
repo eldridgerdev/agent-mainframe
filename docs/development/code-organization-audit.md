@@ -1206,4 +1206,12 @@ One-hundred-eighteenth increment (2026-11-06):
 - Moved investigation prompt confirmation, execution, and TODO reconciliation
   into `gui_pr_triage/investigation.rs`.
 - Validation: `cargo check --tests --locked` and focused
-  `cargo test --locked gui_pr_triage` passed (41 tests); formatting passed.
+  `cargo test --locked gui_pr_triage` passed (41 tests). At the code milestone,
+  `cargo test --workspace --locked` passed (4,201 library and 9 Tauri tests),
+  strict workspace Clippy and formatting passed, and the focused GUI triage suite
+  passed (26 tests) with a production build. Clippy also caught and prompted
+  removal of a dangling doc comment in the previously moved diff test fixture.
+- No tokenizer-level before/after task comparison is claimed: a tokenizer for
+  the active model is unavailable in this environment. The structural changes
+  are validated for locality, but measured end-to-end token savings remain
+  unverified.

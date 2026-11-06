@@ -146,9 +146,8 @@ fn plain_diff_viewer_gets_the_tree_and_fold_keys_too() {
     );
 }
 
-/// A review over `TWO_FILE_PATCH` with one kept comment on the added line
-/// (addressable index 2) of each file.
-
+// A review over `TWO_FILE_PATCH` with one kept comment on the added line
+// (addressable index 2) of each file.
 fn amf_entry(path: &str, status: DiffFileStatus, new: &str) -> DiffFile {
     DiffFile {
         old_path: None,

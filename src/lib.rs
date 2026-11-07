@@ -57,6 +57,7 @@ mod codex_config;
 mod context_collectors;
 mod context_display;
 mod context_tracking;
+mod custom_agent;
 mod custom_session_icons;
 mod db;
 mod debug;

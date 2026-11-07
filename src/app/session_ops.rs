@@ -775,14 +775,17 @@ impl App {
         config: &crate::extension::CustomSessionConfig,
         label: String,
     ) -> Result<bool> {
-        // A custom session is not itself an agent, but adding one to a stopped
+        self.validate_custom_session_agent(pi, fi, config)?;
+        let intent = if config.agent.is_some() {
+            self.gate_launch(StartIntent::Warn("the new agent session"));
+            StartIntent::Approved
+        } else {
+            StartIntent::Warn("this feature's saved agents")
+        };
+        // Adding a custom session to a stopped
         // feature brings that feature's saved agents up with it. The picker
         // has no state to resume from, so this warns rather than parks.
-        self.ensure_feature_running_for_new_session(
-            pi,
-            fi,
-            StartIntent::Warn("this feature's saved agents"),
-        )?;
+        self.ensure_feature_running_for_new_session(pi, fi, intent)?;
 
         let window_hint = config
             .window_name
@@ -800,6 +803,7 @@ impl App {
         };
 
         let tmux_session = feature.tmux_session.clone();
+        let mode = feature.mode.clone();
         let workdir = config
             .working_dir
             .as_ref()
@@ -813,17 +817,20 @@ impl App {
             config.on_stop.clone(),
             config.pre_check.clone(),
         );
-        let session_id = session.id.clone();
+        if let Some(agent) = &config.agent {
+            session.kind = session_kind_for_agent(agent);
+        }
+        let session_record = session.clone();
         let window = session.tmux_window.clone();
-        let command = session.command.clone();
 
         if self.tmux.session_exists(&tmux_session) {
             self.start_custom_session_window(
                 &tmux_session,
                 &window,
                 &workdir,
-                &session_id,
-                command.as_deref(),
+                &session_record,
+                &mode,
+                false,
             )?;
         }
 
@@ -839,8 +846,9 @@ impl App {
         tmux_session: &str,
         window: &str,
         workdir: &std::path::Path,
-        session_id: &str,
-        command: Option<&str>,
+        session: &FeatureSession,
+        mode: &VibeMode,
+        check: bool,
     ) -> Result<()> {
         Self::create_session_window_for_viewport(
             self.tmux.as_ref(),
@@ -850,13 +858,40 @@ impl App {
             workdir,
         )?;
 
+        if check
+            && (crate::extension::CustomSessionConfig {
+                pre_check: session.pre_check.clone(),
+                ..Default::default()
+            })
+            .run_pre_check(workdir)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if session.kind.is_agent_harness() {
+            let args = crate::custom_agent::launch_args(
+                session,
+                workdir,
+                mode,
+                mode.cli_flags(LaunchOpts::default()),
+            );
+            let args = self.screenshot_launch_args(
+                &session.id,
+                session.kind == SessionKind::Claude,
+                args,
+            )?;
+            let command = crate::custom_agent::shell_command(tmux_session, workdir, session, args)?;
+            return self.tmux.run_shell_command(tmux_session, window, &command);
+        }
+
         let status_dir = crate::extension::generated_amf_subdir(workdir, "session-status");
         let status_dir_str = status_dir.to_string_lossy().into_owned();
         let env_prefix = TmuxManager::shell_env_prefix(&[
-            ("AMF_SESSION_ID", session_id),
+            ("AMF_SESSION_ID", &session.id),
             ("AMF_STATUS_DIR", &status_dir_str),
         ]);
-        let shell_cmd = if let Some(cmd) = command {
+        let shell_cmd = if let Some(cmd) = session.command.as_deref() {
             format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
         } else {
             env_prefix
@@ -876,6 +911,7 @@ impl App {
         config: &crate::extension::CustomSessionConfig,
         label: String,
     ) -> Result<String> {
+        self.validate_custom_session_agent(pi, fi, config)?;
         self.with_feature_started_for_add(pi, fi, |app| {
             let window_hint = config
                 .window_name
@@ -883,28 +919,32 @@ impl App {
                 .unwrap_or_else(|| slugify(&config.name));
             let feature = &mut app.store.projects[pi].features[fi];
             let tmux_session = feature.tmux_session.clone();
+            let mode = feature.mode.clone();
             let workdir = config
                 .working_dir
                 .as_ref()
                 .map(|rel| feature.workdir.join(rel))
                 .unwrap_or_else(|| feature.workdir.clone());
-            let session_record = feature
-                .add_custom_session_named(
-                    label,
-                    window_hint,
-                    config.command.clone(),
-                    config.on_stop.clone(),
-                    config.pre_check.clone(),
-                )
-                .clone();
+            let session = feature.add_custom_session_named(
+                label,
+                window_hint,
+                config.command.clone(),
+                config.on_stop.clone(),
+                config.pre_check.clone(),
+            );
+            if let Some(agent) = &config.agent {
+                session.kind = session_kind_for_agent(agent);
+            }
+            let session_record = session.clone();
             let feature_id = feature.id.clone();
 
             if let Err(error) = app.start_custom_session_window(
                 &tmux_session,
                 &session_record.tmux_window,
                 &workdir,
-                &session_record.id,
-                session_record.command.as_deref(),
+                &session_record,
+                &mode,
+                false,
             ) {
                 let _ = app
                     .tmux
@@ -922,6 +962,38 @@ impl App {
             app.save_new_builtin_tmux_session(&feature_id, &tmux_session, &session_record)?;
             Ok(session_record.id)
         })
+    }
+
+    fn validate_custom_session_agent(
+        &self,
+        pi: usize,
+        fi: usize,
+        config: &crate::extension::CustomSessionConfig,
+    ) -> Result<()> {
+        if let Some(agent) = &config.agent {
+            let project = &self.store.projects[pi];
+            let feature = &project.features[fi];
+            if !self.allows_agent_for_repo(&project.repo, agent) {
+                anyhow::bail!(
+                    "Harness '{}' is not allowed for this workspace",
+                    agent.display_name()
+                );
+            }
+            self.tmux.check_harness_available(agent)?;
+            let workdir = config
+                .working_dir
+                .as_ref()
+                .map(|dir| feature.workdir.join(dir))
+                .unwrap_or_else(|| feature.workdir.clone());
+            ensure_notification_hooks(
+                &workdir,
+                &project.repo,
+                &feature.mode,
+                agent,
+                feature.is_worktree,
+            );
+        }
+        Ok(())
     }
 
     /// Bring the feature up for an add, then run `add`. When `add` fails and
@@ -1881,7 +1953,9 @@ impl App {
             let label = session.label.clone();
             let on_stop = session.on_stop.clone();
             let session_id = session.id.clone();
-            let is_custom = session.kind == SessionKind::Custom;
+            let is_custom = session.kind == SessionKind::Custom
+                || session.command.is_some()
+                || session.on_stop.is_some();
 
             let clear_sidebar = feature.sessions.len() == 1;
             if self.tmux.session_exists(&tmux_session) {
@@ -2082,7 +2156,9 @@ impl App {
             feature.tmux_session.clone(),
             feature.workdir.clone(),
             session.tmux_window.clone(),
-            session.kind == SessionKind::Custom,
+            session.kind == SessionKind::Custom
+                || session.command.is_some()
+                || session.on_stop.is_some(),
             session.on_stop.clone(),
             session.id.clone(),
         );
@@ -2258,7 +2334,21 @@ impl App {
             return Ok(false);
         }
 
-        if let Some(agent) = agent_for_session_kind(&session.kind) {
+        if session.kind.is_agent_harness()
+            && session.command.is_some()
+            && resume_override
+                .as_ref()
+                .is_none_or(|resume| resume.is_none())
+        {
+            self.start_custom_session_window(
+                &tmux_session,
+                &session.tmux_window,
+                &workdir,
+                &session,
+                &mode,
+                true,
+            )?;
+        } else if let Some(agent) = agent_for_session_kind(&session.kind) {
             let use_rc = remote_control && self.remote_control_allowed();
             let extra_args: Vec<String> = mode.cli_flags(LaunchOpts {
                 enable_chrome,

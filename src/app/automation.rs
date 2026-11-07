@@ -185,7 +185,9 @@ impl App {
             .as_ref()
             .map(session_kind_for_agent)
             .unwrap_or(SessionKind::Terminal);
-        if (agent.is_some() || self.add_would_start_feature(pi, fi, &kind))
+        if (agent.is_some()
+            || custom.as_ref().is_some_and(|c| c.agent.is_some())
+            || self.add_would_start_feature(pi, fi, &kind))
             && !matches!(
                 self.check_start_preconditions(),
                 super::resource_gate::StartPreconditions::Ok

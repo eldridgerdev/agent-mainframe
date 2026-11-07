@@ -39,6 +39,7 @@ Add or update an entry in the `custom_sessions` array in
 | Field | Required | Notes |
 |---|---|---|
 | `name` | yes | Label shown in AMF session picker |
+| `agent` | no | `codex`, `claude`, `opencode`, or `pi` when the command hosts an agent, including wrapper scripts; enables its sidebar, tracking and agent actions |
 | `description` | no | Subtitle shown below the name |
 | `command` | no | Shell command to run when session starts |
 | `window_name` | no | tmux window name (defaults to `name`) |
@@ -48,6 +49,22 @@ Add or update an entry in the `custom_sessions` array in
 | `on_stop` | no | Command run when the session is stopped from AMF |
 | `autolaunch` | no | Start automatically when the feature starts |
 | `pre_check` | no | Skip launch silently if this command exits non-zero |
+
+For an agent launcher, always set `agent` to the harness it runs. For example:
+
+```json
+{ "name": "orchestrator", "agent": "codex", "command": "python3 scripts/launch_orchestrator.py" }
+```
+
+AMF supplies its agent environment and launch arguments to the harness through
+PATH, so wrappers should invoke `codex` (or the declared harness) by name and
+preserve the inherited environment. Keep custom model flags and editable prompt
+prefilling in the wrapper. Do not launch the harness by an absolute path or
+replace PATH. Existing generic sessions with an unambiguous matching saved
+command are recognized on config reload/startup without restarting the process;
+launch-time settings take effect on its next launch. Omit `agent` for ordinary
+servers, shells and tools. Transcript selection uses the chosen harness's native
+resume command; ordinary restarts keep the configured launcher.
 
 ## Config path (read the legacy file too)
 

@@ -2114,6 +2114,14 @@ impl App {
     /// project/feature. Call this whenever the selection changes.
     pub fn reload_extension_config(&mut self) {
         let global_ext = load_global_extension_config();
+        if crate::custom_agent::reconcile(&mut self.store, &global_ext)
+            && let Err(error) = self.save()
+        {
+            self.log_warn(
+                "session",
+                format!("Could not save custom agent recognition: {error}"),
+            );
+        }
         self.active_extension = match &self.selection {
             Selection::Project(pi) => {
                 if let Some(project) = self.store.projects.get(*pi) {
@@ -2581,6 +2589,7 @@ impl App {
     pub(crate) fn adopt_store_from_disk(&mut self, store: ProjectStore, version: u64) {
         let ids = self.selection_ids();
         self.store = store;
+        crate::custom_agent::reconcile(&mut self.store, &load_global_extension_config());
         self.store_version = Some(version);
         self.selection = self.selection_for_ids(ids);
     }

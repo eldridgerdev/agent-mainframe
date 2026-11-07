@@ -365,6 +365,62 @@ fn a_failing_pre_check_reports_its_output_and_creates_nothing() {
 }
 
 #[test]
+fn custom_agent_creation_exposes_codex_sidebar_and_preserves_its_command() {
+    let root = tempfile::tempdir().unwrap();
+    let _seams = Seams::new(None, None);
+    let mut tmux = running_tmux();
+    tmux.expect_check_harness_available()
+        .withf(|agent| *agent == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_window()
+        .withf(|_, w, _| w == "orchestrator")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_run_shell_command()
+        .withf(|_, _, command| {
+            command.contains("AMF_FEATURE_SESSION_ID") && command.contains("python3 launcher.py")
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    let mut gui = handle(root.path(), ProjectStatus::Idle, tmux);
+    gui.app_for_workflow().store.projects[0].features[0].mode = VibeMode::SuperVibe;
+    let _db = attach_db(&mut gui);
+    std::fs::write(
+        root.path().join("amf.json"),
+        r#"{
+        "custom_sessions":[{"name":"orchestrator","agent":"codex","command":"python3 launcher.py"}]
+    }"#,
+    )
+    .unwrap();
+    let mut request = request(&mut gui, "orchestrator");
+    request.approved = true;
+    let gui = Mutex::new(gui);
+    let AddCustomSessionResponse::Added { target, .. } = add_custom_session(&gui, request).unwrap()
+    else {
+        panic!("expected added session")
+    };
+    let mut gui = gui.into_inner().unwrap();
+    let view = gui.session_sidebar(&target).unwrap();
+    assert_eq!(view.harness, SessionKind::Codex);
+    assert_eq!(view.title, "Codex Sidebar");
+    let stored = gui
+        .app_for_workflow()
+        .db
+        .as_ref()
+        .unwrap()
+        .load_store()
+        .unwrap();
+    let session = stored.projects[0].features[0]
+        .sessions
+        .iter()
+        .find(|s| s.id == target.session_id)
+        .unwrap();
+    assert_eq!(session.kind, SessionKind::Codex);
+    assert_eq!(session.command.as_deref(), Some("python3 launcher.py"));
+}
+
+#[test]
 fn a_duplicate_custom_add_is_refused_while_its_check_runs() {
     let root = tempfile::tempdir().unwrap();
     let _seams = Seams::new(None, None);

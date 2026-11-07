@@ -283,6 +283,10 @@ impl App {
 
                     let session = CustomSessionConfig {
                         name,
+                        agent: state
+                            .editing_index
+                            .and_then(|i| state.sessions.get(i))
+                            .and_then(|s| s.agent.clone()),
                         description: option_string(state.field_values.get(1)),
                         command: option_string(state.field_values.get(2)),
                         window_name: option_string(state.field_values.get(3)),

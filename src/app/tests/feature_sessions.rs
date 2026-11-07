@@ -53,6 +53,108 @@ fn dialog_choices(app: &App) -> Vec<StoppedSessionChoice> {
 }
 
 #[test]
+fn custom_codex_add_retains_launcher_and_enables_agent_sidebar() {
+    let root = TempDir::new().unwrap();
+    let mut store = store_with_repo(root.path().to_owned(), ProjectStatus::Idle);
+    store.projects[0].features[0].mode = VibeMode::SuperVibe;
+    store.projects[0].features[0].add_session(SessionKind::Terminal);
+    let config = crate::extension::CustomSessionConfig {
+        name: "orchestrator".into(),
+        agent: Some(AgentKind::Codex),
+        command: Some("python3 scripts/launch_orchestrator.py".into()),
+        on_stop: Some("cleanup-orchestrator".into()),
+        ..Default::default()
+    };
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_check_harness_available()
+        .withf(|a| *a == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window()
+        .withf(|_, w, _| w == "orchestrator")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_run_shell_command()
+        .withf(|_, w, cmd| {
+            w == "orchestrator"
+                && cmd.contains("AMF_FEATURE_SESSION_ID")
+                && cmd.contains("launch_orchestrator.py")
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.add_custom_session_type_named(0, 0, &config, "orchestrator".into())
+        .unwrap();
+    let feature = &app.store.projects[0].features[0];
+    let session = &feature.sessions[1];
+    assert_eq!(session.kind, SessionKind::Codex);
+    assert_eq!(session.command, config.command);
+    assert_eq!(session.on_stop, config.on_stop);
+    let sidebar = app
+        .assemble_agent_sidebar(feature, Some(session), &session.kind, &Default::default())
+        .unwrap();
+    assert_eq!(sidebar.data.agent_kind, SessionKind::Codex);
+}
+
+#[test]
+fn custom_codex_feature_and_individual_restarts_keep_the_wrapper() {
+    for stopped_feature in [false, true] {
+        let root = TempDir::new().unwrap();
+        let mut store = store_with_repo(
+            root.path().to_owned(),
+            if stopped_feature {
+                ProjectStatus::Stopped
+            } else {
+                ProjectStatus::Idle
+            },
+        );
+        let feature = &mut store.projects[0].features[0];
+        feature.mode = VibeMode::SuperVibe;
+        feature.agent = AgentKind::Codex;
+        let session = feature.add_custom_session_named(
+            "orchestrator".into(),
+            "orchestrator".into(),
+            Some("python3 scripts/launch_orchestrator.py".into()),
+            None,
+            None,
+        );
+        session.kind = SessionKind::Codex;
+        let id = session.id.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(!stopped_feature);
+        if stopped_feature {
+            tmux.expect_create_session_with_window()
+                .times(1)
+                .returning(|_, _, _| Ok(()));
+            tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+            tmux.expect_select_window()
+                .times(1)
+                .returning(|_, _| Ok(()));
+        } else {
+            tmux.expect_window_exists().return_const(false);
+            tmux.expect_create_window()
+                .times(1)
+                .returning(|_, _, _| Ok(()));
+        }
+        let expected = id.clone();
+        tmux.expect_run_shell_command()
+            .withf(move |_, window, cmd| {
+                window == "orchestrator"
+                    && cmd.contains("launch_orchestrator.py")
+                    && cmd.contains(&expected)
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        app.selection = Selection::Session(0, 0, 0);
+        app.start_feature().unwrap();
+        assert_eq!(app.store.projects[0].features[0].sessions[0].id, id);
+        assert!(!app.store.projects[0].features[0].sessions[0].stopped);
+    }
+}
+
+#[test]
 fn enter_on_stopped_agent_session_opens_recovery_dialog() {
     let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
     let mut tmux = MockTmuxOps::new();

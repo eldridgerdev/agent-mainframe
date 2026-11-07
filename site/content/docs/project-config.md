@@ -34,3 +34,34 @@ edit `amf.json` directly.
 
 A field with no entry in the project's `amf.json` simply inherits the
 global value — an empty project config never overrides anything.
+
+## Custom agent sessions
+
+When a custom command runs an agent, declare its harness with `agent`:
+
+```json
+{
+  "custom_sessions": [{
+    "name": "orchestrator",
+    "agent": "codex",
+    "command": "python3 scripts/launch_orchestrator.py"
+  }]
+}
+```
+
+Supported values are `codex`, `claude`, `opencode`, and `pi`. This enables the
+agent sidebar, context and usage tracking, and agent actions. Without `agent`,
+the session is a generic command window. Set this field in `amf.json`; the
+config wizard preserves it when editing the other fields.
+
+AMF supplies the agent environment and its usual launch arguments even through
+a wrapper script. The wrapper must invoke the harness by name through inherited
+PATH and preserve its environment. Custom model flags and prompt prefilling
+can remain in the wrapper. AMF restores the original PATH before starting the
+harness so agents it launches independently do not inherit the wrapper.
+
+An existing generic session with an unambiguous matching saved command is
+recognized on startup or config reload, preserving its session ID, tmux window,
+and running process. Launch settings take effect on the next launch. Ordinary
+restarts retain the custom launcher, pre-check and stop command. Selecting a
+saved transcript uses the harness's native resume command.

@@ -432,7 +432,9 @@ impl GuiHandle {
             .filter(|label| !label.is_empty())
             .unwrap_or_else(|| config.name.clone());
         let app = self.app_for_workflow();
-        if !request.approved && app.add_would_start_feature(pi, fi, &SessionKind::Custom) {
+        if !request.approved
+            && (config.agent.is_some() || app.add_would_start_feature(pi, fi, &SessionKind::Custom))
+        {
             self.require_start_approval(&format!("Adding '{label}'"))?;
         }
         let app = self.app_for_workflow();

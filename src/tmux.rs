@@ -764,7 +764,11 @@ impl TmuxManager {
         Self::shell_env_with(extra)
     }
 
-    fn agent_launch_env(session: &str, window: &str, feature_session_id: &str) -> String {
+    pub(crate) fn agent_launch_env(
+        session: &str,
+        window: &str,
+        feature_session_id: &str,
+    ) -> String {
         Self::shell_launch_env_with(&[
             ("AMF_ACTIVE", "1"),
             ("AMF_SESSION", session),

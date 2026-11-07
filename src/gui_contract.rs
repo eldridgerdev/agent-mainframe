@@ -491,6 +491,10 @@ impl GuiHandle {
                 let (mut store, version) = db.load_store_versioned().map_err(GuiError::from)?;
                 sidebar::carry_runtime_session_fields(&self.app.store, &mut store);
                 self.app.store = store;
+                crate::custom_agent::reconcile(
+                    &mut self.app.store,
+                    &crate::extension::load_global_extension_config(),
+                );
                 self.app.store_version = Some(version);
             }
         }

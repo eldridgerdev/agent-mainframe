@@ -247,6 +247,14 @@ impl App {
         crate::highlight::reload_runtime_state();
         app.queue_recoverable_issue_comments();
 
+        if crate::custom_agent::reconcile(&mut app.store, &load_global_extension_config())
+            && let Err(error) = app.save()
+        {
+            app.log_warn(
+                "session",
+                format!("Could not save custom agent recognition: {error}"),
+            );
+        }
         Ok(app)
     }
 

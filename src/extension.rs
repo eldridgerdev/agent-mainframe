@@ -11,6 +11,9 @@ use crate::prompt_library::PromptTemplate;
 #[serde(default)]
 pub struct CustomSessionConfig {
     pub name: String,
+    /// Harness hosted by this command, including commands hidden behind scripts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
     pub description: Option<String>,
     pub command: Option<String>,
     pub window_name: Option<String>,

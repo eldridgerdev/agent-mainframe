@@ -1432,6 +1432,37 @@ impl App {
                 continue;
             }
 
+            if session.kind.is_agent_harness()
+                && session.command.is_some()
+                && resume_override
+                    .as_ref()
+                    .is_none_or(|resume| resume.is_none())
+            {
+                let mut args = crate::custom_agent::launch_args(
+                    session,
+                    &feature.workdir,
+                    &feature.mode,
+                    extra_args.clone(),
+                );
+                args.extend(analyzer_args.clone());
+                if let Some(owner) = screenshot_owners.get(&session.id) {
+                    args = super::screenshots::launch_args(
+                        owner,
+                        session.kind == SessionKind::Claude,
+                        args,
+                    )?;
+                }
+                crate::custom_agent::launch(
+                    self.tmux.as_ref(),
+                    &feature.tmux_session,
+                    &feature.workdir,
+                    session,
+                    args,
+                )?;
+                launched_agent_sessions += 1;
+                continue;
+            }
+
             match session.kind {
                 SessionKind::Claude => {
                     launched_agent_sessions += 1;
@@ -1845,7 +1876,10 @@ impl App {
         let status_dir = feature.workdir.join(".amf").join("session-status");
 
         for session in &feature.sessions {
-            if session.kind != SessionKind::Custom {
+            if session.kind != SessionKind::Custom
+                && session.command.is_none()
+                && session.on_stop.is_none()
+            {
                 continue;
             }
             if let Some(ref cmd) = session.on_stop {

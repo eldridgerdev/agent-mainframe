@@ -360,6 +360,25 @@ impl App {
             .iter_mut()
             .filter(|s| s.runs_with_feature())
         {
+            if session.kind.is_agent_harness()
+                && session.command.is_some()
+                && resume_target.as_deref() != Some(session.id.as_str())
+            {
+                let args = crate::custom_agent::launch_args(
+                    session,
+                    &feature.workdir,
+                    &feature.mode,
+                    feature.mode.cli_flags(LaunchOpts::default()),
+                );
+                crate::custom_agent::launch(
+                    self.tmux.as_ref(),
+                    &feature.tmux_session,
+                    &feature.workdir,
+                    session,
+                    args,
+                )?;
+                continue;
+            }
             match session.kind {
                 SessionKind::Claude => {
                     let resume_id = if target_session_id.is_none_or(|id| id == session.id) {

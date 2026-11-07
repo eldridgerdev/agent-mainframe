@@ -851,3 +851,367 @@ Seventy-fifth increment (2026-11-05):
   Clippy and formatting passed. GUI build passed. The full GUI suite has one
   repeatable `PrWorkspacePanel` failure under the full run; that file passes
   when run alone (9/9).
+
+Seventy-sixth increment (2026-11-06):
+
+- Moved the inline diff-handler test module to `handlers/diff/tests.rs`. The
+  production dispatcher is now 866 lines; its 112 tests remain in one sibling
+  module with unchanged names and bodies.
+- Validation: test-name comparison found the same 112 tests; `cargo check
+  --tests --locked`, `cargo fmt`, and `git diff --check` passed. Tests were not
+  executed.
+
+Seventy-seventh increment (2026-11-06):
+
+- Grouped 10 diff-handler viewport scrolling and help-overlay tests in
+  `handlers/diff/tests/viewport_navigation.rs`; shared fixtures remain in the
+  parent test module.
+- Validation: all 112 test names are still present; `cargo check --tests
+  --locked`, formatting, and `git diff --check` passed. Tests were not run.
+
+Seventy-eighth increment (2026-11-06):
+
+- Grouped diff search and context-expansion helpers with their six tests in
+  `handlers/diff/tests/search.rs`; the shared search patch fixture stays with
+  the adjacent editor tests.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Seventy-ninth increment (2026-11-06):
+
+- Grouped diff viewer `$EDITOR` handoff setup and four related tests in
+  `handlers/diff/tests/editor_launch.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eightieth increment (2026-11-06):
+
+- Grouped final-review finish confirmation, summary navigation, and pause
+  behavior tests in `handlers/diff/tests/finish_flow.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-first increment (2026-11-06):
+
+- Grouped diff review comment and suggestion workflows, including Git-backed
+  suggestion application, in `handlers/diff/tests/comment_suggestions.rs`.
+  Shared fixtures used by other groups remain in the parent module.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-second increment (2026-11-06):
+
+- Grouped walkthrough request handling and changeset/interdiff overview modal
+  tests in `handlers/diff/tests/overview.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-third increment (2026-11-06):
+
+- Grouped final-review layout, file navigation, and filtering tests in
+  `handlers/diff/tests/file_navigation.rs`.
+- Validation: all 112 test names remain present and unique; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-fourth increment (2026-11-06):
+
+- Began splitting the oversized PR Triage integration suite. Moved repository
+  resolution, list navigation, and return-to-pane tests to
+  `app/tests/pr_triage/navigation.rs`; shared selection helper stays in the
+  parent suite.
+- Validation: the 220 PR Triage test names are unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-fifth increment (2026-11-06):
+
+- Moved PR Triage investigation reconciliation, action, reply, and follow-up
+  tests to `app/tests/pr_triage/investigations.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-sixth increment (2026-11-06):
+
+- Grouped PR review fix handoff and per-comment targeting tests in
+  `app/tests/pr_triage/fix_handoff.rs`; the shared AI-review finding fixture
+  remains available from the parent suite.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-seventh increment (2026-11-06):
+
+- Moved PR Review Memory bootstrap, compaction confirmation, background
+  completion, and persistence tests to `app/tests/pr_triage/review_memory.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-eighth increment (2026-11-06):
+
+- Grouped PR review dedicated-session status, usage accounting, and draft
+  provenance tests in `app/tests/pr_triage/session_activity.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Eighty-ninth increment (2026-11-06):
+
+- Grouped PR fix target selection, batch confirmation, and sibling navigation
+  tests in `app/tests/pr_triage/fix_batch.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninetieth increment (2026-11-06):
+
+- Grouped PR fix-confirm editor, scroll, target-switch, and target-picker tests
+  in `app/tests/pr_triage/fix_editor.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-first increment (2026-11-06):
+
+- Grouped PR comment ordering, conversation grouping, and resolved-item
+  selection tests in `app/tests/pr_triage/review_sort.rs` with their scoped
+  fixtures.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-second increment (2026-11-06):
+
+- Grouped PR reply drafting, attribution, commit context, editing, and posting
+  precondition tests in `app/tests/pr_triage/replies.rs`; the editor-text helper
+  remains shared from the parent suite.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-third increment (2026-11-06):
+
+- Grouped PR Review Memory add/edit, AI summary, and generated-content
+  persistence tests in `app/tests/pr_triage/memory_workflows.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-fourth increment (2026-11-06):
+
+- Grouped AI Review cost attribution and harness/model picker tests in
+  `app/tests/pr_triage/ai_review_picker.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-fifth increment (2026-11-06):
+
+- Grouped AI Review background execution, progress recovery, triage refresh,
+  cached results, and post-dialog tests in
+  `app/tests/pr_triage/ai_review_workflow.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-sixth increment (2026-11-06):
+
+- Grouped PR fix-target companion feature creation, adoption, and integration
+  tests in `app/tests/pr_triage/companion_feature.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-seventh increment (2026-11-06):
+
+- Grouped AI Review finding-to-fix handoff, batch selection, and refusal tests
+  in `app/tests/pr_triage/ai_review_fix_handoff.rs`.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-eighth increment (2026-11-06):
+
+- Moved PR Review tab selection, list loading/retry, and error-state tests to
+  `app/tests/pr_triage/review_list.rs`. Shared review-list loaders and key
+  helpers stay in the parent because downstream integration cases reuse them.
+- Validation: all 220 PR Triage test names remain unchanged; `cargo check
+  --tests --locked`, formatting, and `git diff --check` passed. Tests were not
+  run.
+
+Ninety-ninth increment (2026-11-06):
+
+- Grouped opening a remote PR in an isolated review worktree in
+  `app/tests/pr_triage/open_pr.rs`. Fixtures shared with draft persistence and
+  posting checks are visible only to the containing PR Triage test module.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundredth increment (2026-11-06):
+
+- Grouped persisted PR review draft lifecycle and reload tests in
+  `app/tests/pr_triage/draft_persistence.rs`; the shared database and review
+  helpers remain in the parent for posting checks.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-first increment (2026-11-06):
+
+- Grouped PR head refresh, outdated-comment, and updated-notes panel tests in
+  `app/tests/pr_triage/pr_updates.rs`; database and post helpers remain shared.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-second increment (2026-11-06):
+
+- Grouped PR review submission, payload validation, retry, and in-flight
+  cancellation tests in `app/tests/pr_triage/review_posting.rs`; shared poster
+  and draft helpers stay in the parent for acceptance tests.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-third increment (2026-11-06):
+
+- Moved the real-PR acceptance scenario and its checkout/GitHub state
+  verification helpers to `app/tests/pr_triage/acceptance.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-fourth increment (2026-11-06):
+
+- Grouped PR Review pane selection, detail scrolling, feature resolution, and
+  dedicated-session status tests in `app/tests/pr_triage/review_pane.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-fifth increment (2026-11-06):
+
+- Moved remaining PR Triage mode-routing guards to `triage_routing.rs`, the
+  delayed closed-fetch test into `review_list.rs`, the sibling-finding jump
+  test into `fix_batch.rs`, and GitHub reply/resolve adapter tests into
+  `github_boundary.rs`.
+- Validation: all 220 PR Triage test names remain present and unique; `cargo
+  check --tests --locked`, formatting, and `git diff --check` passed. Tests were
+  not run.
+
+One-hundred-sixth increment (2026-11-06):
+
+- Moved shared PR Triage test fixtures and poster/database helpers into the
+  scoped `app/tests/pr_triage/support.rs`; `pr_triage.rs` now owns imports,
+  shared fixture exports, and behavior-module wiring.
+- Validation: all 220 PR Triage test names remain present and unique; the
+  focused suite passed (220 passed, one ignored); `cargo check --tests
+  --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-seventh increment (2026-11-06):
+
+- Ran the focused diff-handler suite after grouping its test files.
+- Validation: `cargo test --locked handlers::diff::tests` passed (113 passed);
+  formatting and `git diff --check` passed.
+
+One-hundred-eighth increment (2026-11-06):
+
+- Grouped diff feedback-editor and Vim behavior tests in
+  `handlers/diff/tests/editor_behavior.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+  The focused suite passed in the previous increment (113 tests).
+
+One-hundred-ninth increment (2026-11-06):
+
+- Grouped review verdict completion, feedback persistence, destination
+  selection, and final handoff tests in
+  `handlers/diff/tests/completion_handoff.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-tenth increment (2026-11-06):
+
+- Grouped base-ref override prompt tests in `handlers/diff/tests/base_ref.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-eleventh increment (2026-11-06):
+
+- Grouped diff line-comment verdicts, auto-reject behavior, severity changes,
+  and draft-comment tests in `handlers/diff/tests/comment_verdicts.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-twelfth increment (2026-11-06):
+
+- Grouped file-tree focus/folding behavior and generated-AMF-file tree tests in
+  `handlers/diff/tests/file_tree.rs`; the shared two-file patch fixture remains
+  in the parent for comment-navigation tests.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-thirteenth increment (2026-11-06):
+
+- Grouped cross-file comment cursor traversal and comment-navigation tests in
+  `handlers/diff/tests/comment_navigation.rs` with their focused patch fixture.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-fourteenth increment (2026-11-06):
+
+- Grouped undo history, implicit verdict restoration, and no-op deduplication
+  tests in `handlers/diff/tests/undo.rs`.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-fifteenth increment (2026-11-06):
+
+- Moved archived-review history navigation into
+  `handlers/diff/tests/history.rs`; shared app and key fixtures remain in the
+  parent test module.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-sixteenth increment (2026-11-06):
+
+- Moved shared diff-handler app, key, patch, and Git fixtures into
+  `handlers/diff/tests/support.rs`; the root test module now wires support and
+  behavior modules.
+- Validation: all 112 named diff-handler tests remain present and unique;
+  `cargo check --tests --locked`, formatting, and `git diff --check` passed.
+
+One-hundred-seventeenth increment (2026-11-06):
+
+- Moved patch-panel rendering, row-cache ownership, unified/side-by-side row
+  construction, gutter rendering, and patch-specific styles to
+  `ui/dialogs/diff_patch.rs`; `diff.rs` retains its facade and orchestrates the
+  existing call sites. Shared row/status helpers are scoped to `ui::dialogs`.
+- Validation: `cargo check --tests --locked` passed; focused diff renderer tests
+  passed (34 passed); formatting and `git diff --check` passed.
+
+One-hundred-eighteenth increment (2026-11-06):
+
+- Moved GitHub read planning/prefetch and PR fix plus batch-fix handoffs into
+  `gui_pr_triage/reads.rs` and `gui_pr_triage/fix.rs`; the adapter keeps its
+  orchestration and two-phase gate/apply flow.
+- Moved investigation prompt confirmation, execution, and TODO reconciliation
+  into `gui_pr_triage/investigation.rs`.
+- Validation: `cargo check --tests --locked` and focused
+  `cargo test --locked gui_pr_triage` passed (41 tests). At the code milestone,
+  `cargo test --workspace --locked` passed (4,201 library and 9 Tauri tests),
+  strict workspace Clippy and formatting passed, and the focused GUI triage suite
+  passed (26 tests) with a production build. Clippy also caught and prompted
+  removal of a dangling doc comment in the previously moved diff test fixture.
+- No tokenizer-level before/after task comparison is claimed: a tokenizer for
+  the active model is unavailable in this environment. The structural changes
+  are validated for locality, but measured end-to-end token savings remain
+  unverified.

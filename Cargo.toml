@@ -83,7 +83,7 @@ pulldown-cmark = "0.13"
 selkie-rs = { version = "=0.3.0", default-features = false }
 tempfile = "3"
 libc = "0.2"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 notify = "8.2.0"
 # Dedicated async runtime for the Remote Control companion-app server
 # (docs/backlog/remote-control-companion-app-plan.md, Epic 1). Runs only on

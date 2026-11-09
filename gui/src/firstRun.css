@@ -35,3 +35,18 @@
 .welcome > .btn { align-self: flex-start; }
 
 .nav-note p { margin: 0 0 6px; }
+
+/* New project from a git URL: pre-flight checklist, fixes, progress. */
+.clone-checks { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.clone-check { display: grid; grid-template-columns: 84px 1fr; gap: 4px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-md); }
+.clone-check-status { font-weight: 600; font-size: var(--fs-sm); }
+.clone-check-pass .clone-check-status { color: var(--green); }
+.clone-check-warn .clone-check-status { color: var(--amber); }
+.clone-check-fail .clone-check-status { color: var(--red); }
+.clone-check .clone-fix { grid-column: 2; }
+.clone-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.clone-fix-label { color: var(--text-muted); font-size: var(--fs-sm); }
+.clone-fix-command { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.clone-progress { display: flex; flex-direction: column; gap: 8px; }
+.clone-progress progress { width: 100%; }
+.clone-failure { display: flex; flex-direction: column; gap: 8px; }

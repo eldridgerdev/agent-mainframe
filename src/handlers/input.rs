@@ -41,16 +41,29 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
         AppMode::CreatingProject(_) => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 match state.step {
+                    CreateProjectStep::Url => {
+                        state.url.push_str(text.trim());
+                    }
                     CreateProjectStep::Name => {
                         state.name.push_str(text);
+                        state.name_derived = false;
                     }
                     CreateProjectStep::Path => {
                         state.path.push_str(text);
+                        state.path_derived = false;
                     }
                     CreateProjectStep::Agent => {}
                 }
             }
-            app.refresh_create_project_agent_selection();
+            app.after_create_project_text_edit();
+        }
+        AppMode::CloneRootPrompt(_) => {
+            if let AppMode::CloneRootPrompt(state) = &mut app.mode
+                && let Some(buf) = &mut state.editing
+            {
+                buf.push_str(text.trim());
+                state.error = None;
+            }
         }
         AppMode::CreatingFeature(_) => {
             if let AppMode::CreatingFeature(state) = &mut app.mode {

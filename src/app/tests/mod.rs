@@ -2,6 +2,7 @@
 
 mod attention;
 mod automation;
+mod clone_project_form;
 mod editor_lifecycle;
 mod feature_sessions;
 mod final_review;

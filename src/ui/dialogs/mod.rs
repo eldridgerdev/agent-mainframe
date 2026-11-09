@@ -74,7 +74,10 @@ pub use pr_review::{
     draw_review_memory_compact_running,
 };
 pub use precall::draw_prompt_precall;
-pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
+pub use project::{
+    draw_clone_project_dialog, draw_clone_root_prompt, draw_create_project_dialog,
+    draw_delete_project_confirm,
+};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };

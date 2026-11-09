@@ -859,6 +859,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
             );
         }
+        AppMode::CloneProject(view) => {
+            let snapshot = app.clone_project_snapshot();
+            super::dialogs::draw_clone_project_dialog(frame, view, &snapshot, &app.theme);
+        }
+        AppMode::CloneRootPrompt(state) => {
+            super::dialogs::draw_clone_root_prompt(frame, state, &app.theme);
+        }
         AppMode::CreatingFeature(state) => {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);

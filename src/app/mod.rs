@@ -5,6 +5,8 @@ mod automation;
 mod bookmarks;
 mod claude_session_picker;
 mod claude_sessions;
+pub(crate) mod clone_project;
+mod clone_project_tui;
 mod codex_live;
 mod codex_session_picker;
 mod codex_sessions;
@@ -766,7 +768,14 @@ pub enum DiffReviewViewer {
 pub struct ProjectsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_preferred_agent: Option<AgentKind>,
+    /// Directory new projects (e.g. clones) are created under. `None` means
+    /// the default, `~/code`; see [`AppConfig::projects_root`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects_root: Option<String>,
 }
+
+/// Default projects root when none is configured.
+pub(crate) const DEFAULT_PROJECTS_ROOT: &str = "~/code";
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -823,6 +832,20 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// The effective projects root: the configured value (blank counts as
+    /// unset) or `~/code`, with a leading `~` / `~/` expanded. The directory
+    /// is not created.
+    pub fn projects_root(&self) -> std::path::PathBuf {
+        let raw = self
+            .projects
+            .projects_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_PROJECTS_ROOT);
+        expand_tilde(raw, dirs::home_dir())
+    }
+
     pub fn input_request_wait_duration(&self) -> Duration {
         let seconds = if self.input_request_wait_seconds.is_finite()
             && self.input_request_wait_seconds >= 0.0
@@ -914,6 +937,9 @@ pub struct App {
     /// Last path probed for git by the create-project dialog, so typing in
     /// the Name field does not re-run `git rev-parse` for an unchanged path.
     pub(crate) create_project_git_probe: Option<(PathBuf, Option<bool>)>,
+    /// The one in-flight "new project from git URL" operation, created on
+    /// first use. See `clone_project.rs`.
+    pub(crate) clone_project: Option<clone_project::CloneProjectJob>,
     /// Set while an interface that saves review progress itself (and must
     /// report whether the save succeeded) drives the shared review actions, so
     /// their best-effort `persist_review_progress` does not write a second time.
@@ -3169,5 +3195,84 @@ mod sidebar_load_executor_tests {
 
         assert!(!third_started_while_blocked);
         assert_eq!(max_active.load(Ordering::SeqCst), 2);
+    }
+}
+
+fn expand_tilde(raw: &str, home: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    let rest = if raw == "~" {
+        Some("")
+    } else {
+        raw.strip_prefix("~/")
+    };
+    match (rest, home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(raw),
+    }
+}
+
+#[cfg(test)]
+mod projects_root_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn default_is_code_under_home() {
+        let config = AppConfig::default();
+        assert_eq!(config.projects.projects_root, None);
+        let expected = dirs::home_dir().map_or(PathBuf::from("~/code"), |h| h.join("code"));
+        assert_eq!(config.projects_root(), expected);
+    }
+
+    #[test]
+    fn tilde_expansion() {
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            expand_tilde("~/src", home.clone()),
+            PathBuf::from("/home/u/src")
+        );
+        assert_eq!(expand_tilde("~", home.clone()), PathBuf::from("/home/u"));
+        assert_eq!(
+            expand_tilde("/abs/p", home.clone()),
+            PathBuf::from("/abs/p")
+        );
+        assert_eq!(expand_tilde("~other/x", home), PathBuf::from("~other/x"));
+        assert_eq!(expand_tilde("~/src", None), PathBuf::from("~/src"));
+    }
+
+    #[test]
+    fn blank_value_falls_back_to_default() {
+        let mut config = AppConfig::default();
+        config.projects.projects_root = Some("  ".into());
+        assert_eq!(config.projects_root(), AppConfig::default().projects_root());
+    }
+
+    #[test]
+    fn custom_value_round_trips_and_unset_is_omitted() {
+        let unset = serde_json::to_value(AppConfig::default()).unwrap();
+        assert!(unset["projects"].get("projects_root").is_none());
+
+        let mut config = AppConfig::default();
+        config.projects.projects_root = Some("/work/repos".into());
+        let json = serde_json::to_string(&config).unwrap();
+        let back: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.projects.projects_root.as_deref(), Some("/work/repos"));
+        assert_eq!(back.projects_root(), PathBuf::from("/work/repos"));
+    }
+
+    #[test]
+    fn save_config_at_persists_only_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let before = AppConfig::default();
+        let mut after = before.clone();
+        after.projects.projects_root = Some("/work/repos".into());
+        crate::app::setup::save_config_at(&path, &before, &after).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("/work/repos"));
+        let loaded: AppConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            loaded.projects.projects_root.as_deref(),
+            Some("/work/repos")
+        );
     }
 }

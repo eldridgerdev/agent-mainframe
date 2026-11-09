@@ -31,12 +31,19 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if super::text_field::is_clear_key(&key) {
         if let AppMode::CreatingProject(state) = &mut app.mode {
             match state.step {
-                CreateProjectStep::Name => state.name.clear(),
-                CreateProjectStep::Path => state.path.clear(),
+                CreateProjectStep::Url => state.url.clear(),
+                CreateProjectStep::Name => {
+                    state.name.clear();
+                    state.name_derived = false;
+                }
+                CreateProjectStep::Path => {
+                    state.path.clear();
+                    state.path_derived = false;
+                }
                 CreateProjectStep::Agent => {}
             }
         }
-        app.refresh_create_project_agent_selection();
+        app.after_create_project_text_edit();
         return Ok(());
     }
     if super::text_field::is_unbound_ctrl_chord(&key) {
@@ -60,6 +67,11 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
             };
 
             match step {
+                CreateProjectStep::Url => {
+                    if let AppMode::CreatingProject(state) = &mut app.mode {
+                        state.step = CreateProjectStep::Name;
+                    }
+                }
                 CreateProjectStep::Name => {
                     if let AppMode::CreatingProject(state) = &mut app.mode {
                         state.step = CreateProjectStep::Path;
@@ -71,23 +83,33 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 CreateProjectStep::Agent => {
-                    app.create_project()?;
+                    let cloning = matches!(
+                        &app.mode,
+                        AppMode::CreatingProject(state) if !state.url.trim().is_empty()
+                    );
+                    if cloning {
+                        app.start_clone_from_form();
+                    } else {
+                        app.create_project()?;
+                    }
                 }
             }
         }
         KeyCode::Tab => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 state.step = match state.step {
+                    CreateProjectStep::Url => CreateProjectStep::Name,
                     CreateProjectStep::Name => CreateProjectStep::Path,
                     CreateProjectStep::Path => CreateProjectStep::Agent,
-                    CreateProjectStep::Agent => CreateProjectStep::Name,
+                    CreateProjectStep::Agent => CreateProjectStep::Url,
                 };
             }
         }
         KeyCode::BackTab => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 state.step = match state.step {
-                    CreateProjectStep::Name => CreateProjectStep::Agent,
+                    CreateProjectStep::Url => CreateProjectStep::Agent,
+                    CreateProjectStep::Name => CreateProjectStep::Url,
                     CreateProjectStep::Path => CreateProjectStep::Name,
                     CreateProjectStep::Agent => CreateProjectStep::Path,
                 };
@@ -96,16 +118,21 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Backspace => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 match state.step {
+                    CreateProjectStep::Url => {
+                        state.url.pop();
+                    }
                     CreateProjectStep::Name => {
                         state.name.pop();
+                        state.name_derived = false;
                     }
                     CreateProjectStep::Path => {
                         state.path.pop();
+                        state.path_derived = false;
                     }
                     CreateProjectStep::Agent => {}
                 }
             }
-            app.refresh_create_project_agent_selection();
+            app.after_create_project_text_edit();
         }
         code if is_agent_step
             && matches!(code, KeyCode::Char('j') | KeyCode::Down | KeyCode::Right) =>
@@ -151,12 +178,19 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char(c) => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 match state.step {
-                    CreateProjectStep::Name => state.name.push(c),
-                    CreateProjectStep::Path => state.path.push(c),
+                    CreateProjectStep::Url => state.url.push(c),
+                    CreateProjectStep::Name => {
+                        state.name.push(c);
+                        state.name_derived = false;
+                    }
+                    CreateProjectStep::Path => {
+                        state.path.push(c);
+                        state.path_derived = false;
+                    }
                     CreateProjectStep::Agent => {}
                 }
             }
-            app.refresh_create_project_agent_selection();
+            app.after_create_project_text_edit();
         }
         _ => {}
     }

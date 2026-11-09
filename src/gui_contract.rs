@@ -64,6 +64,11 @@ pub enum GuiErrorKind {
     /// The request itself is malformed (blank or over-long title, ...): a
     /// user-input mistake, not a fault.
     InvalidInput,
+    /// New-project-from-URL: the destination's parent is exactly the
+    /// configured projects root and it does not exist. The caller may offer to
+    /// create it (`clone_project_create_root`) or pick another
+    /// (`clone_project_set_root`).
+    ProjectsRootMissing,
     /// Anything else: I/O, tmux, or git errors.
     Internal,
 }
@@ -618,6 +623,12 @@ impl GuiHandle {
     pub fn broadcast_snapshot(&mut self) -> WorkspaceSnapshot {
         self.refresh_live_snapshot()
             .unwrap_or_else(|_| self.snapshot())
+    }
+
+    /// Stop any in-flight git clone (kill its process group, remove the
+    /// directory it created). Idempotent; call from the backend exit hook.
+    pub fn shutdown_clone_job(&mut self) {
+        self.app.shutdown_clone_job();
     }
 
     pub fn create_project(

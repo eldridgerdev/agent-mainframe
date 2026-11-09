@@ -271,6 +271,16 @@ fn main() {
             get_snapshot,
             set_collapsed,
             commands::features::create_project,
+            commands::clone_project::clone_project_derive,
+            commands::clone_project::clone_project_validate,
+            commands::clone_project::clone_project_preflight,
+            commands::clone_project::clone_project_start,
+            commands::clone_project::clone_project_cancel,
+            commands::clone_project::clone_project_reset,
+            commands::clone_project::clone_project_snapshot,
+            commands::clone_project::clone_project_root_status,
+            commands::clone_project::clone_project_create_root,
+            commands::clone_project::clone_project_set_root,
             steering_analyze,
             commands::features::create_feature,
             commands::features::worktree_hook_prompt,
@@ -393,8 +403,21 @@ fn main() {
             commands::sessions::open_vscode,
             commands::sessions::close_editors,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running amf-gui");
+        .build(tauri::generate_context!())
+        .expect("error while building amf-gui")
+        .run(|app_handle, event| {
+            // Quitting mid-clone must not orphan git or leave a partial
+            // directory behind.
+            if let tauri::RunEvent::Exit = event
+                && let Some(state) = app_handle.try_state::<AppState>()
+            {
+                state
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .shutdown_clone_job();
+            }
+        });
 }
 
 #[cfg(test)]

@@ -83,7 +83,11 @@ pub(crate) const DASHBOARD_KEYS: &[(&str, &str, &str)] = &[
         "Esc",
         "Ask to quit (y quits, n or Esc stays)",
     ),
-    (AREA_PROJECTS, "N", "Create a new project"),
+    (
+        AREA_PROJECTS,
+        "N",
+        "Create a new project (fill the Git URL field to clone one)",
+    ),
     (
         AREA_PROJECTS,
         "n",

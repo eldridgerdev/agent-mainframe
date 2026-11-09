@@ -244,6 +244,89 @@ export function createProject(
   return invoke("create_project", { request });
 }
 
+// ---- New project from a git URL ------------------------------------------
+// Every rule (URL grammar, derived name/folder, pre-flight, advice) lives in
+// the backend; these types only mirror `gui_clone_project`.
+
+export interface DerivedCloneTarget {
+  name: string;
+  dest: string;
+}
+
+export interface CloneFix {
+  id: string;
+  label: string;
+  /** Shown and copied, never run by AMF. */
+  command_line: string;
+}
+
+export type CloneCheckStatus = "pass" | "warn" | "fail";
+
+export interface CloneCheck {
+  id: string;
+  status: CloneCheckStatus;
+  message: string;
+  fix: CloneFix | null;
+}
+
+export interface CloneProgress {
+  phase: string;
+  percent: number | null;
+  detail: string;
+}
+
+export type ClonePhase =
+  | { kind: "idle" }
+  | { kind: "validating" }
+  | { kind: "preflight_running" }
+  | { kind: "preflight_done"; checks: CloneCheck[]; default_branch: string | null; blocked: boolean }
+  | { kind: "cloning"; progress: CloneProgress | null }
+  | { kind: "registering" }
+  | { kind: "succeeded"; name: string; dest: string; branch: string }
+  | { kind: "failed"; message: string; advice: string | null; fixes: CloneFix[] }
+  | { kind: "cancelled" };
+
+export interface CloneProjectSnapshot {
+  phase: ClonePhase;
+  url: string | null;
+  name: string | null;
+  dest: string | null;
+  can_start: boolean;
+  can_cancel: boolean;
+}
+
+/** Event carrying a `CloneProjectSnapshot` whenever the flow changes. */
+export const CLONE_PROJECT_EVENT = "clone_project_changed";
+
+export function cloneProjectDerive(url: string): Promise<DerivedCloneTarget> {
+  return invoke("clone_project_derive", { url });
+}
+
+export function cloneProjectValidate(url: string, dest: string, name: string): Promise<void> {
+  return invoke("clone_project_validate", { url, dest, name });
+}
+
+/** Validates, then runs the pre-flight checks (also the Re-check action). */
+export function cloneProjectPreflight(url: string, dest: string, name: string): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_preflight", { url, dest, name });
+}
+
+export function cloneProjectStart(url: string, dest: string, name: string): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_start", { url, dest, name });
+}
+
+export function cloneProjectCancel(): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_cancel");
+}
+
+export function cloneProjectReset(): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_reset");
+}
+
+export function cloneProjectSnapshot(): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_snapshot");
+}
+
 export interface CreateFeatureRequest {
   project_name: string;
   branch: string;

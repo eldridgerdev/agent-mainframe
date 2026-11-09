@@ -620,6 +620,12 @@ impl GuiHandle {
             .unwrap_or_else(|_| self.snapshot())
     }
 
+    /// Stop any in-flight git clone (kill its process group, remove the
+    /// directory it created). Idempotent; call from the backend exit hook.
+    pub fn shutdown_clone_job(&mut self) {
+        self.app.shutdown_clone_job();
+    }
+
     pub fn create_project(
         &mut self,
         request: CreateProjectRequest,

@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -17,7 +17,7 @@ pub fn draw_create_project_dialog(
     message: Option<&str>,
     theme: &Theme,
 ) {
-    let area = crate::ui::dialog_rect(frame.area(), 90, 22);
+    let area = crate::ui::dialog_rect(frame.area(), 90, 23);
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
@@ -69,6 +69,7 @@ pub fn draw_create_project_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(path_height),
             Constraint::Length(2),
@@ -77,6 +78,38 @@ pub fn draw_create_project_dialog(
             Constraint::Length(3),
         ])
         .split(inner);
+
+    let url_active = matches!(state.step, CreateProjectStep::Url);
+    let url_label_style = if url_active {
+        Style::default().fg(theme.primary.to_color())
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let mut url_spans = vec![Span::styled(" Git URL (optional): ", url_label_style)];
+    if state.url.is_empty() {
+        url_spans.push(cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Url,
+            theme,
+        ));
+        url_spans.push(Span::styled(
+            "clone from https:// or git@ (Shift+Tab to focus)",
+            Style::default()
+                .fg(theme.text_muted.to_color())
+                .add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        url_spans.push(Span::styled(
+            &state.url,
+            Style::default().fg(theme.text.to_color()),
+        ));
+        url_spans.push(cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Url,
+            theme,
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(url_spans)), chunks[0]);
 
     let name_style = match state.step {
         CreateProjectStep::Name => Style::default().fg(theme.primary.to_color()),
@@ -87,9 +120,9 @@ pub fn draw_create_project_dialog(
         Span::styled(&state.name, Style::default().fg(theme.text.to_color())),
         cursor_span_project(&state.step, &CreateProjectStep::Name, theme),
     ]));
-    frame.render_widget(name_field, chunks[0]);
+    frame.render_widget(name_field, chunks[1]);
 
-    frame.render_widget(path_field, chunks[1]);
+    frame.render_widget(path_field, chunks[2]);
     let key = Style::default().fg(theme.warning.to_color());
     let muted = Style::default().fg(theme.text_muted.to_color());
     let path_hint = Paragraph::new(Line::from(vec![
@@ -98,7 +131,7 @@ pub fn draw_create_project_dialog(
         Span::styled("Ctrl+U", key),
         Span::styled(" clear field", muted),
     ]));
-    frame.render_widget(path_hint, chunks[2]);
+    frame.render_widget(path_hint, chunks[3]);
 
     let agent_active = matches!(state.step, CreateProjectStep::Agent);
     let mut agent_lines = vec![Line::from(Span::styled(
@@ -129,10 +162,10 @@ pub fn draw_create_project_dialog(
             style,
         )));
     }
-    frame.render_widget(Paragraph::new(agent_lines), chunks[3]);
+    frame.render_widget(Paragraph::new(agent_lines), chunks[4]);
 
-    let mut message_area = chunks[4];
-    if state.path_is_git == Some(false) {
+    let mut message_area = chunks[5];
+    if state.path_is_git == Some(false) && state.url.trim().is_empty() {
         // The message (git init result, errors) outranks the warning.
         let message_height = message.map_or(0, |m| {
             Paragraph::new(m.to_string())
@@ -169,8 +202,14 @@ pub fn draw_create_project_dialog(
         frame.render_widget(Paragraph::new(warning).wrap(Wrap { trim: false }), split[0]);
         message_area = split[1];
     }
+    // A half-typed URL explains itself instead of silently deriving nothing.
+    let url_note = state.url_error.as_deref().filter(|_| !state.url.is_empty());
+    let message = message.or(url_note);
     if let Some(message) = message {
-        let style = if message.starts_with("Error") || message.starts_with("git init failed") {
+        let style = if message.starts_with("Error")
+            || (url_note.is_some() && Some(message) == url_note)
+            || message.starts_with("git init failed")
+        {
             Style::default().fg(theme.danger.to_color())
         } else {
             Style::default().fg(theme.text.to_color())
@@ -184,7 +223,11 @@ pub fn draw_create_project_dialog(
     }
 
     let enter_label = if matches!(state.step, CreateProjectStep::Agent) {
-        " confirm  "
+        if state.url.trim().is_empty() {
+            " confirm  "
+        } else {
+            " clone: run pre-flight  "
+        }
     } else {
         " next  "
     };
@@ -200,7 +243,7 @@ pub fn draw_create_project_dialog(
         Span::raw(" cancel"),
     ];
     match state.step {
-        CreateProjectStep::Name | CreateProjectStep::Path => {
+        CreateProjectStep::Url | CreateProjectStep::Name | CreateProjectStep::Path => {
             hints.push(Span::styled(
                 "  Ctrl+U",
                 Style::default().fg(theme.warning.to_color()),
@@ -215,7 +258,7 @@ pub fn draw_create_project_dialog(
             hints.push(Span::raw(" choose harness"));
         }
     }
-    if state.path_is_git == Some(false) {
+    if state.path_is_git == Some(false) && state.url.trim().is_empty() {
         hints.push(Span::styled(
             "  Ctrl+G",
             Style::default().fg(theme.warning.to_color()),
@@ -223,7 +266,7 @@ pub fn draw_create_project_dialog(
         hints.push(Span::raw(" git init"));
     }
     let hints = Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false });
-    frame.render_widget(hints, chunks[5]);
+    frame.render_widget(hints, chunks[6]);
 }
 
 fn cursor_span_project<'a>(
@@ -233,7 +276,8 @@ fn cursor_span_project<'a>(
 ) -> Span<'a> {
     let is_active = matches!(
         (current, target),
-        (CreateProjectStep::Name, CreateProjectStep::Name)
+        (CreateProjectStep::Url, CreateProjectStep::Url)
+            | (CreateProjectStep::Name, CreateProjectStep::Name)
             | (CreateProjectStep::Path, CreateProjectStep::Path)
     );
     if is_active {
@@ -305,4 +349,171 @@ pub fn draw_delete_project_confirm(frame: &mut Frame, name: &str, theme: &Theme)
     );
 
     frame.render_widget(text, area);
+}
+
+/// Pre-flight checklist and clone progress screens. Pure rendering of the
+/// shared [`CloneProjectSnapshot`]; every decision (what is blocked, what can
+/// be cancelled) comes from it.
+pub fn draw_clone_project_dialog(
+    frame: &mut Frame,
+    view: &crate::app::CloneProjectViewState,
+    snapshot: &crate::app::clone_project::CloneProjectSnapshot,
+    theme: &Theme,
+) {
+    use crate::app::clone_project::{CloneCheckStatus, ClonePhase};
+
+    let area = crate::ui::dialog_rect(frame.area(), 100, 24);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Clone Project ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let key = Style::default().fg(theme.warning.to_color());
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let text = Style::default().fg(theme.text.to_color());
+    let ok = Style::default().fg(theme.success.to_color());
+    let warn = Style::default().fg(theme.warning.to_color());
+    let bad = Style::default().fg(theme.danger.to_color());
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" URL:       ", muted),
+            Span::styled(view.form.url.trim().to_string(), text),
+        ]),
+        Line::from(vec![
+            Span::styled(" Name:      ", muted),
+            Span::styled(view.form.name.clone(), text),
+        ]),
+        Line::from(vec![
+            Span::styled(" Directory: ", muted),
+            Span::styled(view.form.path.clone(), text),
+        ]),
+        Line::from(""),
+    ];
+    let mut hints = vec![Span::styled(" Esc", key)];
+    match &snapshot.phase {
+        ClonePhase::PreflightRunning | ClonePhase::Validating => {
+            lines.push(Line::from(Span::styled(
+                " Running pre-flight checks...",
+                text,
+            )));
+            hints.push(Span::raw(" back to the form"));
+        }
+        ClonePhase::PreflightDone {
+            checks,
+            default_branch,
+            blocked,
+        } => {
+            lines.push(Line::from(Span::styled(" Pre-flight checks", muted)));
+            let mut fix_no = 0;
+            for check in checks {
+                let (label, style) = match check.status {
+                    CloneCheckStatus::Pass => ("[ ok ]", ok),
+                    CloneCheckStatus::Warn => ("[warn]", warn),
+                    CloneCheckStatus::Fail => ("[FAIL]", bad),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {label} "), style),
+                    Span::styled(check.message.clone(), text),
+                ]));
+                if let Some(fix) = &check.fix {
+                    fix_no += 1;
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("         fix {fix_no}: "), muted),
+                        Span::styled(fix.label.clone(), text),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("                $ ", muted),
+                        Span::styled(fix.command_line.clone(), key),
+                    ]));
+                }
+            }
+            if let Some(branch) = default_branch {
+                lines.push(Line::from(Span::styled(
+                    format!("  Default branch: {branch}"),
+                    muted,
+                )));
+            }
+            lines.push(Line::from(""));
+            if *blocked {
+                lines.push(Line::from(Span::styled(
+                    " Start is disabled until the failed checks pass.",
+                    bad,
+                )));
+            } else if checks.iter().any(|c| c.status == CloneCheckStatus::Warn) {
+                lines.push(Line::from(Span::styled(
+                    " Warnings do not block the clone.",
+                    warn,
+                )));
+            }
+            let start_style = if snapshot.can_start { key } else { muted };
+            hints.push(Span::raw(" back  "));
+            hints.push(Span::styled("Enter/s", start_style));
+            hints.push(Span::styled(
+                " start  ",
+                if snapshot.can_start { text } else { muted },
+            ));
+            hints.push(Span::styled("r", key));
+            hints.push(Span::raw(" re-check  "));
+            if fix_no > 0 {
+                hints.push(Span::styled(if fix_no > 1 { "c/1-9" } else { "c" }, key));
+                hints.push(Span::raw(" copy fix command (AMF never runs it)"));
+            }
+        }
+        ClonePhase::Cloning { progress } => {
+            lines.push(Line::from(Span::styled(" Cloning...", text)));
+            if let Some(p) = progress {
+                let pct = p.percent.map_or_else(String::new, |n| format!(" {n:>3}%"));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}{pct}", p.phase.replace('_', " ")), ok),
+                    Span::styled(format!("  {}", p.detail), muted),
+                ]));
+                if let Some(n) = p.percent {
+                    let width = 40usize;
+                    let filled = usize::from(n.min(100)) * width / 100;
+                    lines.push(Line::from(Span::styled(
+                        format!("  [{}{}]", "#".repeat(filled), "-".repeat(width - filled)),
+                        ok,
+                    )));
+                }
+            }
+            if view.cancelling {
+                hints.push(Span::raw(" cancelling..."));
+            } else {
+                hints.push(Span::raw(" cancel the clone"));
+            }
+        }
+        ClonePhase::Registering => {
+            lines.push(Line::from(Span::styled(
+                " Registering the project... (can't be cancelled now)",
+                text,
+            )));
+            hints.push(Span::raw(" unavailable while registering"));
+        }
+        _ => {
+            lines.push(Line::from(Span::styled(" Finishing...", text)));
+        }
+    }
+    if let Some(notice) = &view.notice {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(format!(" {notice}"), warn)));
+    }
+    let body = Rect {
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+    let hint_area = Rect {
+        y: inner.y + inner.height.saturating_sub(2),
+        height: 2.min(inner.height),
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false }),
+        hint_area,
+    );
 }

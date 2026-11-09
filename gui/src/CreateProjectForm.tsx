@@ -1,6 +1,12 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentSlug, CreateProjectRequest, HarnessInfo, allowedHarnesses, asGuiError, createProject } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import {
+  AgentSlug, CLONE_PROJECT_EVENT, CloneFix, CloneProjectSnapshot, CreateProjectRequest, HarnessInfo,
+  allowedHarnesses, asGuiError, cloneProjectCancel, cloneProjectDerive, cloneProjectPreflight,
+  cloneProjectReset, cloneProjectSnapshot, cloneProjectStart, createProject,
+} from "./api";
+import { CloneProgressView, FailureNotice, PreflightChecklist } from "./CloneProjectPanels";
 import { Field, Modal, Spinner } from "./ui";
 
 import { BrowseButton, PathInputRow } from "./BrowseButton";
@@ -25,6 +31,13 @@ function folderName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
 }
 
+/** Derivation waits for typing to settle so each keystroke is not a command. */
+const DERIVE_DEBOUNCE_MS = 250;
+/** Safety net under the `clone_project_changed` event. */
+const CLONE_POLL_MS = 1500;
+
+const RUNNING = new Set(["preflight_running", "cloning", "registering"]);
+
 export default function CreateProjectForm({
   agents,
   pending,
@@ -32,6 +45,7 @@ export default function CreateProjectForm({
   onEdit,
   onCancel,
   onSubmit,
+  onCloned,
 }: {
   agents: HarnessInfo[];
   pending: boolean;
@@ -41,7 +55,22 @@ export default function CreateProjectForm({
   onEdit: () => void;
   onCancel: () => void;
   onSubmit: (request: CreateProjectRequest) => void;
+  /** A clone finished and the project is registered. */
+  onCloned?: (project: { name: string; dest: string }) => void;
 }) {
+  const [url, setUrl] = useState("");
+  const [dest, setDest] = useState("");
+  const [destEdited, setDestEdited] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [snap, setSnap] = useState<CloneProjectSnapshot | null>(null);
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ message: string; advice: string | null; fixes: CloneFix[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const clonedReported = useRef(false);
+  const cloneMode = url.trim() !== "";
+  const phase = snap?.phase.kind ?? "idle";
+  const inFlow = phase === "preflight_running" || phase === "preflight_done" || phase === "cloning"
+    || phase === "registering" || phase === "succeeded";
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
@@ -81,29 +110,205 @@ export default function CreateProjectForm({
   }
   const errorId = useId();
 
+  // The backend alone derives the name and folder; a field the user has
+  // edited is never overwritten.
+  useEffect(() => {
+    const typed = url.trim();
+    if (!typed) { setUrlError(null); return; }
+    let stale = false;
+    const timer = setTimeout(() => {
+      cloneProjectDerive(typed).then(
+        (derived) => {
+          if (stale) return;
+          setUrlError(null);
+          if (!nameEdited) setName(derived.name);
+          if (!destEdited) setDest(derived.dest);
+        },
+        (cause) => { if (!stale) setUrlError(asGuiError(cause).message); },
+      );
+    }, DERIVE_DEBOUNCE_MS);
+    return () => { stale = true; clearTimeout(timer); };
+    // Edits to name/dest must not re-derive; only the URL does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url]);
+
+  // Progress arrives as an event; a slow poll covers one that is missed.
+  useEffect(() => {
+    if (!snap || phase === "idle") return;
+    let stopped = false;
+    const unlisten = listen<CloneProjectSnapshot>(CLONE_PROJECT_EVENT, (event) => {
+      if (!stopped) setSnap(event.payload);
+    });
+    const timer = RUNNING.has(phase)
+      ? setInterval(() => { void cloneProjectSnapshot().then((next) => { if (!stopped && next) setSnap(next); }, () => undefined); }, CLONE_POLL_MS)
+      : undefined;
+    return () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      void Promise.resolve(unlisten).then((off) => off?.());
+    };
+    // Re-subscribe only when the flow starts or leaves the running phases.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase === "idle", RUNNING.has(phase)]);
+
+  // Terminal phases: success selects the project; failure and cancel return
+  // to the form with every value still in place.
+  useEffect(() => {
+    if (!snap) return;
+    const result = snap.phase;
+    if (result.kind === "succeeded" && !clonedReported.current) {
+      clonedReported.current = true;
+      onCloned?.({ name: result.name, dest: result.dest });
+    } else if (result.kind === "failed") {
+      setFailure({ message: result.message, advice: result.advice, fixes: result.fixes });
+      setSnap(null);
+      void cloneProjectReset().catch(() => undefined);
+    } else if (result.kind === "cancelled") {
+      setSnap(null);
+      void cloneProjectReset().catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snap]);
+
+  async function runPreflight() {
+    setBusy(true);
+    setCloneError(null);
+    setFailure(null);
+    try {
+      setSnap(await cloneProjectPreflight(url.trim(), dest.trim(), name.trim()));
+    } catch (cause) {
+      setCloneError(asGuiError(cause).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startClone() {
+    setBusy(true);
+    setCloneError(null);
+    try {
+      setSnap(await cloneProjectStart(url.trim(), dest.trim(), name.trim()));
+    } catch (cause) {
+      setCloneError(asGuiError(cause).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function backToForm() {
+    try { await cloneProjectReset(); } catch { /* still running: the form stays on its flow view */ return; }
+    setSnap(null);
+    setCloneError(null);
+  }
+
+  async function close() {
+    if (RUNNING.has(phase)) {
+      if (phase === "registering" || (phase === "cloning" && !snap?.can_cancel)) return;
+      try { await cloneProjectCancel(); } catch { /* the reset below reports nothing more */ }
+    }
+    if (snap) await cloneProjectReset().catch(() => undefined);
+    onCancel();
+  }
+
+  function flowBody() {
+    const result = snap?.phase;
+    return (
+      <div className="form-stack">
+        <p className="field-hint mono">{snap?.url}</p>
+        {result?.kind === "preflight_running" && (
+          <div className="clone-progress" role="status"><Spinner /> Checking that the repository can be reached…</div>
+        )}
+        {result?.kind === "preflight_done" && (
+          <PreflightChecklist checks={result.checks} defaultBranch={result.default_branch} />
+        )}
+        {result?.kind === "cloning" && <CloneProgressView progress={result.progress} />}
+        {result?.kind === "registering" && <div className="clone-progress" role="status"><Spinner /> Adding the project…</div>}
+        {result?.kind === "succeeded" && <p role="status">Cloned {result.name} on {result.branch}.</p>}
+        {cloneError && <p className="field-error" role="alert">{cloneError}</p>}
+      </div>
+    );
+  }
+
+  function flowFooter() {
+    const result = snap?.phase;
+    if (result?.kind === "preflight_running" || result?.kind === "cloning" || result?.kind === "registering") {
+      return (
+        <button type="button" className="btn btn-ghost" disabled={!snap?.can_cancel}
+          onClick={() => void cloneProjectCancel().then(setSnap, (cause) => setCloneError(asGuiError(cause).message))}>
+          Cancel
+        </button>
+      );
+    }
+    return (
+      <>
+        <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void backToForm()}>Back</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => void runPreflight()}>Re-check</button>
+        <button type="button" className="btn btn-primary" disabled={busy || !snap?.can_start} onClick={() => void startClone()}>
+          Start clone
+        </button>
+      </>
+    );
+  }
+
   return (
     <Modal
       label="New project"
       title="New project"
       subtitle="A project is a git repository on this computer. AMF runs agents in it, one feature at a time."
-      onClose={onCancel}
-      onSubmit={() => onSubmit({
-        path: trimmed,
-        project_name: name.trim(),
-        preferred_agent: selectedAgent || null,
-        dry_run: false,
-      })}
-      footer={
+      onClose={() => void close()}
+      dismissable={phase !== "registering"}
+      onSubmit={inFlow ? undefined : () => {
+        if (cloneMode) { void runPreflight(); return; }
+        onSubmit({
+          path: trimmed,
+          project_name: name.trim(),
+          preferred_agent: selectedAgent || null,
+          dry_run: false,
+        });
+      }}
+      footer={inFlow ? flowFooter() : (
         <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending && <Spinner />}
-            {pending ? "Creating…" : "Create project"}
+          <button type="button" className="btn btn-ghost" onClick={() => void close()}>Cancel</button>
+          <button type="submit" className="btn btn-primary"
+            disabled={cloneMode ? busy || !!urlError || !name.trim() || !dest.trim() : pending}>
+            {(cloneMode ? busy : pending) && <Spinner />}
+            {cloneMode ? (busy ? "Checking…" : "Check and clone") : pending ? "Creating…" : "Create project"}
           </button>
         </>
-      }
+      )}
     >
+      {inFlow ? flowBody() : (
       <div className="form-stack">
+        <Field label="Git URL (optional)" hint={urlError
+          ? <span className="field-error" role="alert">{urlError}</span>
+          : "Paste an HTTPS or SSH URL to clone it as a new project. Leave empty to add a folder already on this computer."}>
+          <input
+            className="mono"
+            value={url}
+            onChange={(event) => { setUrl(event.target.value); setCloneError(null); setFailure(null); onEdit(); }}
+            placeholder="https://github.com/owner/repo.git"
+            aria-invalid={urlError ? true : undefined}
+            spellCheck={false}
+          />
+        </Field>
+        {cloneMode && failure && <FailureNotice {...failure} />}
+        {cloneMode && cloneError && (
+          <p className="field-error" role="alert"><strong>Could not start.</strong> {cloneError}</p>
+        )}
+        {cloneMode ? (
+          <>
+            <Field label="Project name">
+              <input value={name} required onChange={(event) => {
+                setName(event.target.value); setNameEdited(true); setCloneError(null);
+              }} />
+            </Field>
+            <Field label="Clone into" hint="The folder is created for the clone; an existing folder is never reused.">
+              <input className="mono" value={dest} required onChange={(event) => {
+                setDest(event.target.value); setDestEdited(true); setCloneError(null);
+              }} />
+            </Field>
+          </>
+        ) : (<>
         <Field label="Repository path" hint={pathCheck?.message
           ? <span className={pathCheck.ok ? undefined : "field-error"} role={pathCheck.ok ? "status" : "alert"}>{pathCheck.message}</span>
           : "The folder of a git repository, for example the one you cloned."}>
@@ -155,7 +360,9 @@ export default function CreateProjectForm({
             ))}
           </select>
         </Field>
+        </>)}
       </div>
+      )}
     </Modal>
   );
 }

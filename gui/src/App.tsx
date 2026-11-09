@@ -693,6 +693,21 @@ export default function App() {
     // Shown inline in the form, next to the fields it is about.
   });
 
+  // A clone registers the project in the backend; find it by name in a fresh
+  // snapshot and select it, as for a project added from a folder.
+  async function selectClonedProject(name: string) {
+    setShowCreateProject(false);
+    try {
+      const fresh = await queryClient.fetchQuery({
+        queryKey: SNAPSHOT_KEY, queryFn: getSnapshot, staleTime: 0, retry: false,
+      });
+      const project = fresh.projects.find((candidate) => candidate.name === name);
+      if (project) setView({ kind: "project", projectId: project.id });
+    } catch (cause) {
+      reportActionError(cause, { key: "clone-project", title: "Cloned, but could not open the project" });
+    }
+  }
+
   const createFeatureMutation = useMutation({
     mutationFn: createFeature,
     onSuccess: (response) => {
@@ -1553,6 +1568,7 @@ export default function App() {
           onEdit={() => { if (createProjectMutation.isError) createProjectMutation.reset(); }}
           onCancel={() => { setShowCreateProject(false); createProjectMutation.reset(); }}
           onSubmit={(request) => createProjectMutation.mutate(request)}
+          onCloned={(cloned) => void selectClonedProject(cloned.name)}
         />
       )}
 

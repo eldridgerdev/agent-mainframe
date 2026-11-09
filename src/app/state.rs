@@ -581,6 +581,8 @@ pub enum AppMode {
     /// agent session currently being viewed.
     ConfirmTodoReferenceCompletion(TodoReferenceCompletionState),
     CreatingProject(CreateProjectState),
+    /// Pre-flight / progress screens of cloning a project from a git URL.
+    CloneProject(Box<CloneProjectViewState>),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
@@ -1492,10 +1494,35 @@ pub struct CreateProjectState {
     /// not name an existing directory (nothing to say yet). Refreshed when
     /// the path changes so the dialog never shells out while drawing.
     pub path_is_git: Option<bool>,
+    /// Optional git URL. Non-empty switches Enter on the last field from
+    /// "register this folder" to "clone it first" (see `clone_project_tui`).
+    pub url: String,
+    /// Why the URL cannot be used yet, shown under the field. Set only while
+    /// `url` is non-empty.
+    pub url_error: Option<String>,
+    /// `name` / `path` currently hold values derived from `url` (and may be
+    /// replaced by the next derivation). Typing in the field clears the flag
+    /// so an edit is never overwritten.
+    pub name_derived: bool,
+    pub path_derived: bool,
+}
+
+/// The clone flow's pre-flight / progress screens, reached from the New
+/// Project form when a URL is set. The state of the job itself lives in the
+/// shared `App::clone_project_snapshot()`; this only remembers the form to
+/// return to and what to tell the user.
+pub struct CloneProjectViewState {
+    /// The form to restore (values preserved) on cancel or error.
+    pub form: CreateProjectState,
+    /// A one-line note (e.g. "Copied ...", "can't be cancelled now").
+    pub notice: Option<String>,
+    /// Esc was pressed during the clone; waiting for the cancel to land.
+    pub cancelling: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateProjectStep {
+    Url,
     Name,
     Path,
     Agent,
@@ -1513,6 +1540,10 @@ impl CreateProjectState {
             agent: AgentKind::default(),
             agent_index: 0,
             path_is_git: None,
+            url: String::new(),
+            url_error: None,
+            name_derived: false,
+            path_derived: false,
         }
     }
 }

@@ -1766,6 +1766,7 @@ fn create_project_persists_selected_preferred_agent() {
         agent: AgentKind::Codex,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     });
 
     app.create_project().unwrap();
@@ -3735,6 +3736,7 @@ fn usability_project_form_can_move_back_without_losing_input() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     });
     crate::handlers::handle_create_project_key(
         &mut app,
@@ -3761,6 +3763,7 @@ fn usability_project_rejects_file_path_and_focuses_preserved_input() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     });
     app.create_project().unwrap();
     assert!(app.store.projects.is_empty());
@@ -3951,6 +3954,7 @@ fn non_git_project_dialog_warns_and_git_init_clears_the_warning() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     });
     app.refresh_create_project_agent_selection();
     assert!(matches!(&app.mode, AppMode::CreatingProject(s) if s.path_is_git == Some(false)));
@@ -3981,6 +3985,7 @@ fn creating_a_non_git_project_continues_and_says_what_is_missing() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: Some(false),
+        ..CreateProjectState::blank()
     });
     app.create_project().unwrap();
     assert_eq!(app.store.projects.len(), 1);

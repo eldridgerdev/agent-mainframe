@@ -329,6 +329,7 @@ fn handle_click(
     if matches!(
         app.mode,
         AppMode::CreatingProject(_)
+            | AppMode::CloneProject(_)
             | AppMode::CreatingFeature(_)
             | AppMode::DeletingProject(_)
             | AppMode::DeletingFeature(_, _)

@@ -164,7 +164,15 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and migration guidance.
    each selected CLI is installed. You can reopen this setup later with `A`.
 
 3. Press `N` to add a project, then enter its name and directory. The directory
-   may be a git repository or an ordinary folder.
+   may be a git repository or an ordinary folder. Alternatively, fill the
+   optional URL field with an HTTPS or SSH git URL to clone a repository. The
+   destination defaults to a folder named after the repository under your
+   projects root (`~/code`, changed with `projects.projects_root` in
+   `~/.config/amf/config.json`). AMF runs checks first (git, URL, destination,
+   and access to the remote) and explains failures with fix commands to run
+   yourself. It then makes a plain full clone of the default branch and
+   registers the project. Canceling or a failed clone removes the directory AMF
+   created. The GUI's new-project form offers the same option.
 
 4. Press `n` to create a feature. Choose a branch name, agent, permission mode,
    and whether to use the guided plan interview. The feature starts when setup

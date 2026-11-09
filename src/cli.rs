@@ -424,6 +424,30 @@ fn capture_reply_draft_in_store(
     Ok(())
 }
 
+/// Set by the SIGINT/SIGTERM/SIGHUP handler; the main loop turns it into an
+/// orderly quit so owned children (a running clone) are torn down.
+static TERMINATE_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_terminate_signal(_: libc::c_int) {
+    TERMINATE_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Route termination signals into [`TERMINATE_REQUESTED`]. Raw mode already
+/// delivers Ctrl+C as a key, so this covers `kill`, a closed terminal and
+/// the like.
+fn install_terminate_handlers() {
+    for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        // SAFETY: the handler only stores to an atomic (async-signal-safe).
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = on_terminate_signal as extern "C" fn(libc::c_int) as usize;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(sig, &action, std::ptr::null_mut());
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -657,6 +681,7 @@ pub fn run() -> Result<()> {
         )
     })?;
 
+    install_terminate_handlers();
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         cleanup_global_hooks();
         app::App::cleanup_stale_thinking_files();
@@ -703,7 +728,12 @@ pub fn run() -> Result<()> {
             }
         }
 
-        run_loop(&mut terminal, &mut app, vscode_check_rx)
+        let result = run_loop(&mut terminal, &mut app, vscode_check_rx);
+        // Kill a mid-flight clone's process group and remove the directory
+        // it owns before the process exits (a panic unwinds through the
+        // handle's own Drop instead).
+        app.shutdown_clone_job();
+        result
     }));
 
     debug::flush_log_writer();
@@ -1532,6 +1562,16 @@ fn run_loop<B: Backend + io::Write>(
         }
         force_redraw |= app.poll_markdown_diagrams();
 
+        if app.poll_clone_preflight() {
+            force_redraw = true;
+        }
+        if app.poll_clone_progress() {
+            force_redraw = true;
+        }
+        if app.sync_clone_project_mode() {
+            force_redraw = true;
+        }
+
         if app.poll_remote_server_bg() {
             force_redraw = true;
         }
@@ -1783,6 +1823,9 @@ fn run_loop<B: Backend + io::Write>(
             }
         }
 
+        if TERMINATE_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            app.should_quit = true;
+        }
         if app.should_quit {
             app.flush_pending_debug_log_entries();
             return Ok(());

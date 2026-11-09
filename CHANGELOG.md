@@ -12,6 +12,20 @@ are tagged.
 
 ### Added
 
+- **Create a project by cloning a git URL.** The new-project form (`N` in the
+  terminal UI, and the desktop app's new-project form) has an optional URL field
+  for HTTPS or SSH git URLs. The destination defaults to a folder named after the
+  repository under the projects root (`~/code`, or `projects.projects_root` in
+  `~/.config/amf/config.json`) and can be changed. Checks run first (git, URL,
+  destination, writable parent, and access to the remote); failures explain the
+  problem and offer copy-only fix commands such as `gh auth login`, `ssh-add` and
+  `ssh-keygen`, which AMF never runs. AMF then makes a plain full clone of the
+  default branch with streamed progress and registers the project; cloning and
+  registration both succeed or neither does. Canceling, or a failed clone, removes
+  the directory AMF created. An empty URL field behaves as before. Known
+  limitation: a SIGKILL or crash mid-clone can leave a partial directory behind.
+- **The terminal UI quits cleanly on SIGINT, SIGTERM and SIGHUP.** These signals
+  now restore the terminal and stop any in-progress clone before exiting.
 - **Create a triage companion feature for a PR from the desktop app.** *New triage
   feature...* in the PR fix destination list opens a separate form: a new branch
   and worktree started from the PR's head commit, linked to the PR and its source

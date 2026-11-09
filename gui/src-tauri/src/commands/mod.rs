@@ -1,4 +1,5 @@
 pub mod bookmarks;
+pub mod clone_project;
 pub mod companion_integration;
 pub mod feature_actions;
 pub mod features;

@@ -46,6 +46,7 @@ fn usability_project_form_shows_errors_and_cancel_at_standard_size() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     };
     let screen = rendered(80, 24, |frame| {
         dialogs::draw_create_project_dialog(
@@ -147,6 +148,7 @@ fn project_form_warns_when_the_folder_is_not_a_git_repository() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git,
+        ..CreateProjectState::blank()
     };
     let draw = |state: &CreateProjectState| {
         rendered(100, 30, |frame| {
@@ -251,6 +253,7 @@ fn project_form_path_hint_keeps_its_own_row_under_a_long_path() {
         agent: AgentKind::Claude,
         agent_index: 0,
         path_is_git: None,
+        ..CreateProjectState::blank()
     };
     let rows = rendered_rows(100, 30, |frame| {
         dialogs::draw_create_project_dialog(

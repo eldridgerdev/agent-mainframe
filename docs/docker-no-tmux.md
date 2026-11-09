@@ -38,6 +38,13 @@ amf -V
 tmux -V
 ```
 
+## Cloning a Project
+
+The clone-from-URL checks may suggest fixes such as `gh auth login`, `ssh-add`
+or `ssh-keygen`. AMF only shows these commands for you to copy; it never runs
+them. No terminal inside AMF is needed, so run them in the container shell (or
+on the host for forwarded credentials) and re-run the checks.
+
 ## Custom Release
 
 You can point the installer at a different archive without changing the

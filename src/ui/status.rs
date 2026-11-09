@@ -297,6 +297,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::CloneProject(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" start  "),
+            Span::styled("r", key_style()),
+            Span::raw(" re-check  "),
+            Span::styled("c", key_style()),
+            Span::raw(" copy fix  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" back/cancel"),
+        ]),
         AppMode::DeletingProject(_)
         | AppMode::DeletingFeature(_, _)
         | AppMode::ConfirmingQuit

@@ -98,6 +98,8 @@ pub fn draw_model_defaults_prototype(
         _ => ["anthropic/sonnet", "openai/gpt-6.1-sol", "anthropic/opus"],
     };
     let levels = ["Harness default", "Low", "Medium", "High"];
+    // Pi has no verified reasoning flag, so the real screen would offer no level.
+    let pi = harness == 3;
     let descriptions = [
         "Implement features, debug issues, and make everyday changes.",
         "Break down work and coordinate agents and tasks.",
@@ -144,7 +146,8 @@ pub fn draw_model_defaults_prototype(
         frame.render_widget(
             Paragraph::new(format!(
                 "● {} · {}",
-                model_names[models[i]], levels[reasoning[i]]
+                model_names[models[i]],
+                if pi { levels[0] } else { levels[reasoning[i]] }
             ))
             .alignment(ratatui::layout::Alignment::Right)
             .style(Style::default().fg(theme.primary.to_color())),
@@ -188,7 +191,13 @@ pub fn draw_model_defaults_prototype(
             (_, 0 | 3) => 0,
             (_, _) => 2,
         };
-        let suggested_level = if i == 0 || i == 3 { "Medium" } else { "High" };
+        let suggested_level = if pi {
+            levels[0]
+        } else if i == 0 || i == 3 {
+            "Medium"
+        } else {
+            "High"
+        };
         frame.render_widget(
             Paragraph::new(format!(
                 "  Example recommendation: {} · {}",

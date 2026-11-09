@@ -986,7 +986,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         // actions spend tokens — live in the dialog's own footer, which is the
         // only copy a user ever sees. This line exists to keep the match
         // exhaustive, not to duplicate them.
-        AppMode::ModelDefaultsPrototype { .. } => Line::from(" Prototype · Esc close "),
         AppMode::ModelAnalysis(_) => {
             Line::from(" ↑/↓ choose · Enter apply · r retry · Esc return to plan ")
         }
@@ -994,6 +993,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Esc", key_style()),
             Span::raw(" cancel plan interview"),
         ]),
+        // Prototype-only overlay; its footer lives in the dialog itself.
+        AppMode::ModelDefaultsPrototype { .. } => Line::from(" Prototype · Esc close "),
         // Learning Mode is a full-viewport overlay with its own footer, so
         // like the plan interview this arm only keeps the match exhaustive.
         AppMode::Learning(_) => Line::from(vec![

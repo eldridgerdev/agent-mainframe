@@ -144,6 +144,8 @@ pub enum CloneProjectError {
     NameTaken(String),
     /// A clone is in flight (cloning or registering).
     Busy,
+    /// The destination is not an absolute path (after `~` expansion).
+    RelativeDest(PathBuf),
     /// `start_clone` before a pre-flight for this URL has finished.
     PreflightRequired,
     PreflightBlocked,
@@ -170,6 +172,11 @@ impl fmt::Display for CloneProjectError {
                 "A project named '{n}' already exists. Choose a different name."
             ),
             Self::Busy => write!(f, "A clone is already in progress."),
+            Self::RelativeDest(p) => write!(
+                f,
+                "The destination {} must be an absolute path (or start with ~).",
+                p.display()
+            ),
             Self::PreflightRequired => write!(
                 f,
                 "Run the pre-flight checks for this URL before starting the clone."
@@ -242,6 +249,8 @@ pub struct CloneProjectJob {
     clone: Option<ActiveClone>,
     phase: ClonePhase,
     last: Option<CloneTarget>,
+    /// Harness to register the cloned project with (set by the GUI).
+    preferred_agent: Option<crate::project::AgentKind>,
 }
 
 impl Default for CloneProjectJob {
@@ -260,6 +269,7 @@ impl Default for CloneProjectJob {
             clone: None,
             phase: ClonePhase::Idle,
             last: None,
+            preferred_agent: None,
         }
     }
 }
@@ -446,6 +456,9 @@ impl App {
             return Err(CloneProjectError::NameTaken(name.to_string()));
         }
         let dest = super::expand_tilde(&dest.to_string_lossy(), dirs::home_dir());
+        if !dest.is_absolute() {
+            return Err(CloneProjectError::RelativeDest(dest));
+        }
         let registered: Vec<PathBuf> = self.store.projects.iter().map(|p| p.repo.clone()).collect();
         if let Err(e) = dest::validate(&dest, &registered) {
             return Err(match e {
@@ -667,6 +680,11 @@ impl App {
 
     /// Re-validate and start cloning. Requires a finished, unblocked
     /// pre-flight for the same URL.
+    /// Harness the next successful clone is registered with (`None` = default).
+    pub fn set_clone_preferred_agent(&mut self, agent: Option<crate::project::AgentKind>) {
+        self.clone_job().preferred_agent = agent;
+    }
+
     pub fn start_clone(
         &mut self,
         url_text: &str,
@@ -761,6 +779,7 @@ impl App {
             job.phase = ClonePhase::Registering;
             (job.env.clone(), active)
         };
+        let preferred_agent = self.clone_job().preferred_agent.take();
         let name = active.name.clone();
         let result = finalize(
             &env,
@@ -771,7 +790,7 @@ impl App {
                 self.create_project_from_request(&CreateProjectRequest {
                     path: path.to_path_buf(),
                     project_name: name.to_string(),
-                    preferred_agent: None,
+                    preferred_agent: preferred_agent.clone(),
                     dry_run: false,
                 })
                 .map(|_| ())
@@ -857,14 +876,12 @@ impl App {
 fn failure_phase(class: &FailureClass, stderr: &str, url: &ParsedUrl) -> ClonePhase {
     let advice = advise(class, url);
     let mut message = advice.summary;
+    // A non-empty raw message is already the advice detail; only fall back to
+    // the full stderr when the classifier kept nothing.
     if let FailureClass::Unknown(raw) = class {
-        let raw = if raw.is_empty() {
-            stderr.trim()
-        } else {
-            raw.as_str()
-        };
-        if !raw.is_empty() && !message.contains(raw) {
-            message = format!("{message} {raw}");
+        let stderr = stderr.trim();
+        if raw.is_empty() && !stderr.is_empty() {
+            message = format!("{message} {stderr}");
         }
     }
     ClonePhase::Failed {

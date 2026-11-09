@@ -101,8 +101,10 @@ pub fn start(
     url: &str,
     dest: &Path,
     name: &str,
+    agent: Option<&str>,
 ) -> GuiResult<CloneProjectSnapshot> {
     let app = gui.app_for_workflow();
+    app.set_clone_preferred_agent(agent.and_then(crate::project::AgentKind::from_slug));
     app.start_clone(url, dest, name).map_err(input_error)?;
     Ok(app.clone_project_snapshot())
 }
@@ -311,7 +313,7 @@ mod tests {
         assert_eq!(kind(&snapshot(&mut gui)), "idle");
         events.see(&start_preflight(&mut gui, &url, &dest, "repo").unwrap());
         events.until(&mut gui, "preflight", |s| s.can_start);
-        events.see(&start(&mut gui, &url, &dest, "repo").unwrap());
+        events.see(&start(&mut gui, &url, &dest, "repo", None).unwrap());
         let done = events.until(&mut gui, "clone", |s| {
             matches!(
                 s.phase,
@@ -352,7 +354,7 @@ mod tests {
         let mut events = Events::default();
 
         run_preflight(&mut gui, &mut events, &dest);
-        events.see(&start(&mut gui, URL, &dest, "repo").unwrap());
+        events.see(&start(&mut gui, URL, &dest, "repo", None).unwrap());
         let done = events.until(&mut gui, "failure", |s| {
             matches!(s.phase, ClonePhase::Failed { .. })
         });
@@ -380,7 +382,7 @@ mod tests {
         let mut events = Events::default();
 
         run_preflight(&mut gui, &mut events, &dest);
-        events.see(&start(&mut gui, URL, &dest, "repo").unwrap());
+        events.see(&start(&mut gui, URL, &dest, "repo", None).unwrap());
         let s = events.until(&mut gui, "progress", |s| {
             matches!(s.phase, ClonePhase::Cloning { progress: Some(_) })
         });
@@ -431,7 +433,7 @@ mod tests {
         let err = start_preflight(&mut gui, URL, &tmp.path().join("r"), " ").unwrap_err();
         assert_eq!(err.kind, GuiErrorKind::InvalidInput);
         assert_eq!(kind(&snapshot(&mut gui)), "idle");
-        let err = start(&mut gui, URL, &tmp.path().join("r"), "r").unwrap_err();
+        let err = start(&mut gui, URL, &tmp.path().join("r"), "r", None).unwrap_err();
         assert_eq!(err.kind, GuiErrorKind::InvalidInput);
 
         gui.app_for_workflow().config.projects.projects_root =

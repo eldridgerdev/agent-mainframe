@@ -222,9 +222,16 @@ impl App {
 
     /// Leave the clone screens for the form with every value kept.
     fn return_to_clone_form(&mut self, message: Option<String>) {
+        if !matches!(self.mode, AppMode::CloneProject(_)) {
+            return;
+        }
+        // A clone in flight keeps its screen; the user must cancel it first.
+        if !self.reset_clone_project() {
+            self.set_clone_notice("A clone is in progress. Press Esc to cancel it first.");
+            return;
+        }
         let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
         if let AppMode::CloneProject(view) = mode {
-            self.reset_clone_project();
             self.mode = AppMode::CreatingProject(view.form);
             self.message = message;
         } else {
@@ -277,10 +284,11 @@ impl App {
         let Some(view) = self.clone_view() else {
             return;
         };
-        if matches!(
+        if !matches!(
             self.clone_project_snapshot().phase,
-            ClonePhase::PreflightRunning
+            ClonePhase::PreflightDone { .. }
         ) {
+            self.set_clone_notice("Re-check is only available once the pre-flight has finished.");
             return;
         }
         let (url, path, name) = (

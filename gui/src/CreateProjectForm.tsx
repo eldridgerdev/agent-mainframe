@@ -72,6 +72,9 @@ export default function CreateProjectForm({
   const [rootBusy, setRootBusy] = useState(false);
   const [rootError, setRootError] = useState<string | null>(null);
   const clonedReported = useRef(false);
+  // The debounced derive reads these at fire time, not at render time.
+  const nameEditedRef = useRef(false);
+  const destEditedRef = useRef(false);
   const cloneMode = url.trim() !== "";
   const phase = snap?.phase.kind ?? "idle";
   const inFlow = phase === "preflight_running" || phase === "preflight_done" || phase === "cloning"
@@ -119,15 +122,21 @@ export default function CreateProjectForm({
   // edited is never overwritten.
   useEffect(() => {
     const typed = url.trim();
-    if (!typed) { setUrlError(null); return; }
+    if (!typed) {
+      // Clearing the URL undoes what it derived (unless the user typed it).
+      setUrlError(null);
+      if (!nameEditedRef.current) setName("");
+      if (!destEditedRef.current) setDest("");
+      return;
+    }
     let stale = false;
     const timer = setTimeout(() => {
       cloneProjectDerive(typed).then(
         (derived) => {
           if (stale) return;
           setUrlError(null);
-          if (!nameEdited) setName(derived.name);
-          if (!destEdited) setDest(derived.dest);
+          if (!nameEditedRef.current) setName(derived.name);
+          if (!destEditedRef.current) setDest(derived.dest);
         },
         (cause) => { if (!stale) setUrlError(asGuiError(cause).message); },
       );
@@ -247,7 +256,7 @@ export default function CreateProjectForm({
     setBusy(true);
     setCloneError(null);
     try {
-      setSnap(await cloneProjectStart(url.trim(), dest.trim(), name.trim()));
+      setSnap(await cloneProjectStart(url.trim(), dest.trim(), name.trim(), selectedAgent || null));
     } catch (cause) {
       await reportStartFailure(cause, "start");
     } finally {
@@ -362,13 +371,21 @@ export default function CreateProjectForm({
           <>
             <Field label="Project name">
               <input value={name} required onChange={(event) => {
-                setName(event.target.value); setNameEdited(true); setCloneError(null);
+                setName(event.target.value); setNameEdited(true); nameEditedRef.current = true; setCloneError(null);
               }} />
             </Field>
             <Field label="Clone into" hint="The folder is created for the clone; an existing folder is never reused.">
               <input className="mono" value={dest} required onChange={(event) => {
-                setDest(event.target.value); setDestEdited(true); setCloneError(null);
+                setDest(event.target.value); setDestEdited(true); destEditedRef.current = true; setCloneError(null);
               }} />
+            </Field>
+            <Field label="Preferred agent" hint="The agent new features use by default. You can change it per feature.">
+              <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
+                <option value="">Default</option>
+                {offered.map((a) => (
+                  <option key={a.slug} value={a.slug}>{a.display_name}</option>
+                ))}
+              </select>
             </Field>
           </>
         ) : (<>
@@ -410,6 +427,7 @@ export default function CreateProjectForm({
             onChange={(event) => {
               setName(event.target.value);
               setNameEdited(true);
+              nameEditedRef.current = true;
               onEdit();
             }}
             required

@@ -111,12 +111,14 @@ pub(crate) fn clone_project_start(
     url: String,
     dest: PathBuf,
     name: String,
+    agent: Option<String>,
 ) -> Result<CloneProjectSnapshot, GuiError> {
     let snapshot = gui_clone_project::start(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &url,
         &dest,
         &name,
+        agent.as_deref(),
     )?;
     emit_snapshot(&app, &snapshot);
     watch(app);

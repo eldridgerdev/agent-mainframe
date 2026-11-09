@@ -311,8 +311,8 @@ export function cloneProjectPreflight(url: string, dest: string, name: string): 
   return invoke("clone_project_preflight", { url, dest, name });
 }
 
-export function cloneProjectStart(url: string, dest: string, name: string): Promise<CloneProjectSnapshot> {
-  return invoke("clone_project_start", { url, dest, name });
+export function cloneProjectStart(url: string, dest: string, name: string, agent: string | null = null): Promise<CloneProjectSnapshot> {
+  return invoke("clone_project_start", { url, dest, name, agent });
 }
 
 /** The missing projects root for `dest`, or null when `dest` is not directly

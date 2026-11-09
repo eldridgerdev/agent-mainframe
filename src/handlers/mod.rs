@@ -143,6 +143,7 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         }
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::CloneProject(_) => clone_project::handle_clone_project_key(app, key),
+        AppMode::CloneRootPrompt(_) => clone_project::handle_clone_root_prompt_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::PlanInterviewAttachDoc(_) => handle_plan_interview_attach_doc_key(app, key),
         AppMode::CreatingFeature(_) => feature_creation::handle_create_feature_event(app, key),

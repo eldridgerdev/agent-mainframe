@@ -140,7 +140,7 @@ export function setCollapsed(target: CollapseTarget, collapsed: boolean): Promis
   return invoke("set_collapsed", { target, collapsed });
 }
 
-export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "invalid_input" | "internal";
+export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "invalid_input" | "projects_root_missing" | "internal";
 
 /** A GitHub failure the user can fix themselves, classified by the backend
  * (`src/gui_github_errors.rs`) from `gh`'s text. */
@@ -313,6 +313,24 @@ export function cloneProjectPreflight(url: string, dest: string, name: string): 
 
 export function cloneProjectStart(url: string, dest: string, name: string): Promise<CloneProjectSnapshot> {
   return invoke("clone_project_start", { url, dest, name });
+}
+
+/** The missing projects root for `dest`, or null when `dest` is not directly
+ * under a missing projects root. */
+export function cloneProjectRootStatus(dest: string): Promise<string | null> {
+  return invoke("clone_project_root_status", { dest });
+}
+
+/** Create the configured projects root after user confirmation; resolves to
+ * the created path. Fails if anything already exists there. */
+export function cloneProjectCreateRoot(): Promise<string> {
+  return invoke("clone_project_create_root");
+}
+
+/** Persist a different projects root (nonexistent is allowed); resolves to the
+ * effective path. Re-derive the destination with `cloneProjectDerive`. */
+export function cloneProjectSetRoot(path: string): Promise<string> {
+  return invoke("clone_project_set_root", { path });
 }
 
 export function cloneProjectCancel(): Promise<CloneProjectSnapshot> {

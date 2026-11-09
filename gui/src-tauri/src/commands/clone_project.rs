@@ -124,6 +124,30 @@ pub(crate) fn clone_project_start(
 }
 
 #[tauri::command]
+pub(crate) fn clone_project_root_status(state: State<AppState>, dest: PathBuf) -> Option<PathBuf> {
+    gui_clone_project::projects_root_status(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &dest,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn clone_project_create_root(state: State<AppState>) -> Result<PathBuf, GuiError> {
+    gui_clone_project::create_projects_root(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+
+#[tauri::command]
+pub(crate) fn clone_project_set_root(
+    state: State<AppState>,
+    path: String,
+) -> Result<PathBuf, GuiError> {
+    gui_clone_project::set_projects_root(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &path,
+    )
+}
+
+#[tauri::command]
 pub(crate) fn clone_project_cancel(app: AppHandle, state: State<AppState>) -> CloneProjectSnapshot {
     let snapshot =
         gui_clone_project::cancel(&mut state.0.lock().expect("gui handle mutex poisoned"));

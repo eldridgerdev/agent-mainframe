@@ -31,6 +31,7 @@ pub struct DerivedCloneTarget {
 fn input_error(err: CloneProjectError) -> GuiError {
     let kind = match err {
         CloneProjectError::Busy | CloneProjectError::NameTaken(_) => GuiErrorKind::Conflict,
+        CloneProjectError::ProjectsRootMissing { .. } => GuiErrorKind::ProjectsRootMissing,
         CloneProjectError::Start(_) => GuiErrorKind::Internal,
         _ => GuiErrorKind::InvalidInput,
     };
@@ -39,6 +40,26 @@ fn input_error(err: CloneProjectError) -> GuiError {
         message: err.to_string(),
         github: None,
     }
+}
+
+/// Whether `dest`'s parent is exactly the (missing) projects root; `Some(root)`
+/// means the UI may offer to create it or pick another.
+pub fn projects_root_status(gui: &mut GuiHandle, dest: &Path) -> Option<PathBuf> {
+    gui.app_for_workflow().projects_root_status(dest)
+}
+
+/// Create the effective projects root after the user confirmed. Takes no path.
+pub fn create_projects_root(gui: &mut GuiHandle) -> GuiResult<PathBuf> {
+    gui.app_for_workflow()
+        .create_projects_root()
+        .map_err(input_error)
+}
+
+/// Change and persist the projects root; returns the effective path.
+pub fn set_projects_root(gui: &mut GuiHandle, path: &str) -> GuiResult<PathBuf> {
+    gui.app_for_workflow()
+        .set_projects_root(path)
+        .map_err(input_error)
 }
 
 /// Derive the project name and directory for `url`.
@@ -255,12 +276,28 @@ mod tests {
     const URL: &str = "https://example.com/o/repo.git";
 
     fn run_preflight(gui: &mut GuiHandle, events: &mut Events, dest: &Path) {
-        let s = start_preflight(gui, URL, dest, "repo").unwrap();
-        events.see(&s);
-        let s = events.until(gui, "preflight", |s| {
-            matches!(s.phase, ClonePhase::PreflightDone { .. })
-        });
-        assert!(s.can_start);
+        // The fake git is a freshly written script. Under heavy parallel load
+        // another thread's fork can briefly hold its write fd open, so the
+        // exec fails with ETXTBSY and a check reports Fail. That is a test
+        // fixture race, not a product bug, so re-check a few times.
+        let mut last = None;
+        for _ in 0..5 {
+            events.0.clear();
+            let s = start_preflight(gui, URL, dest, "repo").unwrap();
+            events.see(&s);
+            let s = events.until(gui, "preflight", |s| {
+                matches!(s.phase, ClonePhase::PreflightDone { .. })
+            });
+            if s.can_start {
+                return;
+            }
+            last = Some(s);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "preflight never became startable: {:?}",
+            last.unwrap().phase
+        );
     }
 
     #[test]
@@ -403,6 +440,42 @@ mod tests {
         assert_eq!(derived.name, "repo");
         assert_eq!(derived.dest, tmp.path().join("repo"));
         validate(&mut gui, URL, &derived.dest, &derived.name).unwrap();
+    }
+
+    #[test]
+    fn missing_projects_root_has_its_own_error_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("code");
+        let mut gui = gui_with_env(GitEnv::new(), false);
+        gui.app_for_workflow().config.projects.projects_root =
+            Some(root.to_string_lossy().into_owned());
+        let dest = root.join("repo");
+        let err = validate(&mut gui, URL, &dest, "repo").unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::ProjectsRootMissing);
+        assert_eq!(
+            serde_json::to_value(err.kind).unwrap(),
+            "projects_root_missing"
+        );
+        let err = start_preflight(&mut gui, URL, &dest, "repo").unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::ProjectsRootMissing);
+        assert_eq!(projects_root_status(&mut gui, &dest), Some(root.clone()));
+        // Another missing parent stays a plain invalid-input block.
+        let other = tmp.path().join("nope").join("repo");
+        let err = validate(&mut gui, URL, &other, "repo").unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::InvalidInput);
+
+        assert_eq!(create_projects_root(&mut gui).unwrap(), root);
+        validate(&mut gui, URL, &dest, "repo").unwrap();
+        let err = create_projects_root(&mut gui).unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::InvalidInput);
+        let err = set_projects_root(&mut gui, "").unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::InvalidInput);
+        let fresh = tmp.path().join("fresh");
+        assert_eq!(
+            set_projects_root(&mut gui, fresh.to_str().unwrap()).unwrap(),
+            fresh
+        );
+        assert_eq!(derive(&mut gui, URL).unwrap().dest, fresh.join("repo"));
     }
 
     #[test]

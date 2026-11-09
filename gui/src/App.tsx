@@ -146,6 +146,7 @@ const ERROR_TITLE: Record<GuiError["kind"], string> = {
   conflict: "Changed elsewhere. Reload.",
   needs_approval: "Approval needed",
   invalid_input: "Check your input",
+  projects_root_missing: "Projects folder missing",
   internal: "Something went wrong",
 };
 

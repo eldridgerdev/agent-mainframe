@@ -8,7 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use super::clone_project::{CloneFix, ClonePhase, CloneProjectError};
-use super::{App, AppMode, CloneProjectViewState, CreateProjectStep, Selection};
+use super::{
+    App, AppMode, CloneProjectViewState, CloneRootPromptState, CreateProjectStep, Selection,
+};
 
 /// Every fix offered by the current phase's checks, in display order. The
 /// number the user presses is the position here plus one.
@@ -104,7 +106,102 @@ impl App {
                     cancelling: false,
                 }));
             }
+            Err(CloneProjectError::ProjectsRootMissing { root }) => {
+                let AppMode::CreatingProject(form) =
+                    std::mem::replace(&mut self.mode, AppMode::Normal)
+                else {
+                    return;
+                };
+                self.message = None;
+                self.mode = AppMode::CloneRootPrompt(Box::new(CloneRootPromptState {
+                    form,
+                    root,
+                    editing: None,
+                    error: None,
+                }));
+            }
             Err(e) => self.form_error(&e),
+        }
+    }
+
+    fn root_prompt_mut(&mut self) -> Option<&mut CloneRootPromptState> {
+        match &mut self.mode {
+            AppMode::CloneRootPrompt(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn set_root_prompt_error(&mut self, error: impl Into<String>) {
+        if let Some(p) = self.root_prompt_mut() {
+            p.error = Some(error.into());
+        }
+    }
+
+    /// Esc on the choices: back to the form, values untouched, nothing created.
+    pub(crate) fn clone_root_prompt_cancel(&mut self) {
+        let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
+        match mode {
+            AppMode::CloneRootPrompt(p) => self.mode = AppMode::CreatingProject(p.form),
+            other => self.mode = other,
+        }
+    }
+
+    /// `c`/Enter: create the projects folder (only it), then carry on into
+    /// the pre-flight with the form's own values.
+    pub(crate) fn clone_root_prompt_create(&mut self) {
+        if self.root_prompt_mut().is_none() {
+            return;
+        }
+        if let Err(e) = self.create_projects_root() {
+            self.set_root_prompt_error(e.to_string());
+            return;
+        }
+        let AppMode::CloneRootPrompt(p) = std::mem::replace(&mut self.mode, AppMode::Normal) else {
+            return;
+        };
+        self.mode = AppMode::CreatingProject(p.form);
+        self.start_clone_from_form();
+    }
+
+    /// `d`: type a different projects folder, prefilled with the current one.
+    pub(crate) fn clone_root_prompt_choose(&mut self) {
+        let text = self
+            .config
+            .projects
+            .projects_root
+            .clone()
+            .unwrap_or_else(|| self.config.projects_root().to_string_lossy().into_owned());
+        if let Some(p) = self.root_prompt_mut() {
+            p.editing = Some(text);
+            p.error = None;
+        }
+    }
+
+    /// Enter while typing: persist the folder, re-derive the destination for
+    /// the URL (values the user edited are kept) and return to the form.
+    pub(crate) fn clone_root_prompt_confirm_choice(&mut self) {
+        let Some(text) = self.root_prompt_mut().and_then(|p| p.editing.clone()) else {
+            return;
+        };
+        if let Err(e) = self.set_projects_root(&text) {
+            self.set_root_prompt_error(e.to_string());
+            return;
+        }
+        let AppMode::CloneRootPrompt(p) = std::mem::replace(&mut self.mode, AppMode::Normal) else {
+            return;
+        };
+        self.mode = AppMode::CreatingProject(p.form);
+        self.refresh_create_project_url();
+        self.message = Some(
+            "Projects folder changed. Press Enter again to continue (check the directory).".into(),
+        );
+    }
+
+    /// Esc while typing: back to the choices.
+    pub(crate) fn clone_root_prompt_stop_editing(&mut self) {
+        if let Some(p) = self.root_prompt_mut() {
+            p.editing = None;
+            p.error = None;
         }
     }
 

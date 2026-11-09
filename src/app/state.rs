@@ -583,6 +583,9 @@ pub enum AppMode {
     CreatingProject(CreateProjectState),
     /// Pre-flight / progress screens of cloning a project from a git URL.
     CloneProject(Box<CloneProjectViewState>),
+    /// The clone form's destination sits directly in a projects folder that
+    /// does not exist: create it, choose another, or go back to the form.
+    CloneRootPrompt(Box<CloneRootPromptState>),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
@@ -1518,6 +1521,18 @@ pub struct CloneProjectViewState {
     pub notice: Option<String>,
     /// Esc was pressed during the clone; waiting for the cancel to land.
     pub cancelling: bool,
+}
+
+/// Prompt shown when submitting the clone form finds the projects folder
+/// missing. Holds the form so every exit restores it verbatim.
+pub struct CloneRootPromptState {
+    pub form: CreateProjectState,
+    /// The effective projects folder that does not exist.
+    pub root: std::path::PathBuf,
+    /// `Some` while the user is typing a different projects folder.
+    pub editing: Option<String>,
+    /// Why the last action failed; the prompt stays open.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

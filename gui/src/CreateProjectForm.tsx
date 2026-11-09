@@ -4,9 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   AgentSlug, CLONE_PROJECT_EVENT, CloneFix, CloneProjectSnapshot, CreateProjectRequest, HarnessInfo,
   allowedHarnesses, asGuiError, cloneProjectCancel, cloneProjectDerive, cloneProjectPreflight,
-  cloneProjectReset, cloneProjectSnapshot, cloneProjectStart, createProject,
+  cloneProjectCreateRoot, cloneProjectReset, cloneProjectRootStatus, cloneProjectSetRoot,
+  cloneProjectSnapshot, cloneProjectStart, createProject,
 } from "./api";
-import { CloneProgressView, FailureNotice, PreflightChecklist } from "./CloneProjectPanels";
+import { CloneProgressView, FailureNotice, PreflightChecklist, ProjectsRootPanel } from "./CloneProjectPanels";
 import { Field, Modal, Spinner } from "./ui";
 
 import { BrowseButton, PathInputRow } from "./BrowseButton";
@@ -66,6 +67,10 @@ export default function CreateProjectForm({
   const [cloneError, setCloneError] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ message: string; advice: string | null; fixes: CloneFix[] } | null>(null);
   const [busy, setBusy] = useState(false);
+  // The projects folder is missing: which step to re-run once it exists.
+  const [rootPrompt, setRootPrompt] = useState<{ root: string; retry: "preflight" | "start" } | null>(null);
+  const [rootBusy, setRootBusy] = useState(false);
+  const [rootError, setRootError] = useState<string | null>(null);
   const clonedReported = useRef(false);
   const cloneMode = url.trim() !== "";
   const phase = snap?.phase.kind ?? "idle";
@@ -170,6 +175,61 @@ export default function CreateProjectForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snap]);
 
+  /** A failed start; a missing projects folder opens the prompt instead. */
+  async function reportStartFailure(cause: unknown, retry: "preflight" | "start") {
+    const err = asGuiError(cause);
+    if (err.kind === "projects_root_missing") {
+      let root: string | null = null;
+      try { root = await cloneProjectRootStatus(dest.trim()); } catch { /* fall through to the message */ }
+      if (root) { setRootError(null); setRootPrompt({ root, retry }); return; }
+    }
+    setCloneError(err.message);
+  }
+
+  async function createRoot() {
+    if (!rootPrompt) return;
+    setRootBusy(true);
+    setRootError(null);
+    try {
+      await cloneProjectCreateRoot();
+    } catch (cause) {
+      setRootError(asGuiError(cause).message);
+      setRootBusy(false);
+      return;
+    }
+    const retry = rootPrompt.retry;
+    setRootPrompt(null);
+    setRootBusy(false);
+    await (retry === "start" ? startClone() : runPreflight());
+  }
+
+  async function chooseRoot(path: string) {
+    setRootBusy(true);
+    setRootError(null);
+    try {
+      await cloneProjectSetRoot(path);
+    } catch (cause) {
+      setRootError(asGuiError(cause).message);
+      setRootBusy(false);
+      return;
+    }
+    setRootBusy(false);
+    setRootPrompt(null);
+    try {
+      const derived = await cloneProjectDerive(url.trim());
+      setUrlError(null);
+      if (!nameEdited) setName(derived.name);
+      if (!destEdited) setDest(derived.dest);
+    } catch (cause) {
+      setUrlError(asGuiError(cause).message);
+    }
+  }
+
+  function cancelRoot() {
+    setRootPrompt(null);
+    setRootError(null);
+  }
+
   async function runPreflight() {
     setBusy(true);
     setCloneError(null);
@@ -177,7 +237,7 @@ export default function CreateProjectForm({
     try {
       setSnap(await cloneProjectPreflight(url.trim(), dest.trim(), name.trim()));
     } catch (cause) {
-      setCloneError(asGuiError(cause).message);
+      await reportStartFailure(cause, "preflight");
     } finally {
       setBusy(false);
     }
@@ -189,7 +249,7 @@ export default function CreateProjectForm({
     try {
       setSnap(await cloneProjectStart(url.trim(), dest.trim(), name.trim()));
     } catch (cause) {
-      setCloneError(asGuiError(cause).message);
+      await reportStartFailure(cause, "start");
     } finally {
       setBusy(false);
     }
@@ -257,7 +317,7 @@ export default function CreateProjectForm({
       subtitle="A project is a git repository on this computer. AMF runs agents in it, one feature at a time."
       onClose={() => void close()}
       dismissable={phase !== "registering"}
-      onSubmit={inFlow ? undefined : () => {
+      onSubmit={inFlow || rootPrompt ? undefined : () => {
         if (cloneMode) { void runPreflight(); return; }
         onSubmit({
           path: trimmed,
@@ -266,7 +326,7 @@ export default function CreateProjectForm({
           dry_run: false,
         });
       }}
-      footer={inFlow ? flowFooter() : (
+      footer={inFlow ? flowFooter() : rootPrompt ? null : (
         <>
           <button type="button" className="btn btn-ghost" onClick={() => void close()}>Cancel</button>
           <button type="submit" className="btn btn-primary"
@@ -277,7 +337,10 @@ export default function CreateProjectForm({
         </>
       )}
     >
-      {inFlow ? flowBody() : (
+      {inFlow ? flowBody() : rootPrompt ? (
+        <ProjectsRootPanel root={rootPrompt.root} busy={rootBusy} error={rootError}
+          onCreate={() => void createRoot()} onChoose={(path) => void chooseRoot(path)} onCancel={cancelRoot} />
+      ) : (
       <div className="form-stack">
         <Field label="Git URL (optional)" hint={urlError
           ? <span className="field-error" role="alert">{urlError}</span>

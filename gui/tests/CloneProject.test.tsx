@@ -208,3 +208,76 @@ it("Cancel during the clone asks the backend to cancel", async () => {
   await screen.findByLabelText(/^Git URL/);
   expect((screen.getByLabelText("Project name") as HTMLInputElement).value).toBe("widget");
 });
+
+const rootMissing = () => new Error(JSON.stringify({ kind: "projects_root_missing", message: "The projects folder /home/u/code doesn't exist." }));
+
+async function reachRootPanel() {
+  mount();
+  await typeUrl();
+  handlers.clone_project_preflight = rootMissing;
+  handlers.clone_project_root_status = () => "/home/u/code";
+  fireEvent.click(screen.getByRole("button", { name: "Check and clone" }));
+  await screen.findByRole("group", { name: "Projects folder missing" });
+}
+
+it("a missing projects folder shows the panel, then Cancel returns to the untouched form", async () => {
+  await reachRootPanel();
+  expect(screen.getByText("/home/u/code")).toBeTruthy();
+  expect(calls.find((c) => c.command === "clone_project_root_status")?.args).toEqual({ dest: "/home/u/code/widget" });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("group", { name: "Projects folder missing" })).toBeNull();
+  expect((screen.getByLabelText(/^Git URL/) as HTMLInputElement).value).toBe(URL);
+  expect((screen.getByLabelText("Project name") as HTMLInputElement).value).toBe("widget");
+  expect((screen.getByLabelText(/^Clone into/) as HTMLInputElement).value).toBe("/home/u/code/widget");
+  expect(count("clone_project_create_root")).toBe(0);
+  expect(count("clone_project_set_root")).toBe(0);
+});
+
+it("Create folder creates the root and re-runs the same pre-flight", async () => {
+  await reachRootPanel();
+  handlers.clone_project_create_root = () => "/home/u/code";
+  handlers.clone_project_preflight = () => snapshot(done(false, "pass"), { can_start: true });
+  fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
+  await screen.findByRole("list", { name: "Pre-flight checks" });
+  expect(count("clone_project_create_root")).toBe(1);
+  const runs = calls.filter((c) => c.command === "clone_project_preflight");
+  expect(runs).toHaveLength(2);
+  expect(runs[1].args).toEqual(runs[0].args);
+});
+
+it("Choose a different folder sets the root, re-derives, and keeps edited fields", async () => {
+  await reachRootPanel();
+  fireEvent.click(screen.getByRole("button", { name: "Choose a different folder…" }));
+  const input = screen.getByDisplayValue("/home/u/code") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "/srv/projects" } });
+  handlers.clone_project_set_root = () => "/srv/projects";
+  handlers.clone_project_derive = () => ({ name: "widget", dest: "/srv/projects/widget" });
+  fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+  await waitFor(() => expect((screen.getByLabelText(/^Clone into/) as HTMLInputElement).value).toBe("/srv/projects/widget"));
+  expect(calls.find((c) => c.command === "clone_project_set_root")?.args).toEqual({ path: "/srv/projects" });
+  expect(count("clone_project_preflight")).toBe(1);
+
+  // A hand-edited name survives a later root change.
+  fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "mine" } });
+  handlers.clone_project_preflight = rootMissing;
+  fireEvent.click(screen.getByRole("button", { name: "Check and clone" }));
+  await screen.findByRole("group", { name: "Projects folder missing" });
+  fireEvent.click(screen.getByRole("button", { name: "Choose a different folder…" }));
+  handlers.clone_project_derive = () => ({ name: "other", dest: "/other/widget" });
+  fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+  await waitFor(() => expect((screen.getByLabelText(/^Clone into/) as HTMLInputElement).value).toBe("/other/widget"));
+  expect((screen.getByLabelText("Project name") as HTMLInputElement).value).toBe("mine");
+});
+
+it("errors from Create and Choose stay inside the panel", async () => {
+  await reachRootPanel();
+  handlers.clone_project_create_root = () => new Error(JSON.stringify({ kind: "conflict", message: "Something already exists there." }));
+  fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
+  expect((await screen.findByRole("alert")).textContent).toBe("Something already exists there.");
+  fireEvent.click(screen.getByRole("button", { name: "Choose a different folder…" }));
+  handlers.clone_project_set_root = () => fail("Enter an absolute path.");
+  fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Enter an absolute path."));
+  expect(screen.getByRole("group", { name: "Projects folder missing" })).toBeTruthy();
+  expect(count("clone_project_derive")).toBe(1);
+});

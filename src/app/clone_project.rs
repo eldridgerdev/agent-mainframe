@@ -148,6 +148,15 @@ pub enum CloneProjectError {
     PreflightRequired,
     PreflightBlocked,
     Start(String),
+    /// The destination's parent is exactly the effective projects root and
+    /// that directory does not exist. Unlike any other missing parent, the
+    /// interface may offer to create it ([`App::create_projects_root`]) or to
+    /// pick another root ([`App::set_projects_root`]).
+    ProjectsRootMissing {
+        root: PathBuf,
+    },
+    /// Creating or changing the projects root was refused or failed.
+    ProjectsRoot(String),
 }
 
 impl fmt::Display for CloneProjectError {
@@ -170,6 +179,12 @@ impl fmt::Display for CloneProjectError {
                 "The pre-flight checks failed; fix the problem and re-run them."
             ),
             Self::Start(m) => write!(f, "{m}"),
+            Self::ProjectsRootMissing { root } => write!(
+                f,
+                "The projects folder {} does not exist yet. Create it, or choose a different projects folder.",
+                root.display()
+            ),
+            Self::ProjectsRoot(m) => write!(f, "{m}"),
         }
     }
 }
@@ -432,12 +447,124 @@ impl App {
         }
         let dest = super::expand_tilde(&dest.to_string_lossy(), dirs::home_dir());
         let registered: Vec<PathBuf> = self.store.projects.iter().map(|p| p.repo.clone()).collect();
-        dest::validate(&dest, &registered).map_err(CloneProjectError::Dest)?;
+        if let Err(e) = dest::validate(&dest, &registered) {
+            return Err(match e {
+                DestError::ParentMissing(parent) if parent == self.config.projects_root() => {
+                    CloneProjectError::ProjectsRootMissing { root: parent }
+                }
+                other => CloneProjectError::Dest(other),
+            });
+        }
         Ok(CloneTarget {
             url: parsed,
             name: name.to_string(),
             dest,
         })
+    }
+
+    /// `Some(root)` when `dest`'s parent is exactly the effective projects
+    /// root and that directory does not exist, i.e. when validation would
+    /// report [`CloneProjectError::ProjectsRootMissing`]. Cheap (one `stat`).
+    pub fn projects_root_status(&self, dest: &Path) -> Option<PathBuf> {
+        let dest = super::expand_tilde(&dest.to_string_lossy(), dirs::home_dir());
+        let root = self.config.projects_root();
+        if dest.parent() != Some(root.as_path()) {
+            return None;
+        }
+        match std::fs::metadata(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(root),
+            _ => None,
+        }
+    }
+
+    /// Create the effective projects root (and only it) after the user has
+    /// confirmed. Takes no path, so it cannot be steered at anything else.
+    /// Refuses when anything already exists at the path (directory, file or
+    /// symlink: an existing directory is never touched) and while a clone is
+    /// in flight. Never deletes anything.
+    pub fn create_projects_root(&mut self) -> Result<PathBuf, CloneProjectError> {
+        if self.clone_job().clone_in_flight() {
+            return Err(CloneProjectError::Busy);
+        }
+        let root = self.config.projects_root();
+        match std::fs::symlink_metadata(&root) {
+            Ok(meta) => {
+                let what = if meta.is_dir() {
+                    "already exists"
+                } else if meta.file_type().is_symlink() {
+                    "is a symbolic link; it was left untouched"
+                } else {
+                    "exists but is not a directory"
+                };
+                return Err(CloneProjectError::ProjectsRoot(format!(
+                    "The projects folder {} {what}. Nothing was created.",
+                    root.display()
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(CloneProjectError::ProjectsRoot(format!(
+                    "Could not inspect the projects folder {}: {e}",
+                    root.display()
+                )));
+            }
+        }
+        std::fs::create_dir_all(&root).map_err(|e| {
+            CloneProjectError::ProjectsRoot(format!(
+                "Could not create the projects folder {}: {e}",
+                root.display()
+            ))
+        })?;
+        Ok(root)
+    }
+
+    /// Change and persist the projects root. `path` is stored as typed
+    /// (trimmed, `~` unexpanded). It must be absolute or start with `~/`, and
+    /// if it exists it must be a directory; a nonexistent root is allowed (the
+    /// interface then offers [`create_projects_root`](Self::create_projects_root)).
+    /// Returns the effective (expanded) path. Re-derive the destination with
+    /// [`derive_clone_target`](Self::derive_clone_target) afterwards.
+    pub fn set_projects_root(&mut self, path: &str) -> Result<PathBuf, CloneProjectError> {
+        if self.clone_job().clone_in_flight() {
+            return Err(CloneProjectError::Busy);
+        }
+        let text = path.trim();
+        if text.is_empty() {
+            return Err(CloneProjectError::ProjectsRoot(
+                "Enter a projects folder.".into(),
+            ));
+        }
+        let effective = super::expand_tilde(text, dirs::home_dir());
+        if !effective.is_absolute() {
+            return Err(CloneProjectError::ProjectsRoot(format!(
+                "{text} is not an absolute path. Use a full path or one starting with ~/."
+            )));
+        }
+        match std::fs::symlink_metadata(&effective) {
+            Ok(_) => {
+                if !std::fs::metadata(&effective).is_ok_and(|m| m.is_dir()) {
+                    return Err(CloneProjectError::ProjectsRoot(format!(
+                        "{} exists but is not a directory.",
+                        effective.display()
+                    )));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(CloneProjectError::ProjectsRoot(format!(
+                    "Could not inspect {}: {e}",
+                    effective.display()
+                )));
+            }
+        }
+        let previous = self.config.projects.projects_root.replace(text.to_string());
+        if let Err(e) = self.try_save_config() {
+            self.config.projects.projects_root = previous;
+            return Err(CloneProjectError::ProjectsRoot(format!(
+                "Could not save the projects folder setting: {e:#}"
+            )));
+        }
+        Ok(self.config.projects_root())
     }
 
     /// Validate, then run the pre-flight checks on a worker thread. The result
@@ -1105,5 +1232,182 @@ mod tests {
         app.shutdown_clone_job();
         assert_eq!(app.clone_project_snapshot().phase, ClonePhase::Cancelled);
         assert!(!app.poll_clone_preflight());
+    }
+
+    // ------------------------------------------------ projects root
+
+    fn root_app(root: &Path) -> App {
+        let mut app = test_app();
+        app.config.projects.projects_root = Some(root.to_string_lossy().into_owned());
+        app
+    }
+
+    const ROOT_URL: &str = "https://github.com/o/widget.git";
+
+    #[test]
+    fn missing_projects_root_is_a_distinct_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("code");
+        let mut app = root_app(&root);
+        let dest = root.join("widget");
+        match app.validate_clone_target(ROOT_URL, &dest, "widget") {
+            Err(CloneProjectError::ProjectsRootMissing { root: r }) => assert_eq!(r, root),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            app.start_clone_preflight(ROOT_URL, &dest, "widget"),
+            Err(CloneProjectError::ProjectsRootMissing { .. })
+        ));
+        assert!(matches!(
+            app.start_clone(ROOT_URL, &dest, "widget"),
+            Err(CloneProjectError::ProjectsRootMissing { .. })
+        ));
+        assert_eq!(app.projects_root_status(&dest), Some(root.clone()));
+        // Trailing slash on the configured root still matches.
+        app.config.projects.projects_root = Some(format!("{}/", root.display()));
+        assert_eq!(app.projects_root_status(&dest), Some(root.clone()));
+        assert!(!root.exists(), "validation never creates anything");
+    }
+
+    #[test]
+    fn missing_non_root_parent_keeps_the_old_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("code");
+        let mut app = root_app(&root);
+        let dest = tmp.path().join("elsewhere").join("widget");
+        assert!(matches!(
+            app.validate_clone_target(ROOT_URL, &dest, "widget"),
+            Err(CloneProjectError::Dest(DestError::ParentMissing(_)))
+        ));
+        assert_eq!(app.projects_root_status(&dest), None);
+        // A deeper path under a missing root is not the root either.
+        let deep = root.join("sub").join("widget");
+        assert!(matches!(
+            app.validate_clone_target(ROOT_URL, &deep, "widget"),
+            Err(CloneProjectError::Dest(DestError::ParentMissing(_)))
+        ));
+        assert_eq!(app.projects_root_status(&deep), None);
+    }
+
+    #[test]
+    fn create_projects_root_creates_only_the_root_then_validation_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let root = tmp.path().join("code");
+        let mut app = root_app(&root);
+        let dest = root.join("widget");
+        assert_eq!(app.create_projects_root().unwrap(), root);
+        assert!(root.is_dir());
+        assert!(!dest.exists());
+        assert!(app.validate_clone_target(ROOT_URL, &dest, "widget").is_ok());
+        assert_eq!(app.projects_root_status(&dest), None);
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        // Existing directory: refused, untouched.
+        let inner = root.join("mine");
+        std::fs::write(&inner, "x").unwrap();
+        let err = app.create_projects_root().unwrap_err();
+        assert!(matches!(err, CloneProjectError::ProjectsRoot(_)), "{err}");
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(std::fs::read_to_string(&inner).unwrap(), "x");
+    }
+
+    #[test]
+    fn create_projects_root_refuses_file_and_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("afile");
+        std::fs::write(&file, "data").unwrap();
+        let mut app = root_app(&file);
+        let err = app.create_projects_root().unwrap_err();
+        assert!(err.to_string().contains("not a directory"), "{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        app.config.projects.projects_root = Some(link.to_string_lossy().into_owned());
+        assert!(app.create_projects_root().is_err());
+        let dangling = tmp.path().join("dangling");
+        std::os::unix::fs::symlink(tmp.path().join("nowhere"), &dangling).unwrap();
+        app.config.projects.projects_root = Some(dangling.to_string_lossy().into_owned());
+        assert!(app.create_projects_root().is_err());
+        assert!(!tmp.path().join("nowhere").exists());
+        assert!(std::fs::symlink_metadata(&dangling).is_ok());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+    }
+
+    #[test]
+    fn projects_root_changes_are_refused_during_a_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, dest, _gc) = start_slow(tmp.path());
+        let root = tmp.path().join("newroot");
+        app.config.projects.projects_root = Some(root.to_string_lossy().into_owned());
+        assert!(matches!(
+            app.create_projects_root(),
+            Err(CloneProjectError::Busy)
+        ));
+        assert!(!root.exists());
+        assert!(matches!(
+            app.set_projects_root("/somewhere/else"),
+            Err(CloneProjectError::Busy)
+        ));
+        assert_eq!(
+            app.config.projects.projects_root.as_deref(),
+            Some(root.to_str().unwrap())
+        );
+        assert!(dest.is_dir(), "the running clone is untouched");
+        app.shutdown_clone_job();
+    }
+
+    #[test]
+    fn set_projects_root_validates_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        for bad in ["", "   ", "relative/dir", "~someone/x"] {
+            assert!(
+                matches!(
+                    app.set_projects_root(bad),
+                    Err(CloneProjectError::ProjectsRoot(_))
+                ),
+                "{bad:?}"
+            );
+        }
+        let file = tmp.path().join("f");
+        std::fs::write(&file, "x").unwrap();
+        let err = app.set_projects_root(file.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("not a directory"), "{err}");
+        assert_eq!(
+            app.config.projects.projects_root, None,
+            "rejects change nothing"
+        );
+
+        // Nonexistent is allowed and is not created.
+        let missing = tmp.path().join("fresh");
+        let eff = app
+            .set_projects_root(&format!("  {}  ", missing.display()))
+            .unwrap();
+        assert_eq!(eff, missing);
+        assert!(!missing.exists());
+        assert_eq!(
+            app.config.projects.projects_root.as_deref(),
+            Some(missing.to_str().unwrap()),
+            "stored trimmed"
+        );
+        // Existing dir; tilde stored unexpanded.
+        let eff = app.set_projects_root("~/some-amf-root").unwrap();
+        assert_eq!(
+            app.config.projects.projects_root.as_deref(),
+            Some("~/some-amf-root")
+        );
+        assert_eq!(eff, dirs::home_dir().unwrap().join("some-amf-root"));
+
+        // Round-trips through the saved config file.
+        let existing = tmp.path().join("exists");
+        std::fs::create_dir(&existing).unwrap();
+        app.set_projects_root(existing.to_str().unwrap()).unwrap();
+        let cfg = crate::project::amf_config_dir().join("config.json");
+        let loaded: crate::app::AppConfig =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(loaded.projects_root(), existing);
+        assert_eq!(app.config.projects_root(), existing);
     }
 }

@@ -330,6 +330,7 @@ fn handle_click(
         app.mode,
         AppMode::CreatingProject(_)
             | AppMode::CloneProject(_)
+            | AppMode::CloneRootPrompt(_)
             | AppMode::CreatingFeature(_)
             | AppMode::DeletingProject(_)
             | AppMode::DeletingFeature(_, _)

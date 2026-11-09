@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { BrowseButton, PathInputRow } from "./BrowseButton";
+import { Field } from "./ui";
 import type { CloneCheck, CloneCheckStatus, CloneFix, CloneProgress } from "./api";
 
 const STATUS_LABEL: Record<CloneCheckStatus, string> = { pass: "Passed", warn: "Warning", fail: "Failed" };
@@ -60,6 +62,48 @@ export function FailureNotice({ message, advice, fixes }: { message: string; adv
       <p className="field-error"><strong>Could not clone the repository.</strong> {message}</p>
       {advice && <p className="field-hint">{advice}</p>}
       {fixes.map((fix) => <FixCommand key={fix.id} fix={fix} />)}
+    </div>
+  );
+}
+
+/** The projects folder does not exist: offer to create it, pick another, or
+ * back out. The backend decides what is valid; this only collects the choice. */
+export function ProjectsRootPanel({ root, busy, error, onCreate, onChoose, onCancel }: {
+  root: string;
+  busy: boolean;
+  error: string | null;
+  onCreate: () => void;
+  onChoose: (path: string) => void;
+  onCancel: () => void;
+}) {
+  const [choosing, setChoosing] = useState(false);
+  const [path, setPath] = useState(root);
+  return (
+    <div className="clone-root-missing form-stack" role="group" aria-label="Projects folder missing">
+      <p>The projects folder <code className="mono">{root}</code> doesn&apos;t exist.</p>
+      {choosing && (
+        <Field label="Projects folder">
+          <PathInputRow browse={
+            <BrowseButton kind="directory" label="Browse for projects folder" dialogTitle="Choose the projects folder"
+              defaultPath={path} disabled={busy} onPick={(picked) => setPath(picked)} />
+          }>
+            <input className="mono" value={path} onChange={(event) => setPath(event.target.value)} spellCheck={false} />
+          </PathInputRow>
+        </Field>
+      )}
+      {error && <p className="field-error" role="alert">{error}</p>}
+      <div className="clone-root-actions">
+        {choosing ? (
+          <button type="button" className="btn btn-primary" disabled={busy || !path.trim()}
+            onClick={() => onChoose(path.trim())}>Use this folder</button>
+        ) : (
+          <>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={onCreate}>Create folder</button>
+            <button type="button" className="btn" disabled={busy} onClick={() => setChoosing(true)}>Choose a different folder…</button>
+          </>
+        )}
+        <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }

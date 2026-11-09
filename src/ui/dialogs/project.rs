@@ -517,3 +517,62 @@ pub fn draw_clone_project_dialog(
         hint_area,
     );
 }
+
+/// Prompt for a missing projects folder: create it, choose another, or go back.
+pub fn draw_clone_root_prompt(
+    frame: &mut Frame,
+    state: &crate::app::CloneRootPromptState,
+    theme: &Theme,
+) {
+    let area = crate::ui::dialog_rect(frame.area(), 80, 12);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Projects folder missing ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let key = Style::default().fg(theme.warning.to_color());
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let text = Style::default().fg(theme.text.to_color());
+    let bad = Style::default().fg(theme.danger.to_color());
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(
+                " The projects folder {} doesn't exist.",
+                state.root.display()
+            ),
+            text,
+        )),
+        Line::from(""),
+    ];
+    if let Some(buf) = &state.editing {
+        lines.push(Line::from(Span::styled(" Projects folder:", muted)));
+        lines.push(Line::from(vec![
+            Span::styled(" > ", key),
+            Span::styled(buf.clone(), text),
+            Span::styled("_", key),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(" [c]/Enter", key),
+            Span::styled("  Create it", text),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" [d]", key),
+            Span::styled("        Choose a different projects folder", text),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Esc", key),
+            Span::styled("        Back to the form", text),
+        ]));
+    }
+    if let Some(e) = &state.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(format!(" {e}"), bad)));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}

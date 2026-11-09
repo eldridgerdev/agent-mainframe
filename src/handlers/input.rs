@@ -57,6 +57,14 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
             }
             app.after_create_project_text_edit();
         }
+        AppMode::CloneRootPrompt(_) => {
+            if let AppMode::CloneRootPrompt(state) = &mut app.mode
+                && let Some(buf) = &mut state.editing
+            {
+                buf.push_str(text.trim());
+                state.error = None;
+            }
+        }
         AppMode::CreatingFeature(_) => {
             if let AppMode::CreatingFeature(state) = &mut app.mode {
                 match state.step {

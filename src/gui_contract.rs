@@ -64,6 +64,11 @@ pub enum GuiErrorKind {
     /// The request itself is malformed (blank or over-long title, ...): a
     /// user-input mistake, not a fault.
     InvalidInput,
+    /// New-project-from-URL: the destination's parent is exactly the
+    /// configured projects root and it does not exist. The caller may offer to
+    /// create it (`clone_project_create_root`) or pick another
+    /// (`clone_project_set_root`).
+    ProjectsRootMissing,
     /// Anything else: I/O, tmux, or git errors.
     Internal,
 }

@@ -447,3 +447,180 @@ fn clone_failure_returns_to_the_form_with_the_message() {
     assert_eq!(form(&app).name, "missing");
     assert!(!dest.exists());
 }
+
+// ---------------------------------------------------- missing projects root
+
+const ROOT_URL: &str = "https://github.com/o/widget.git";
+
+fn prompt(app: &App) -> &CloneRootPromptState {
+    match &app.mode {
+        AppMode::CloneRootPrompt(p) => p,
+        _ => panic!("expected the missing projects folder prompt"),
+    }
+}
+
+/// An app whose projects root is `root` and whose form is submitted.
+fn submit_with_root(root: &Path) -> (App, PathBuf) {
+    let mut app = new_app();
+    app.config.projects.projects_root = Some(root.to_string_lossy().into_owned());
+    let dest = root.join("widget");
+    let mut f = filled_form(ROOT_URL, "widget", &dest);
+    f.name_derived = true;
+    f.path_derived = true;
+    app.mode = AppMode::CreatingProject(f);
+    press(&mut app, KeyCode::Enter);
+    (app, dest)
+}
+
+#[test]
+fn missing_root_opens_prompt_preserving_the_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let (app, dest) = submit_with_root(&root);
+    let p = prompt(&app);
+    assert_eq!(p.root, root);
+    assert_eq!(p.form.url, ROOT_URL);
+    assert_eq!(p.form.name, "widget");
+    assert_eq!(p.form.path, dest.to_string_lossy());
+    assert!(p.editing.is_none() && p.error.is_none());
+    assert!(!root.exists());
+}
+
+#[test]
+fn create_makes_only_the_root_and_enters_the_preflight() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let (mut app, dest) = submit_with_root(&root);
+    app.set_clone_project_env_for_test(GitEnv::new().with_file_transport(true), true);
+    press(&mut app, KeyCode::Char('c'));
+    assert!(matches!(app.mode, AppMode::CloneProject(_)));
+    assert!(root.is_dir());
+    assert!(!dest.exists(), "only the projects folder is created");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    app.shutdown_clone_job();
+}
+
+#[test]
+fn enter_also_creates_and_a_failure_stays_in_the_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let (mut app, _dest) = submit_with_root(&root);
+    // Something appears at the path meanwhile: creation is refused, prompt stays.
+    std::fs::write(&root, "file").unwrap();
+    press(&mut app, KeyCode::Enter);
+    let p = prompt(&app);
+    assert!(p.error.as_deref().unwrap().contains("not a directory"));
+    assert_eq!(std::fs::read_to_string(&root).unwrap(), "file");
+}
+
+#[test]
+fn choose_different_folder_persists_rederives_and_returns_to_the_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let other = tmp.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    let (mut app, _dest) = submit_with_root(&root);
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(
+        prompt(&app).editing.as_deref(),
+        Some(root.to_str().unwrap()),
+        "prefilled with the current root"
+    );
+    // Relative path: error, still in the prompt, nothing changed.
+    app.mode = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+        AppMode::CloneRootPrompt(mut p) => {
+            p.editing = Some("relative".into());
+            AppMode::CloneRootPrompt(p)
+        }
+        m => m,
+    };
+    press(&mut app, KeyCode::Enter);
+    assert!(prompt(&app).error.is_some());
+    assert_eq!(
+        app.config.projects.projects_root.as_deref(),
+        Some(root.to_str().unwrap())
+    );
+
+    app.mode = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+        AppMode::CloneRootPrompt(mut p) => {
+            p.editing = Some(String::new());
+            AppMode::CloneRootPrompt(p)
+        }
+        m => m,
+    };
+    type_text(&mut app, other.to_str().unwrap());
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.config.projects.projects_root.as_deref(),
+        Some(other.to_str().unwrap())
+    );
+    assert_eq!(form(&app).path, other.join("widget").to_string_lossy());
+    assert_eq!(form(&app).url, ROOT_URL);
+    assert!(!root.exists());
+}
+
+#[test]
+fn choose_keeps_a_hand_edited_directory_and_new_missing_root_reprompts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let other = tmp.path().join("other");
+    let manual = other.join("mine");
+    let (mut app, _dest) = submit_with_root(&root);
+    // Return to the form and hand-edit the directory under the new root.
+    press(&mut app, KeyCode::Char('d'));
+    app.mode = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+        AppMode::CloneRootPrompt(mut p) => {
+            p.form.path = manual.to_string_lossy().into_owned();
+            p.form.path_derived = false;
+            p.editing = Some(other.to_string_lossy().into_owned());
+            AppMode::CloneRootPrompt(p)
+        }
+        m => m,
+    };
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(form(&app).path, manual.to_string_lossy(), "edit kept");
+    // Clear the manual flag path and re-derive: submit with the derived dir
+    // under the (still missing) new root prompts again.
+    if let AppMode::CreatingProject(f) = &mut app.mode {
+        f.path = other.join("widget").to_string_lossy().into_owned();
+        f.path_derived = true;
+    }
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(prompt(&app).root, other);
+    assert!(!other.exists());
+}
+
+#[test]
+fn esc_restores_the_form_verbatim_and_creates_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let (mut app, dest) = submit_with_root(&root);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        prompt(&app).editing.is_none(),
+        "Esc leaves the text field first"
+    );
+    press(&mut app, KeyCode::Esc);
+    let f = form(&app);
+    assert_eq!(f.url, ROOT_URL);
+    assert_eq!(f.name, "widget");
+    assert_eq!(f.path, dest.to_string_lossy());
+    assert!(f.name_derived && f.path_derived);
+    assert_eq!(f.step, CreateProjectStep::Agent);
+    assert!(!root.exists());
+}
+
+#[test]
+fn missing_non_root_parent_shows_the_old_error_without_a_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    let mut app = new_app();
+    app.config.projects.projects_root = Some(root.to_string_lossy().into_owned());
+    let dest = tmp.path().join("elsewhere").join("widget");
+    app.mode = AppMode::CreatingProject(filled_form(ROOT_URL, "widget", &dest));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode, AppMode::CreatingProject(_)));
+    assert!(app.message.as_deref().unwrap().starts_with("Error:"));
+    assert!(!tmp.path().join("elsewhere").exists());
+}

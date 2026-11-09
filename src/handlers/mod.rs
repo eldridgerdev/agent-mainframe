@@ -146,6 +146,37 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         AppMode::CreatingFeature(_) => feature_creation::handle_create_feature_event(app, key),
         AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
         AppMode::ModelAnalysis(_) => model_analysis::handle_model_analysis_key(app, key),
+        AppMode::ModelDefaultsPrototype { .. } => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                app.mode = AppMode::Normal;
+            } else if let AppMode::ModelDefaultsPrototype {
+                selected,
+                harness,
+                benchmark_notice,
+                models,
+                reasoning,
+            } = &mut app.mode
+            {
+                match key.code {
+                    KeyCode::Char('b') => *benchmark_notice = true,
+                    KeyCode::Tab => *harness = (*harness + 1) % 4,
+                    KeyCode::BackTab => *harness = (*harness + 3) % 4,
+                    KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1).min(3),
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        models[*harness][*selected] = (models[*harness][*selected] + 2) % 3
+                    }
+                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                        models[*harness][*selected] = (models[*harness][*selected] + 1) % 3
+                    }
+                    KeyCode::Char('r') => {
+                        reasoning[*harness][*selected] = (reasoning[*harness][*selected] + 1) % 4
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
         AppMode::CreatingBatchFeatures(_) => {
             batch_creation::handle_create_batch_features_event(app, key)
         }

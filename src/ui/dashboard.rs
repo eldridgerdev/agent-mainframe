@@ -16,6 +16,7 @@ pub(crate) const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("a", "Local commands"),
     ("A", "Manage harnesses"),
     ("c", "Config wizard"),
+    ("b", "Model defaults (experimental)"),
     ("m", "Compact review memory"),
     ("h", "Bookmarks"),
     ("H", "Bookmark current session"),
@@ -809,6 +810,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.leader_max_scroll.set(max);
     }
 
+    if let AppMode::ModelDefaultsPrototype {
+        selected,
+        harness,
+        benchmark_notice,
+        models,
+        reasoning,
+    } = &app.mode
+    {
+        super::dialogs::draw_model_defaults_prototype(
+            frame,
+            *selected,
+            *harness,
+            *benchmark_notice,
+            &models[*harness],
+            &reasoning[*harness],
+            &app.theme,
+        );
+        return;
+    }
     if let AppMode::ModelAnalysis(state) = &app.mode {
         super::dialogs::draw_model_analysis(frame, state, app.message.as_deref(), &app.theme);
         return;
@@ -867,6 +887,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
         AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
+        AppMode::ModelDefaultsPrototype { .. } => unreachable!("prototype handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(

@@ -415,6 +415,15 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
     app.deactivate_leader();
 
     match key.code {
+        KeyCode::Char('b') => {
+            app.mode = AppMode::ModelDefaultsPrototype {
+                selected: 0,
+                harness: 0,
+                benchmark_notice: false,
+                models: [[1, 0, 0, 1], [0, 1, 1, 0], [0, 1, 1, 0], [0, 1, 1, 0]],
+                reasoning: [[2, 3, 3, 2]; 4],
+            };
+        }
         KeyCode::Char('G') => app.open_pr_workspace(),
         KeyCode::Char('U') => app.open_pr_review(),
         KeyCode::Char('i') => {

@@ -585,6 +585,14 @@ pub enum AppMode {
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
     ModelAnalysis(Box<super::model_analysis::State>),
+    /// Temporary interactive mock; values are not persisted.
+    ModelDefaultsPrototype {
+        selected: usize,
+        harness: usize,
+        benchmark_notice: bool,
+        models: [[usize; 4]; 4],
+        reasoning: [[usize; 4]; 4],
+    },
     DeletingProject(String),
     DeletingFeature(String, String),
     /// Dashboard `Esc`: ask before quitting AMF.

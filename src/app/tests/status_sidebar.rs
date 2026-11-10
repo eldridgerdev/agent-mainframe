@@ -240,6 +240,7 @@ fn a_skipped_pr_lookup_leaves_the_previous_badge_untouched() {
         feature_id: feature_id.clone(),
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "abc123".to_string(),
             number: 321,
@@ -351,6 +352,7 @@ fn active_pr_updates_cache_current_branch_and_remove_confirmed_absence() {
         feature_id: feature_id.clone(),
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "abc123".to_string(),
             number: 321,
@@ -397,6 +399,7 @@ fn failed_active_pr_refresh_preserves_last_known_badge() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "abc123".to_string(),
             number: 321,
@@ -449,6 +452,7 @@ fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "old-head".to_string(),
             number: 449,
@@ -459,6 +463,7 @@ fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
         feature_id: feature_id.clone(),
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch,
             head_sha: "new-head".to_string(),
             number: 450,
@@ -517,6 +522,7 @@ fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "old-head".to_string(),
             number: 449,
@@ -527,6 +533,7 @@ fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
         feature_id,
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch,
             head_sha: "new-head".to_string(),
             number: 450,
@@ -555,6 +562,7 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "open-head".to_string(),
             number: 450,
@@ -580,6 +588,7 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
         feature_id,
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch,
             head_sha: "open-head".to_string(),
             number: 450,
@@ -757,6 +766,7 @@ fn confirmed_no_terminal_pr_is_cached_and_cleared_when_branch_reopens() {
         feature_id: feature_id.clone(),
         branch: branch.clone(),
         lookup: ActivePrLookup::Found(ActivePrStatus {
+            is_draft: false,
             branch,
             head_sha: "abc123".to_string(),
             number: 99,

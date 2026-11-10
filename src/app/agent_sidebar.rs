@@ -672,10 +672,14 @@ pub(crate) fn pr_triage_sidebar_text(
     runtime: &SidebarRuntime<'_>,
 ) -> Option<String> {
     if let Some(pr) = app.active_pr_for_feature(&feature.id) {
-        let mut lines = vec![match pr.unresolved_threads {
+        let mut head = match pr.unresolved_threads {
             Some(count) => format!("PR: #{} · {count} open", pr.number),
             None => format!("PR: #{}", pr.number),
-        }];
+        };
+        if pr.is_draft {
+            head.push_str(" · DRAFT");
+        }
+        let mut lines = vec![head];
         if runtime.pr_review_working {
             lines.push("Status: Working".to_string());
         }

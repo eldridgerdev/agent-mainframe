@@ -225,6 +225,7 @@ pub(crate) struct ActivePrStatus {
     pub branch: String,
     pub head_sha: String,
     pub number: u32,
+    pub is_draft: bool,
     /// `None` means the PR resolved but its thread metadata could not be read.
     pub unresolved_threads: Option<usize>,
 }

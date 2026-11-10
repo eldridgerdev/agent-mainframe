@@ -50,6 +50,9 @@ fn pr_triage_badge_span(app: &App, view: &crate::app::ViewState) -> Option<Span<
             Some(count) => format!(" [PR #{} · {} open", pr.number, count),
             None => format!(" [PR #{}", pr.number),
         };
+        if pr.is_draft {
+            label.push_str(" · DRAFT");
+        }
         if working {
             label.push_str(" · ● working");
         }
@@ -1929,6 +1932,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -1948,6 +1952,12 @@ mod tests {
         assert_eq!(
             pr_triage_sidebar_text(&app, &feature),
             Some("PR: #321".to_string())
+        );
+
+        app.active_prs.get_mut(&feature.id).unwrap().is_draft = true;
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321 · DRAFT".to_string())
         );
     }
 
@@ -1970,6 +1980,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -2037,6 +2048,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -2075,6 +2087,40 @@ mod tests {
         assert!(rendered.contains("PR #321"));
         assert!(rendered.contains("4 open"));
         assert!(!rendered.contains("PR Triage"));
+    }
+
+    #[test]
+    fn ambient_pr_badge_marks_a_draft_pr() {
+        let (store, feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.active_prs.insert(
+            feature.id.clone(),
+            crate::app::ActivePrStatus {
+                is_draft: true,
+                branch: "feature".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            },
+        );
+        let mut view = ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            feature.tmux_session.clone(),
+            "claude".to_string(),
+            "Claude".to_string(),
+            SessionKind::Claude,
+            VibeMode::default(),
+            false,
+        );
+        view.sidebar_visible = false;
+
+        let span = pr_triage_badge_span(&app, &view).expect("badge");
+        assert_eq!(span.content.as_ref(), " [PR #321 · 4 open · DRAFT] ");
     }
 
     #[test]
@@ -2408,6 +2454,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,

@@ -442,6 +442,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Some(count) => format!(" [PR #{} · {} open", pr.number, count),
                             None => format!(" [PR #{}", pr.number),
                         };
+                        if pr.is_draft {
+                            label.push_str(" · DRAFT");
+                        }
                         if ai_review_running {
                             label.push_str(" · AI review");
                         }
@@ -1365,6 +1368,7 @@ mod tests {
         let rendered = render_feature_row_with_pr(
             vec![],
             Some(crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "usage-feat".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -1425,6 +1429,7 @@ mod tests {
 
     fn pr_status() -> crate::app::ActivePrStatus {
         crate::app::ActivePrStatus {
+            is_draft: false,
             branch: "usage-feat".to_string(),
             head_sha: "abc123".to_string(),
             number: 321,
@@ -1439,6 +1444,19 @@ mod tests {
         });
 
         assert!(rendered.contains("[PR #321 · 4 open · AI review]"));
+    }
+
+    #[test]
+    fn feature_row_puts_the_draft_marker_before_the_ai_review_marker() {
+        let mut pr = pr_status();
+        pr.is_draft = true;
+        let draft = render_feature_row_configured(vec![], Some(pr.clone()), |_| {});
+        assert!(draft.contains("[PR #321 · 4 open · DRAFT]"));
+
+        let reviewing = render_feature_row_configured(vec![], Some(pr), |app| {
+            set_ai_review_running(app, PathBuf::from("/tmp/usage-feat"));
+        });
+        assert!(reviewing.contains("[PR #321 · 4 open · DRAFT · AI review]"));
     }
 
     #[test]

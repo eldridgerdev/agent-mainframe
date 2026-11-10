@@ -1521,6 +1521,7 @@ const OPEN_PRS_QUERY: &str = "
                     number
                     headRefName
                     headRefOid
+                    isDraft
                     reviewThreads(first:100){nodes{isResolved}}
                   }
                 }
@@ -1535,6 +1536,7 @@ pub struct OpenPr {
     /// feature's branch is matched against.
     pub head_ref: String,
     pub head_sha: String,
+    pub is_draft: bool,
     pub unresolved_threads: usize,
 }
 
@@ -1846,6 +1848,7 @@ fn parse_open_prs_page(stdout: &[u8]) -> Result<(Vec<OpenPr>, Option<String>)> {
                         number: u32::try_from(n["number"].as_u64()?).ok()?,
                         head_ref: n["headRefName"].as_str()?.to_string(),
                         head_sha: n["headRefOid"].as_str().unwrap_or_default().to_string(),
+                        is_draft: n["isDraft"].as_bool().unwrap_or(false),
                         unresolved_threads: unresolved_in_node(n),
                     })
                 })
@@ -2340,6 +2343,7 @@ mod tests {
             "number",
             "headRefName",
             "headRefOid",
+            "isDraft",
             "reviewThreads",
             "isResolved",
         ];
@@ -2423,7 +2427,7 @@ mod tests {
         let json = br#"{"data":{"repository":{"pullRequests":{
             "pageInfo":{"hasNextPage":false,"endCursor":null},
             "nodes":[
-              {"number":546,"headRefName":"todo-plan","headRefOid":"abc1234",
+              {"number":546,"headRefName":"todo-plan","headRefOid":"abc1234","isDraft":true,
                "reviewThreads":{"nodes":[{"isResolved":false},{"isResolved":true}]}},
               {"number":343,"headRefName":"fixture","headRefOid":"def5678",
                "reviewThreads":{"nodes":[]}}]}}}}"#;
@@ -2434,6 +2438,8 @@ mod tests {
         assert_eq!(prs[0].head_ref, "todo-plan");
         assert_eq!(prs[0].head_sha, "abc1234");
         assert_eq!(prs[0].unresolved_threads, 1);
+        assert!(prs[0].is_draft);
+        assert!(!prs[1].is_draft);
         assert_eq!(prs[1].unresolved_threads, 0);
     }
 

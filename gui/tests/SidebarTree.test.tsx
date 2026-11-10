@@ -62,9 +62,10 @@ it("orders the status glyph exactly as the TUI tree does", () => {
 });
 
 it("labels PR badges like the TUI for open, unknown-thread, merged and closed PRs", () => {
-  expect(prLabel({ state: "open", number: 321, unresolved_threads: 4 })).toBe("PR #321 · 4 open");
-  expect(prLabel({ state: "open", number: 321, unresolved_threads: 0 })).toBe("PR #321 · 0 open");
-  expect(prLabel({ state: "open", number: 321, unresolved_threads: null })).toBe("PR #321");
+  expect(prLabel({ state: "open", number: 321, is_draft: false, unresolved_threads: 4 })).toBe("PR #321 · 4 open");
+  expect(prLabel({ state: "open", number: 321, is_draft: false, unresolved_threads: 0 })).toBe("PR #321 · 0 open");
+  expect(prLabel({ state: "open", number: 321, is_draft: false, unresolved_threads: null })).toBe("PR #321");
+  expect(prLabel({ state: "open", number: 321, is_draft: true, unresolved_threads: 2 })).toBe("PR #321 · 2 open · DRAFT");
   expect(prLabel({ state: "merged", number: 7 })).toBe("PR #7 merged");
   expect(prLabel({ state: "closed", number: 8 })).toBe("PR #8 closed");
 });
@@ -78,7 +79,7 @@ it("shows every feature badge and keeps the name as the row's accessible name", 
   renderTree([project([nick])], {
     features: { "round-totals": derived({
       issue: "github.com/acme/invoice#42", usage: "usage 21.8k eff · $0.07", pending_input: true,
-      waiting_for_input: true, pr: { state: "open", number: 321, unresolved_threads: 4 },
+      waiting_for_input: true, pr: { state: "open", number: 321, is_draft: false, unresolved_threads: 4 },
     }) },
   }, { pausedPlan: { featureId: "round-totals", projectName: null, featureName: "Round totals" }, deletingFeatureId: "round-totals" });
 
@@ -122,7 +123,7 @@ it.each(["vibeless", "vibe", "supervibe"] as const)(
 it("colours PR states and omits optional badges that do not apply", () => {
   renderTree([project([feature("a"), feature("b"), feature("c")])], {
     features: {
-      a: derived({ pr: { state: "open", number: 1, unresolved_threads: 0 } }),
+      a: derived({ pr: { state: "open", number: 1, is_draft: false, unresolved_threads: 0 } }),
       b: derived({ pr: { state: "merged", number: 2 } }),
       c: derived({ pr: { state: "closed", number: 3 } }),
     },

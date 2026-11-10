@@ -77,13 +77,16 @@ function FeatureGlyph({ kind }: { kind: GlyphKind }) {
 
 export function prLabel(pr: SidebarPr): string {
   if (pr.state !== "open") return `PR #${pr.number} ${pr.state}`;
-  return pr.unresolved_threads === null
+  const base = pr.unresolved_threads === null
     ? `PR #${pr.number}`
     : `PR #${pr.number} · ${pr.unresolved_threads} open`;
+  return pr.is_draft ? `${base} · DRAFT` : base;
 }
 
 function prTone(pr: SidebarPr): string {
   if (pr.state !== "open") return `pr-${pr.state}`;
+  // A draft keeps the same tone as a ready PR on purpose, matching the TUI
+  // badge: the "· DRAFT" label carries the distinction, not the colour.
   return pr.unresolved_threads === 0 ? "pr-clear" : "pr-open";
 }
 

@@ -99,6 +99,7 @@ pub struct SidebarFeature {
 pub enum SidebarPr {
     Open {
         number: u32,
+        is_draft: bool,
         /// `None` when the PR resolved but its threads could not be read.
         unresolved_threads: Option<usize>,
     },
@@ -225,6 +226,7 @@ pub(crate) fn project_sidebar(app: &App, projects: &[Project]) -> SidebarSnapsho
                 .get(&feature.id)
                 .map(|pr| SidebarPr::Open {
                     number: pr.number,
+                    is_draft: pr.is_draft,
                     unresolved_threads: pr.unresolved_threads,
                 })
                 .or_else(|| {
@@ -684,6 +686,7 @@ mod tests {
         app.active_prs.insert(
             "feat-1".into(),
             ActivePrStatus {
+                is_draft: false,
                 branch: "feat-1".into(),
                 head_sha: "abc".into(),
                 number: 321,
@@ -746,7 +749,7 @@ mod tests {
         assert_eq!(derived["created_age"], "just now");
         assert_eq!(
             derived["pr"],
-            serde_json::json!({"state": "open", "number": 321, "unresolved_threads": 4})
+            serde_json::json!({"state": "open", "number": 321, "is_draft": false, "unresolved_threads": 4})
         );
         let agent = &sidebar["sessions"]["s-claude"];
         assert_eq!(agent["status_text"], "usage 21.8k eff");
@@ -830,6 +833,7 @@ mod tests {
         app.active_prs.insert(
             "reopened".into(),
             ActivePrStatus {
+                is_draft: false,
                 branch: "reopened".into(),
                 head_sha: "abc".into(),
                 number: 9,
@@ -847,6 +851,7 @@ mod tests {
             sidebar.features["reopened"].pr,
             Some(SidebarPr::Open {
                 number: 9,
+                is_draft: false,
                 unresolved_threads: None
             })
         );

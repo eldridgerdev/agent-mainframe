@@ -90,7 +90,7 @@ export interface SidebarSnapshot {
 }
 
 export type SidebarPr =
-  | { state: "open"; number: number; unresolved_threads: number | null }
+  | { state: "open"; number: number; is_draft: boolean; unresolved_threads: number | null }
   | { state: "merged" | "closed"; number: number };
 
 export interface SidebarFeature {

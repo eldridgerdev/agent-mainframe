@@ -77,9 +77,10 @@ function FeatureGlyph({ kind }: { kind: GlyphKind }) {
 
 export function prLabel(pr: SidebarPr): string {
   if (pr.state !== "open") return `PR #${pr.number} ${pr.state}`;
-  return pr.unresolved_threads === null
+  const base = pr.unresolved_threads === null
     ? `PR #${pr.number}`
     : `PR #${pr.number} · ${pr.unresolved_threads} open`;
+  return pr.is_draft ? `${base} · DRAFT` : base;
 }
 
 function prTone(pr: SidebarPr): string {

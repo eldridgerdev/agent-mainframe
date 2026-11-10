@@ -748,6 +748,7 @@ mod tests {
         app.active_prs.insert(
             "feat-1".into(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feat".into(),
                 head_sha: "abc".into(),
                 number: 77,

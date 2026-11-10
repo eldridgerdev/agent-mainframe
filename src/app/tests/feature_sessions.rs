@@ -3320,6 +3320,7 @@ fn complete_deleting_feature_clears_terminal_pr_association() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "new-head".to_string(),
             number: 561,
@@ -3440,6 +3441,7 @@ fn delete_project_clears_terminal_pr_associations_for_all_features() {
     app.active_prs.insert(
         feature_id.clone(),
         ActivePrStatus {
+            is_draft: false,
             branch: branch.clone(),
             head_sha: "new-head".to_string(),
             number: 561,

@@ -50,6 +50,9 @@ fn pr_triage_badge_span(app: &App, view: &crate::app::ViewState) -> Option<Span<
             Some(count) => format!(" [PR #{} · {} open", pr.number, count),
             None => format!(" [PR #{}", pr.number),
         };
+        if pr.is_draft {
+            label.push_str(" · DRAFT");
+        }
         if working {
             label.push_str(" · ● working");
         }
@@ -1922,6 +1925,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -1941,6 +1945,12 @@ mod tests {
         assert_eq!(
             pr_triage_sidebar_text(&app, &feature),
             Some("PR: #321".to_string())
+        );
+
+        app.active_prs.get_mut(&feature.id).unwrap().is_draft = true;
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321 · DRAFT".to_string())
         );
     }
 
@@ -1963,6 +1973,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -2030,6 +2041,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,
@@ -2401,6 +2413,7 @@ mod tests {
         app.active_prs.insert(
             feature.id.clone(),
             crate::app::ActivePrStatus {
+                is_draft: false,
                 branch: "feature".to_string(),
                 head_sha: "abc123".to_string(),
                 number: 321,

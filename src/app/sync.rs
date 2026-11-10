@@ -913,6 +913,7 @@ impl App {
                             branch: feature.branch.clone(),
                             head_sha: pr.head_sha.clone(),
                             number: pr.number,
+                            is_draft: pr.is_draft,
                             unresolved_threads: Some(pr.unresolved_threads),
                         }),
                         // The repository answered and this branch was not in

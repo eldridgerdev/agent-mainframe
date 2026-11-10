@@ -85,6 +85,8 @@ export function prLabel(pr: SidebarPr): string {
 
 function prTone(pr: SidebarPr): string {
   if (pr.state !== "open") return `pr-${pr.state}`;
+  // A draft keeps the same tone as a ready PR on purpose, matching the TUI
+  // badge: the "· DRAFT" label carries the distinction, not the colour.
   return pr.unresolved_threads === 0 ? "pr-clear" : "pr-open";
 }
 

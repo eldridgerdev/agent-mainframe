@@ -1447,6 +1447,19 @@ mod tests {
     }
 
     #[test]
+    fn feature_row_puts_the_draft_marker_before_the_ai_review_marker() {
+        let mut pr = pr_status();
+        pr.is_draft = true;
+        let draft = render_feature_row_configured(vec![], Some(pr.clone()), |_| {});
+        assert!(draft.contains("[PR #321 · 4 open · DRAFT]"));
+
+        let reviewing = render_feature_row_configured(vec![], Some(pr), |app| {
+            set_ai_review_running(app, PathBuf::from("/tmp/usage-feat"));
+        });
+        assert!(reviewing.contains("[PR #321 · 4 open · DRAFT · AI review]"));
+    }
+
+    #[test]
     fn feature_row_omits_the_ai_review_marker_for_another_features_review() {
         let rendered = render_feature_row_configured(vec![], Some(pr_status()), |app| {
             set_ai_review_running(app, PathBuf::from("/tmp/other-feat"));

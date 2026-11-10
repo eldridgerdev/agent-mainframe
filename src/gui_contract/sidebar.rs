@@ -858,6 +858,31 @@ mod tests {
     }
 
     #[test]
+    fn draft_pr_serializes_is_draft_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut feat = feature("drafty", dir.path(), vec![]);
+        feat.branch = "drafty".into();
+        let mut app = app_for(store_with(vec![feat], dir.path()));
+        app.active_prs.insert(
+            "drafty".into(),
+            ActivePrStatus {
+                is_draft: true,
+                branch: "drafty".into(),
+                head_sha: "abc".into(),
+                number: 11,
+                unresolved_threads: Some(2),
+            },
+        );
+
+        let sidebar = project_sidebar(&app, &app.store.projects);
+
+        assert_eq!(
+            serde_json::to_value(&sidebar.features["drafty"].pr).unwrap(),
+            serde_json::json!({"state": "open", "number": 11, "is_draft": true, "unresolved_threads": 2})
+        );
+    }
+
+    #[test]
     fn notification_files_mark_waiting_without_being_consumed() {
         let dir = tempfile::tempdir().unwrap();
         let review_dir = dir.path().join("review");

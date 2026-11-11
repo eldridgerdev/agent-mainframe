@@ -122,6 +122,10 @@ fn source_from_json(s: &str) -> Option<TokenUsageSource> {
 
 // ── load ─────────────────────────────────────────────────────
 
+/// One `projects` row as read by [`load`]: id, name, repo, collapsed,
+/// preferred_agent, is_git, created_at, containerized.
+type ProjectRow = (String, String, String, bool, String, bool, String, bool);
+
 pub fn load(conn: &Connection) -> Result<ProjectStore> {
     let available_harnesses: Vec<AgentKind> = conn
         .query_row(
@@ -167,7 +171,7 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         "SELECT id, name, repo, collapsed, preferred_agent, is_git, created_at, containerized
          FROM projects ORDER BY sort_order ASC, rowid ASC",
     )?;
-    let project_ids: Vec<(String, String, String, bool, String, bool, String, bool)> = proj_stmt
+    let project_ids: Vec<ProjectRow> = proj_stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,

@@ -37,6 +37,8 @@ site/sass/.sass-cache/
 docker/*
 !docker/no-tmux/
 !docker/no-tmux/**
+!docker/sandbox/
+!docker/sandbox/**
 .dockerignore
 docs/docker-screenshots.md
 AMF_PLAN.md

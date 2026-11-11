@@ -11,7 +11,8 @@ when it disagrees; update this file in the same change.
 - Restricted no-tools mode for context-complete prompts
 - Read-only repository tools for directed plan revisions, and for the
   round/synthesis/critique passes when the interview has attached reference
-  docs (see "Plan-interview reference docs" below)
+  docs (see
+  [plan-interview reference docs](plan-interview.md#plan-interview-reference-docs))
 - Harness selection and fallback for plan interviews
 
 **Prompt registry** (`src/prompts/`): the single home for every headless

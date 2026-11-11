@@ -7,9 +7,10 @@ is specific to Claude Code working in this repository.
 
 ## Keep this file small
 
-This file and `AGENTS.md` are loaded into every session and every subagent.
-Put feature-specific detail in `docs/development/features/` and link it from
-the table in `AGENTS.md`; add here only what every task needs.
+This file and `AGENTS.md` are loaded into every session and most subagents,
+not `Explore` or `verify`, which set `omitClaudeMd: true`. Put
+feature-specific detail in `docs/development/features/` and link it from the
+table in `AGENTS.md`; add here only what every task needs.
 
 ## Model selection
 

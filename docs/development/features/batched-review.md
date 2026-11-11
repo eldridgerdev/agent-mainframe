@@ -3,8 +3,6 @@
 Implementation notes for agents and contributors. Source is authoritative
 when it disagrees; update this file in the same change.
 
-## Batched Review of Oversized Diffs
-
 When an AI review's diff would overflow the model, it is split into bounded
 prompts and the findings recombined. Full rationale in
 `docs/batched-review.md`; `AMF_PLAN.md` has the design decisions.

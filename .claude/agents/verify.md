@@ -23,9 +23,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-Use absolute paths; `cd` does not persist reliably in this shell. Do not add
-`--test-threads=1` or `--ignored`, and do not re-run a failing test hoping it
-passes; say if a failure looks intermittent.
+Run from your starting directory, which is the repository root; if unsure,
+run `git rev-parse --show-toplevel` first and use absolute paths from it.
+Do not add `--test-threads=1` or `--ignored`, and do not re-run a failing
+test hoping it passes; say if a failure looks intermittent.
 
 Report in this shape and nothing else:
 

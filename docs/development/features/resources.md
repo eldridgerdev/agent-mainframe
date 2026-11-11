@@ -3,8 +3,6 @@
 Implementation notes for agents and contributors. Source is authoritative
 when it disagrees; update this file in the same change.
 
-## Agent Limits & Resource Health (resources/)
-
 Guards against AMF quietly exhausting host memory. Everything here
 is advisory: a tripped gate asks, it never refuses, and a missing
 signal is always "no gate" rather than a block.

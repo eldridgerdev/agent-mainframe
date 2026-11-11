@@ -3,8 +3,6 @@
 Implementation notes for agents and contributors. Source is authoritative
 when it disagrees; update this file in the same change.
 
-## Learning Mode
-
 A read-only code reader with an agent attached, for someone who did
 not write the code in front of them. Built for a newcomer: nothing in
 the mode mutates the repository, a blank prompt is never the only

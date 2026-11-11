@@ -3,8 +3,6 @@
 Implementation notes for agents and contributors. Source is authoritative
 when it disagrees; update this file in the same change.
 
-## Feature TODOs
-
 Scoped to-do lists surfaced as a session kind and a native (non-tmux)
 overlay:
 

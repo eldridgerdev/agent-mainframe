@@ -56,6 +56,13 @@ mode, review, and Chrome settings when creating a new feature.
 
 Use `/amf:add-preset` to add one.
 
+### Prompt templates — `prompt_templates`
+
+Reusable prompts with `{{placeholder}}` slots, shown in the prompt
+library picker.
+
+Use `/amf:add-prompt` to add one.
+
 ### Keybindings — `keybindings`
 
 Override default AMF key mappings per action. Project overrides
@@ -64,7 +71,7 @@ global per-key. Example: `{ "quit": "Q" }`.
 ### Allowed agents — `allowed_agents`
 
 Restrict which agent harnesses are available for this project.
-Values: `"claude"`, `"opencode"`, `"codex"`. Omit to allow all.
+Values: `"claude"`, `"opencode"`, `"codex"`, `"pi"`. Omit to allow all.
 
 Example: `{ "allowed_agents": ["claude", "opencode"] }`
 
@@ -83,5 +90,6 @@ Based on what the user is asking for, invoke the appropriate skill:
 - Setting up a startup, shutdown, or worktree script →
   `/amf:add-hook`
 - Creating a feature template or preset → `/amf:add-preset`
+- Saving a reusable prompt → `/amf:add-prompt`
 - Anything else — explain using the schema above and edit
   `amf.json` directly

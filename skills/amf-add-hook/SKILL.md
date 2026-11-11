@@ -1,12 +1,9 @@
 ---
 name: amf:add-hook
 description: >
-  Add a lifecycle hook to this AMF workspace. Use when the user
-  wants to run a script automatically when a feature starts
-  (on_start), stops (on_stop), or when a new git worktree is
-  created for this project (on_worktree_created). Hooks can
-  optionally prompt the user to choose from a list of options
-  before the script runs.
+  Add an AMF lifecycle hook: a script run when a feature starts
+  (on_start), stops (on_stop), or gets a new git worktree
+  (on_worktree_created), optionally after the user picks an option.
 allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[on_start | on_stop | on_worktree_created] [script path]"
 ---
@@ -63,24 +60,15 @@ variable `$AMF_HOOK_CHOICE`. Only `on_worktree_created` shows
 the prompt in the AMF UI before running; `on_start` and
 `on_stop` run silently.
 
-## Config path (read the legacy file too)
+## Config path
 
-Project config lives at `amf.json` in the repo root. Older checkouts
-keep it at `.amf/config.json`, and the block above falls back to that
-file when `amf.json` is absent — so what you see is the config that is
-actually in effect, not an empty `{}`.
-
-Always **write** to `amf.json`. If the config you read came from the
-legacy path, carry every existing key over into `amf.json` and then
-delete the legacy file:
+Always write `amf.json` in the repo root. If the config shown above came from
+the legacy `.amf/config.json`, carry every existing key over, then delete the
+legacy file so it cannot be mistaken for the live one:
 
 ```bash
 test -f amf.json && rm .amf/config.json
 ```
-
-AMF prefers `amf.json` whenever it exists, so leaving both behind would
-let a stale `.amf/config.json` sit there looking authoritative while
-changing nothing.
 
 ## Scope
 

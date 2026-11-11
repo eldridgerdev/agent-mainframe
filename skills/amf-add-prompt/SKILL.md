@@ -1,12 +1,9 @@
 ---
 name: amf:add-prompt
 description: >
-  Add a declarative prompt template to this AMF workspace. Use when
-  the user wants a reusable, version-controllable prompt — with
-  optional {{placeholder}} slots and select menus — that shows up in
-  the prompt library picker (leader+P in a session, or L on the
-  dashboard) so they can inject it into an agent instead of retyping
-  it.
+  Add a reusable prompt template to this AMF workspace, with optional
+  {{placeholder}} slots and select menus, for the prompt library picker
+  (leader+P in a session, L on the dashboard).
 allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[prompt name]"
 ---
@@ -84,24 +81,15 @@ injected. Two ways to author them:
 { "key": "ticket", "label": "Ticket ID", "kind": "text", "required": true }
 ```
 
-## Config path (read the legacy file too)
+## Config path
 
-Project config lives at `amf.json` in the repo root. Older checkouts
-keep it at `.amf/config.json`, and the block above falls back to that
-file when `amf.json` is absent — so what you see is the config that is
-actually in effect, not an empty `{}`.
-
-Always **write** to `amf.json`. If the config you read came from the
-legacy path, carry every existing key over into `amf.json` and then
-delete the legacy file:
+Always write `amf.json` in the repo root. If the config shown above came from
+the legacy `.amf/config.json`, carry every existing key over, then delete the
+legacy file so it cannot be mistaken for the live one:
 
 ```bash
 test -f amf.json && rm .amf/config.json
 ```
-
-AMF prefers `amf.json` whenever it exists, so leaving both behind would
-let a stale `.amf/config.json` sit there looking authoritative while
-changing nothing.
 
 ## Scope
 

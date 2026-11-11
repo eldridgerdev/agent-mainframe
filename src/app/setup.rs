@@ -86,7 +86,7 @@ const AMF_INTERACTION_ASSETS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v10");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v11");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -1783,28 +1783,23 @@ fn ensure_review_claude_md_with_io(io: &mut SetupIo, workdir: &Path, enabled: bo
     const BLOCK: &str = concat!(
         "<!-- AMF:review-instructions:begin -->\n\n",
         "## Review Mode\n\n",
-        "You are in **REVIEW MODE**. When you finish a logical ",
-        "batch of related changes (not after every individual ",
-        "Edit/Write — batch it), append one section per file you ",
-        "touched in that batch to `.claude/review-notes.md`. Keep ",
-        "each note to 1-2 sentences: what changed and why.\n\n",
+        "You are in **REVIEW MODE**. After each logical batch of related ",
+        "changes (not after every Edit/Write), append one section per file ",
+        "touched in that batch to `.claude/review-notes.md`: 1-2 sentences ",
+        "on what changed and why.\n\n",
         "**Do not read `.claude/review-notes.md` or its archive first — ",
         "just append.** After every turn AMF keeps only your most recent ",
         "note per file and moves the rest to ",
-        "`.claude/review-notes-archive.md`, so a later note for a file ",
-        "always supersedes an earlier one. Rely on your own memory of ",
-        "this session to avoid re-noting a file you have already covered ",
-        "when nothing has changed; if you do re-note one, write the ",
-        "fuller current explanation and let AMF drop the stale copy.\n\n",
+        "`.claude/review-notes-archive.md`, so a later note supersedes an ",
+        "earlier one. Use your memory of this session to avoid re-noting an ",
+        "unchanged file; if you do re-note one, write the full current ",
+        "explanation.\n\n",
         "Use this exact format per file:\n\n",
         "```\n",
         "## <relative-file-path> — <brief title>\n\n",
         "<1-2 sentence explanation>\n\n",
         "---\n",
         "```\n\n",
-        "Appending without reading keeps the reviewer's context of your\n",
-        "reasoning without spending your context window re-reading a\n",
-        "growing file every batch.\n\n",
         "<!-- AMF:review-instructions:end -->\n",
     );
 

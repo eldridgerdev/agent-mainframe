@@ -1,760 +1,95 @@
 # CLAUDE.md
 
-Follow [AGENTS.md](AGENTS.md) for repository rules, build/test commands, debug
-logging, local hook configuration and screenshot publication. The current module
-map is in [architecture.md](docs/development/architecture.md); full-suite/CI and
-advisory guidance is in [checks.md](docs/development/checks.md).
+@AGENTS.md
 
-The feature notes below retain Claude Code's detailed implementation context.
-Use them alongside the architecture guide; source is authoritative when a feature
-changes. Tests live in feature suites and beside small units, and all four agent
-harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
+Everything above is shared with Codex, OpenCode and Pi. The rest of this file
+is specific to Claude Code working in this repository.
 
-## Model selection (Claude Code working in this repo)
+## Keep this file small
 
-Lineup checked 2026-10-09. Prices are per million input/output tokens, Anthropic API:
+This file and `AGENTS.md` are loaded into every session and every subagent.
+Put feature-specific detail in `docs/development/features/` and link it from
+the table in `AGENTS.md`; add here only what every task needs.
+
+## Model selection
+
+Lineup checked 2026-11-11. Prices are per million input/output tokens,
+Anthropic API:
 
 | Alias | Model | Price | Use for |
-|---|---|---|---|
-| `fable` | Fable 5.1 | $10 / $50 | Hardest, longest-running work |
-| `opus` | Opus 5.5 | $4 / $20 | Default session model; design and judgment |
+| --- | --- | --- | --- |
+| `fable` | Fable 5.2 | $8 / $40 | Hardest, longest-running work |
+| `opus` | Opus 5.5 | $4 / $20 | Design, judgment, unknown-cause debugging |
 | `sonnet` | Sonnet 5.5 | $2 / $10 | Well-specified implementation |
-| `haiku` | Haiku 5.5 | $0.10 / $0.50 | Search, lookups, summaries (price is 5× above 100K prompt tokens) |
+| `haiku` | Haiku 5.5 | $0.10 / $0.50 | Search, lookups, log reading (5× above 100K prompt tokens) |
 
-- **Keep the session on one model.** The prompt cache only works within a single
-  model. Switching a long session to a cheaper model re-reads the whole context
-  uncached, which costs more than staying put. Save money with subagents
-  instead: each one starts with a fresh context.
-- **Choosing a subagent model.** Pass `model` on each Agent call:
-  - `haiku`: locating code, grep sweeps, reading CI/test/debug-log output,
-    summarizing a file or diff.
-  - `sonnet`: implementing from a concrete plan, writing tests for a stated
-    behavior, doc updates, a focused review of a small diff.
-  - Inherit (omit `model`): design, debugging with an unknown cause, and any
-    change touching migrations, the shared `amf.db`, process/child lifetimes,
-    worker identity checks, or the invariants in the feature notes below.
-  - `fable`: only when the user asks for it.
-- **Suggest Fable, but don't switch to it yourself.** For a large refactor
-  across modules or a concurrency/lifetime bug that Opus has failed on twice,
-  tell the user `/model fable` may be worth the 2.5× cost. Don't switch
-  mid-task (see above).
-- **Lower effort before a smaller model.** For routine steps, lowering a
-  capable model's `effort` often holds quality better than dropping a tier.
-- **Wired in:** `.claude/agents/Explore.md` runs exploration on Haiku, and
-  `/amf:pr-status` forks onto Haiku. Session-scoped commands such as
-  `/build`, `/check`, `/lint`, `/amf:pr-create` and `/amf:pr-continue`
-  deliberately inherit the session model, because they depend on context
-  from the session.
-- This section covers Claude Code's own model use. AMF's product-side model
-  pickers and advice (`model_evidence.rs`, `model_analysis/`) are separate.
+- **Keep the session on one model.** The prompt cache is per model, so
+  switching a long session re-reads the whole context uncached. Save money
+  with subagents instead: each starts with a fresh, small context.
+- **Always pass `model` on an Agent call.** An omitted `model` inherits the
+  session's, which may be Fable. Pick the cheapest tier that fits:
+   - `haiku`: locating code, grep sweeps, running checks and reading
+     CI/test/debug-log output, summarizing a file or diff.
+   - `sonnet`: implementing from a concrete plan, writing tests for a stated
+     behavior, doc updates, a focused review of a small diff.
+   - `opus`: design, debugging with an unknown cause, and any change touching
+     migrations, the shared `amf.db`, process/child lifetimes, worker identity
+     checks, or an invariant in a feature note.
+   - `fable`: only when the user asks.
+- **Lower effort before a smaller model.** For routine steps, passing a lower
+  `effort` to a capable model often holds quality better than dropping a tier.
+- **Suggest Fable, don't switch to it.** For a cross-module refactor or a
+  concurrency/lifetime bug Opus has failed on twice, tell the user
+  `/model fable` may be worth the 2× cost.
 
-### AI interaction tooling
+### When to delegate
 
-Read [`skills/amf-interact/SKILL.md`](skills/amf-interact/SKILL.md) when choosing
-how to operate AMF. Use the [GUI driver](docs/development/gui-ai-driver.md) for
-native desktop controls/backend behavior and the
-[TUI driver](docs/development/tui-ai-driver.md) for rendered terminal text and
-xterm-compatible keys/paste. Reuse isolated sessions, scope snapshots, and batch
-actions with local waits. Capture screenshots only when explicitly requested.
+A subagent starts cold and must be told everything, so it only saves tokens
+when its work would otherwise fill the session's context.
 
-AMF embeds and injects the skill, drivers and references into managed projects,
-including projects outside the AMF checkout. The TUI driver works with installed
-`amf`; the GUI driver needs matching frontend source and a Linux debug GUI.
-Driver sessions are private fixtures. For requested changes to the live TUI use
-`amf automation`; for workspace configuration use AMF's config skills/`amf.json`.
-Prefer focused component/core tests when a native interface round trip adds no
-useful coverage.
+- **Delegate** when only the conclusion matters and the path to it is noisy
+  (searches across many files, test and CI output), or when the work is
+  self-contained and can be fully specified in a short brief.
+- **Do it inline** when the change is a few edits in files already read, when
+  it depends on what was discussed in the session, or when writing the brief
+  costs about as much as doing the work.
 
-**HeadlessRunner** (headless.rs):
+Project agents in `.claude/agents/`:
 
-- Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi
-- Restricted no-tools mode for context-complete prompts
-- Read-only repository tools for directed plan revisions, and for the
-  round/synthesis/critique passes when the interview has attached reference
-  docs (see "Plan-interview reference docs" below)
-- Harness selection and fallback for plan interviews
+| Agent | Model | Use for |
+| --- | --- | --- |
+| `Explore` | haiku | Finding where code lives; returns `path:line`, not file dumps |
+| `verify` | haiku | Running build, test, fmt and Clippy; returns only failures |
+| `implementer` | sonnet | Carrying out a concrete, already-decided change |
 
-**Prompt registry** (`src/prompts/`): the single home for every headless
-prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (24 stable ids), `PromptSpec` (title/summary/placeholders/
-`default_template`/`harness_variants`), and `resolve_template_layered` /
-`resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
-out of the call sites. `resolve.rs` has `PromptContext` +
-`render_template` (unvalidated `{{token}}` substitution — missing/unknown
-tokens render literally). `project.rs` reads project-scope overrides from
-`amf.json`. Call sites resolve via `App::resolve_headless_prompt` /
-`resolve_headless_template` (`app/mod.rs`), which assemble the feature (DB) →
-project (`amf.json`) → global (DB) → built-in layers.
+### Orchestrating (session on Fable or Opus)
 
-### Feature TODOs
+For multi-step work the session plans, decides and reviews; subagents read
+and write.
 
-Scoped to-do lists surfaced as a session kind and a native (non-tmux)
-overlay:
+1. Locate with `Explore`. Read only the excerpts needed to decide.
+2. Decide the design in the session. Send a hard sub-question to an `opus`
+   subagent only if it can be answered without the session's context.
+3. Hand each independent piece to an `implementer`, in one message so they
+   run in parallel. Give two agents the same file only with
+   `isolation: "worktree"`.
+4. Check with `verify`, then review the diff in the session, not the
+   implementer's summary of it.
 
-- **Three scopes, one type.** `TodoScope::{Worktree, Project, Global}`
-  (`src/db/todos.rs`) is the whole key to a list: a worktree list is keyed
-  by **workdir path** (not feature id — the list belongs to the checkout,
-  not to whichever row points at it), a project list by project id, and the
-  global list by nothing at all. The variants are declared narrowest-first
-  and `rank()` makes that order explicit, because it is also the order ties
-  between scopes resolve.
-- **Session kind:** `SessionKind::Todos` (`src/project.rs`).
-  `is_agent_harness()` and `is_tmux_backed()` are both `false`, so no tmux
-  window is created and it is filtered out of window-cycling / the switcher.
-  Offered in the `s` picker once per **feature**
-  (`Feature::has_todos_session()`); the project-level gate it replaced is
-  gone. Creating one creates the list its editor opens on — the feature's
-  worktree list, or the project's at the repo root.
-- **Persistence:** SQLite tables `todo_lists` and `todos`, created by
-  `MIGRATION_010`/`011` and reshaped by `MIGRATION_025`, accessed via
-  `src/db/todos.rs`. 025 is a **table rebuild**, not an `ALTER`: dropping
-  `project_id UNIQUE` and relaxing `project_id`/`feature_id` to nullable
-  cannot be expressed any other way. It runs with `foreign_keys` off in
-  both directions on purpose — `DROP TABLE todo_lists` with them on would
-  fire `todos`' `ON DELETE CASCADE` and take every TODO with it, and
-  `ALTER TABLE ... RENAME` with them on would rewrite `todos`' `REFERENCES`
-  clause to the temporary name. Three partial unique indexes replace the old
-  single UNIQUE: one project list per project, one worktree list per
-  (project, workdir), one global list per machine. Every pre-existing row is
-  backfilled to `scope='project'` with its id, host feature, and
-  `carry_over` scratchpad intact. Todos survive without a DB (in-memory),
-  which is what the tests exercise; the in-memory panes are the overlay's
-  source of truth and persist when a DB is present.
-- **Native view:** `AppMode::Todos(TodoViewState)` (opened from the session
-  via `enter_view` → `open_todos_view`), holding `panes: Vec<TodoPane>`
-  ordered **worktree → project → global** — the same order the tie-break
-  uses. The worktree pane is absent for a feature on the repo root, which is
-  the only way the vector is shorter than three. Each pane owns its list,
-  items, cursor, scroll, and scratchpad banner (whose DB column is still the
-  legacy name `carry_over`), so moving focus never disturbs the pane being
-  left. Lists are *loaded* on open and created lazily on first write
-  (`todos_ensure_list_id_for`), so an untouched scope leaves no row behind.
-  An inline `TextEditor` handles title/notes/scratchpad edits; `Ctrl+T` opts
-  it into the Vim keymap (`todos_toggle_edit_vim`), remembered on
-  `TodoViewState::todo_vim_enabled` for the life of the overlay, and `Ctrl+Q`
-  cancels an edit (the escape hatch Vim's `Esc` gives up to Insert→Normal).
-- **What "visible" means, in one rule.** `TodoViewState::pane_is_visible`
-  (also `visible_pane_indices`, used by both draw and key handling) and
-  `App::visible_todo_scopes()` (scan) implement the same thing: the
-  worktree pane is always visible, and the project and global panes are
-  each gated by their own independent flag, `AppConfig::todo_project_visible`
-  and `todo_global_visible` — either, both, or neither can be hidden, with
-  `focus: Option<usize>` (not a bare index) covering the case where every
-  optional pane is hidden on a repo-root feature. The flags are app-level
-  rather than per-overlay **because the dashboard's `I` runs with no
-  overlay open** and still needs a defined notion of which scopes count.
-- **Layout:** `pane_slots` decides which panes get a column at the current
-  width (3 at ≥120 cols, 2 at ≥72, else 1). Two rules in order: the focused
-  pane is always drawn, and the worktree pane keeps its slot whenever there
-  is room for a second.
-- **Keys added to the overlay:** `Tab`/`BackTab` cycle focus among visible
-  panes, `p`/`g` independently toggle the project/global panes on or off
-  (hiding the focused pane advances focus to the next visible one), `M`/`C`
-  move/copy the selected item to another scope. `M`/`C` offer every *other*
-  pane, visible or not — the scopes exist regardless of the toggles.
-- **Move vs copy is a semantic difference, not a convenience one.** A
-  **move** (`move_todo`) leaves `agent_session_id`, `linked_feature_id`, and
-  `status` untouched: it is the same work, re-filed. A **copy** (`copy_todo`)
-  clears the session and feature links and resets `status` to not-started
-  (a completed source copies as completed — that half of the state is worth
-  keeping), so two panes never both claim one session and "implement next"
-  does not hold both in reserve for work only one of them describes. Both
-  append at the destination's `sort_order` end.
-- **Spawn from a TODO:** `g`/`Enter` resolves a linked feature, then a live
-  linked session, then opens the chooser. A **worktree** TODO spawns in the
-  feature that owns the checkout, inheriting its agent + mode. A **project**
-  or **global** TODO belongs to no one checkout, so `launch_todo_in_scope`
-  opens `AppMode::TodoSpawnTarget` — a feature picker (that project's
-  features, or every project's for a global TODO) whose choice supplies the
-  agent and mode. It stashes the origin mode as `Box<AppMode>` and restores
-  it verbatim on cancel, for the same reason `TodoImplementChoice` does: one
-  of its two callers has no overlay open.
-- **Sessions are looked up store-wide** (`session_indices_by_id`), not
-  inside the list's host feature. A TODO's agent used to be guaranteed to
-  live there; with project/global scopes and cross-scope moves it is not, so
-  "is this session alive?" is a question about the session rather than about
-  which list holds the row. `todos_reconcile_dead_sessions` uses the same
-  lookup, so a session is dead only when it exists in **no** feature.
-- **Implement next (`I`):** `next_todo_across(&[&[Todo]], skipped)` is pure
-  and scope-aware; `next_todo_index` is its one-list form, kept `#[cfg(test)]`
-  so the per-list rules can be pinned down alone. It concatenates the lists
-  in scope order and **stable**-sorts by `TodoPriority::rank`, which gives
-  exactly the intended rule: priority first, scope as the between-list
-  tie-break, manual `sort_order` as the within-list one. Completed and
-  in-progress items (`Todo::is_eligible_for_automatic_spawn`, i.e.
-  `status != NotStarted`) and explicitly-skipped ids are passed over. A TODO
-  that links a session or a planned feature is **held in reserve, not
-  skipped** — any unstarted item in any visible scope outranks it, and it is
-  only returned (as `NextTodo::Started`) when nothing unstarted remains
-  anywhere.
-- **Status (`TodoStatus`, `MIGRATION_028`):** `NotStarted` / `InProgress` /
-  `Completed`, stored as a checked `status` TEXT column that replaced the
-  earlier boolean `todos.in_progress` from `MIGRATION_024` — one exhaustive
-  value instead of two flags that could disagree. Paired with
-  `agent_session_id` (also added by `MIGRATION_028`; a
-  [`crate::project::FeatureSession`] id, harness-neutral and stable across
-  restarts) inside `TodoWorkState`, which is the only thing allowed to
-  change either field: `reserve_launch` claims a not-started TODO before its
-  session exists (`InProgress`, no association yet — this is what a spawn
-  sets, via `todos_reserve_launch`, before the launch can fail),
-  `associate_session` attaches the real session id once created
-  (`todos_mark_started`, only while still `InProgress`, so a late result
-  can't attach after a manual status change), `rollback_launch` reverts a
-  failed creation or prompt-delivery back to `NotStarted` with no
-  association (`todos_rollback_launch`, called through a best-effort wrapper
-  on failure paths so a rollback write failing can't replace the original,
-  actionable launch error), and `clear_missing_session` drops a stale
-  session id **without** touching `status`. A session link survives
-  abandonment on purpose — it is what lets a repeat spawn attempt find and
-  offer the work already started, and what's absent for a TODO marked
-  in-progress by hand.
-  `status` only changes on completion or the manual `i` cycle
-  (`TodoWorkState::cycle_manually`); a dead associated session
-  (`todos_reconcile_dead_sessions`, `reconcile_todo_agent_associations`, run
-  from ordinary status sync including startup) clears **only** the link, not
-  the flag — "a missing agent does not make work unstarted again." Stopping
-  the host feature clears nothing either: stopped work is still in
-  progress.
-- **The already-started prompt** is `AppMode::TodoImplementChoice`, not a
-  `TodoLaunchStep`, because only one of its two surfaces has a
-  `TodoViewState`. It carries the candidate's `pane_kind` and `list_id` so
-  *Start another agent on it* routes through the same scope rule as a fresh
-  spawn, and so the item is re-resolved on confirm with no overlay open. Its
-  *Go to the work already started* self-heals like `g`/`Enter` does: a
-  `linked_feature_id` whose feature is gone is cleared, or the link — the
-  only thing holding the item back from `Ready` — would make every later `I`
-  re-offer it. It stashes the mode it was opened from as `Box<AppMode>` and
-  restores it verbatim on every exit, so `Esc` from the overlay costs nothing
-  — cursor, scroll, and any DB-less in-memory rows are the same objects, not
-  a reload. (Nothing shows *through* it: like every modal here,
-  `draw_modal_overlay` clears the viewport first.) *Skip to next* accumulates
-  **ids**, not indices, and re-derives the lists each round, so the prompt
-  survives them changing underneath it.
-- **Quick-capture:** `AppMode::TodoQuickCapture`, reached from an embedded
-  session view via leader → `N`, appends a one-line TODO to the scope
-  `default_todo_scope(pi, fi)` resolves — the session feature's worktree
-  list, or the project's at the repo root — auto-creating the list + session
-  if none exists. The overlay *names* that list (`list_label`), because the
-  target is not the one thing on screen. Learning Mode's keep-as-TODO (`a`)
-  uses the same rule, and its jump-back searches every pane rather than
-  guessing a scope.
-- **Feature deletion:** `delete_feature` stops **before** anything
-  destructive and opens `AppMode::TodoDeleteDisposition` when
-  `pending_todo_disposition` finds unfinished items in the feature's worktree
-  list — move them to the project list, move them to the global list, delete
-  them with the worktree, or cancel. Deleting a worktree is hard to reverse,
-  so the prompt is blocking and cancel leaves the feature intact.
-  `apply_todo_disposition` is split out from the confirm handler so the
-  re-filing can be tested without driving a real tmux kill and worktree
-  removal. When *move to the project list* has to create that list, its host
-  is a feature that **survives** the deletion (never the doomed one, which is
-  why the state carries `feature_id`), and none at all when there is no
-  survivor: hosting it on the feature being deleted would hand it straight to
-  `handle_todos_host_feature_deleted` below, which drops an orphaned list —
-  losing the items the user just chose to keep. Deleting a *project* removes
-  its project list and every worktree
-  list under it (`delete_todo_lists_for_project`); the global list belongs to
-  no project and survives.
-- **Host-feature deletion:** when the feature hosting the **project** list is
-  deleted but the project survives, `complete_deleting_feature` calls
-  `handle_todos_host_feature_deleted`, which either silently drops the
-  orphaned list (no features remain) or opens `AppMode::TodosHostReassign` —
-  a prompt to **re-home** the list onto a surviving feature
-  (`set_todo_list_host_feature`) or **delete** it. `Esc` keeps the list by
-  re-homing onto the first surviving feature. Worktree lists have no host to
-  reassign: they were already settled by the disposition prompt.
+A brief names the files, the decision already made, the acceptance criteria,
+the focused test command, and what to return (a few lines, not a transcript).
+Continue a running agent with SendMessage instead of spawning a replacement.
 
-### Learning Mode
+### Without an orchestrator (session on Sonnet or Haiku, or a small task)
 
-A read-only code reader with an agent attached, for someone who did
-not write the code in front of them. Built for a newcomer: nothing in
-the mode mutates the repository, a blank prompt is never the only
-option, and answers are pitched at a first-time reader by default. See
-`docs/backlog/learning-mode-plan.md` for the full rationale.
+Do the work directly. Still send broad searches to `Explore` and long check
+runs to `verify`, because their output is what fills the context. When a
+design question or an unknown-cause bug comes up, ask an `opus` subagent that
+one question instead of switching the session model.
 
-- **Surface:** `AppMode::Learning(Box<LearningViewState>)`, opened with
-  `K` on the dashboard (`open_learning_mode_for_selection` — a project
-  row opens its first feature). It borrows the Final Review viewer's
-  chrome, **not** its state machine, and creates **no `SessionKind`
-  row**: Learning Mode is not a session and never appears in the tree or
-  switcher.
-- **Read-only invariant:** the only path out of it that can change files
-  is escalation (`S`), which opens an ordinary agent session and says so
-  in the seed. Keep it that way — relaxing it is a scope decision, not a
-  convenience patch.
-- **Browsing:** `BrowseScope::RepoTree` lists via
-  `diff::list_repo_files` (`git ls-files`, with a capped plain walk for
-  non-git projects); `BrowseScope::BranchChanges` uses
-  `diff::load_snapshot`, the same call the diff viewer makes. In
-  branch-changes scope `learning_load_selected_content` still hydrates
-  the **whole file**, so an anchor keeps its surrounding context while
-  the pane addresses diff rows. Repo-tree scope also pins a **Start
-  here** orientation group (existence-checked well-known files plus a
-  repo-level tour question) until the project has any history.
-- **The repo-tree list is a tree, and `entries` is derived.** Repo-tree rows
-  come from `flatten_tree` (pure: path list + `expanded_dirs` → rows,
-  directories before files at each level); branch-changes stays flat. The
-  authority on what is open is `LearningViewState::expanded_dirs`, **not** the
-  `Dir` rows — every tree operation changes that set and rebuilds, so a cursor
-  has to be restored by identity (`row_key`), never by index. Two constraints
-  are load-bearing: `learning_rebuild_tree` works from the cached `repo_files`
-  and must not re-read the repository (expanding a folder cannot cost a `git
-  ls-files`), and `default_expanded_dirs` is seeded **once** per overlay
-  (`expanded_seeded`) so a reload never re-opens what the user closed. A
-  directory is navigation only — `LearningListEntry::path()` returns `None`
-  for one, which is what keeps resting on a folder from moving the loaded file
-  or the anchor. Size limits live per directory (`MAX_DIR_CHILDREN`, reported
-  on the folder's own row); `MAX_REPO_ENTRIES` is now only a memory valve.
-- **Anchors:** `LearningAnchor::{Project, File, Hunk, Lines}`; hunks
-  exist only in branch-changes scope. The anchor is captured *with* the
-  question (`AskAnchor`), not re-read at submit time, so a follow-up
-  asked after browsing away still quotes its parent's code.
-- **Anchor drift is derived, never stored.** `learning_check_anchor_drift`
-  runs once per open (beside `reconcile_interrupted_qa`, which reconciles
-  *runs* the same way this reconciles the *code*) and fills
-  `LearningViewState::anchor_drift`, a side table keyed by row id.
-  `check_anchor_drift` matches the row's `selection_text` against the file
-  as it is now — trimmed, blank lines dropped, the stored position checked
-  before the whole-file search, so a re-indent isn't movement and a copy
-  made elsewhere doesn't unanchor the original. Dropping lines shifts where
-  the evidence starts, so `ExpectedBlock::lead_offset` steps the stored
-  position past them; without it a selection opening on a blank line reports
-  as having slid down by its own whitespace. Two invariants: the row's
-  `line_start`/`line_end` are **never rewritten** (they record where the
-  question was asked, and keeping them is what lets the verdict be
-  re-derived rather than believed once), and *no verdict* is the answer
-  for everything there is no evidence to judge — an unreadable file, an
-  empty selection, a `File` anchor whose file still exists. "Unreadable"
-  includes a file that can't be stat'd at all: the `Gone` verdict is
-  `ErrorKind::NotFound` specifically, not `Path::exists()`, which says the
-  same "no" to a deleted file and to an unreadable parent directory. A
-  diff-sourced selection (`selection_is_diff`) can be reported `Lost` but
-  never `Reanchored`: its range comes from `new_line.or(old_line)`, so it
-  is not a baseline to measure against. The verdict rides along into
-  `escalation_seed` and `todo_body`, which would otherwise send an agent
-  to read a location the code has left.
-- **Two intents, one history.** `LearningQaIntent::{Explain, Action}` —
-  `e` asks for a teaching answer, `c` for a change proposal. Intent only
-  shapes prompt framing and affordance ordering, and is re-labelable
-  afterwards (`i`) without rewriting the answer.
-- **Level:** `LearningLevel::{Newcomer, Familiar}` is a per-session
-  setting (`L`), not per-question. It changes prompt wording only — not
-  tools, model, or visibility — and each row records the level it was
-  answered at, so a reloaded answer explains why it reads the way it
-  does.
-- **Prompts** are pure functions: `build_prompt` over a
-  `LearningPromptContext`, composed from `intent_instructions`,
-  `level_instructions`, and `run_mode_instructions`. Run mode comes off
-  the run that will *actually* be dispatched
-  (`LearningRunMode::effective_for` downgrades every Codex request to
-  `DeepDive`, since `codex exec` has no no-tools mode), so the label,
-  the stored row, and the command always agree.
-- **Execution:** `HeadlessRunner::run(..., restricted = true)` for the
-  default answer, `run_read_only` for a deep dive (`D`). Runs are
-  non-blocking and several may be in flight: a persistent `mpsc` channel
-  owned by `LearningRuns` plus a thread per run, drained by
-  `poll_learning_answers_bg()` next to the other `poll_*_bg` calls in
-  `src/cli.rs`. An answer that lands after the overlay closed is still
-  persisted (`finish_learning_qa_in_db`), and a row left `running` by a
-  previous process is failed on load by `reconcile_interrupted_qa`
-  rather than reloading as "thinking…" forever.
-- **Threading has two distinct relationships.** `parent_qa_id` is a
-  follow-up (`F`) — the parent's turn goes into the prompt.
-  `deep_dive_of_qa_id` is a rerun (`D`) — the row it replaced is stored
-  under it for reading side by side, but `learning_ancestor_turns` steps
-  *over* it, so a follow-up on a verified answer never carries the
-  shallow one's (possibly invented) evidence forward. Ordering goes
-  through `thread_insert_index` for live inserts and `thread_rows` on
-  reload, so there is one notion of order rather than two.
-- **Acting on an answer:** `a` keeps it as a project TODO (via
-  quick-capture's route, so the `SessionKind::Todos` session exists
-  before the item does — a `todo_lists` row with no session is
-  unreachable), `S` escalates to a live agent session
-  (`create_agent_session_labeled` → `enter_view_without_auto_compose` →
-  `open_compose_seeded`, editable and unsent). Both record their link on
-  the row (`todo_id`, `spawned_session_id`) and a repeat press jumps to
-  what exists rather than creating a second; a stale link is dropped and
-  the replacement announced.
-- **Persistence:** `learning_sessions` + `learning_qa`
-  (`MIGRATION_019`, extended by `MIGRATION_020`'s `selection_is_diff`
-  and `MIGRATION_021`'s `deep_dive_of_qa_id`), accessed via
-  `src/db/learning.rs`. Kept out of the `ProjectStore` JSON like the
-  todo tables, with `delete_learning_sessions_for_project` wired into
-  project deletion. As with todos, the in-memory list is the overlay's
-  source of truth and the mode works without a DB — it just says so
-  rather than pretending history was kept.
-- **Every refusal says why.** A missing key, a swallowed keypress, or a
-  banner that describes a state the row isn't in are the failure modes
-  this mode exists to avoid; new actions should state what happened and
-  which key to press instead.
+### Wired in
 
-### Plan-interview reference docs
-
-The interview's `round` / `synthesis` / `critique` passes run **no-tools** by
-default. Attaching one or more reference documents on the brief step is the
-explicit, opt-in exception: those passes then run through
-`HeadlessRunner::run_read_only` so the interviewer can read the attached docs
-*and* the surrounding codebase.
-
-- **Attaching:** `Ctrl+D` on the brief step opens
-  `AppMode::PlanInterviewAttachDoc` — a `ratatui_explorer::FileExplorer` browser
-  (`app/plan_interview_attach.rs`, `handlers/plan_interview_attach.rs`,
-  `ui/dialogs/plan_interview_attach.rs`) that stashes the live
-  `PlanInterviewState` and restores it on confirm or cancel, a deliberate
-  sibling of `BrowsingPath` rather than a refactor of it. `Ctrl+X` drops the
-  last attachment. Cap `MAX_ATTACHED_DOCS` (4). Any readable text file anywhere
-  on disk; `plan_interview::validate_attachment` rejects a directory, an
-  oversize file (`ATTACHED_DOC_MAX_BYTES`), a binary sniff, a duplicate, or the
-  cap with a stated reason.
-- **Reachability:** `plan_interview::prepare_attached_docs(workdir, &[PathBuf])`
-  runs right before each pass. An in-workdir doc is referenced where it lies; an
-  external one is copied into a **per-pass** subdirectory
-  `<workdir>/.amf/interview-docs/<pid>-<seq>/` (generated scratch via
-  `extension::generated_amf_subdir`) so a CWD-scoped read-only harness can open
-  it. Each call gets its own subdir on purpose: a dismissed plan review leaves
-  its worker running, and a later pass (or teardown) must not delete the copies
-  it is still reading. Before the first external copy, `ensure_amf_ignored`
-  adds `.amf/` to the repo's `.git/info/exclude` (untracked, per-repo) unless it
-  is already ignored, so an agent's `git add -A` cannot commit a private doc.
-  The whole `interview-docs` tree is cleared by
-  `App::clear_plan_interview_doc_staging` on interview accept / abort **and on
-  pause** (whose `background_running` guard means no pass is in flight); it is
-  no longer wiped at the start of a pass. A doc that has moved or gone
-  unreadable is dropped and reported, never fatal.
-- **Prompts:** the five interview input builders (`*_input_json`) carry an
-  `attached_documents` array (`path` + `origin`); `round` / `synthesis` /
-  `critique` templates gained a `{{tool_access_note}}` token, resolved to
-  `TOOL_ACCESS_NOTE_NONE` / `CRITIQUE_TOOL_ACCESS_NOTE_NONE` (historical
-  no-tools wording) or `TOOL_ACCESS_NOTE_ATTACHED` (the read-only exception).
-- **Persistence:** `PlanInterviewRecord.attached_docs: Vec<String>`,
-  `MIGRATION_035` (column backfilled `'[]'`). A resumed or re-run interview
-  restores the list verbatim; paths are re-validated at dispatch, not on
-  resume.
-
-### Plan-interview MCP tools
-
-- **Opt-in, global only:** `AppConfig::plan_interview_mcp`
-  (`headless::HeadlessMcpConfig { config?, allowed_tools }`), never
-  `amf.json` — MCP servers run programs. `HeadlessMcpConfig::validate`
-  requires exact `mcp__<server>__<tool>` names (no wildcards) and, when
-  `config` is set, an absolute (`~/`-expanded) file. `App::plan_interview_mcp`
-  resolves it per pass, returning `None` for non-Claude harnesses and for an
-  invalid config (logged + toast once per distinct error, never fatal).
-- **Command:** `HeadlessRunner::run_read_only_with_mcp` →
-  `claude_mcp_read_only_args`. Verified against Claude Code 2.1.282: neither
-  `--safe-mode` nor `--strict-mcp-config` can be used, since both drop
-  claude.ai connectors (the common case — e.g. `mcp__claude_ai_Asana__*`).
-  Isolation is `--setting-sources ""` (verified: a repo hook, repo
-  `.mcp.json`, `CLAUDE.md`, `.claude/skills/`, and `.claude/agents/` do not
-  load; repo files still reach the model as data via `Read` and the prompt's
-  `repository_context`). `--tools` does not gate MCP tools, so `dontAsk` +
-  the exact `--allowedTools` list is what denies unlisted ones.
-  `claude_mcp_args_are_read_only` is the positive check.
-- **`MCP_CONNECTION_NONBLOCKING=false`** (`CLAUDE_MCP_BLOCKING_ENV`) makes the
-  run wait for claude.ai connectors; without it about half of `-p` runs
-  started with no connector tools. Undocumented upstream — re-verify on a
-  Claude Code upgrade.
-- **Passes:** round, synthesis (full + quick), critique, critique follow-up —
-  the ones with `{{tool_access_note}}`, which becomes
-  `plan_interview::mcp_tool_access_note`. Directed revision and investigation
-  are unchanged.
-
-### Quick Plan mode
-
-A lighter, dynamically-sized alternative to the full plan-mode interview: a
-task-triage round that may ask a couple of clarifying questions — or none at
-all for a trivial task — before deciding whether to proceed straight to work,
-show a short plan, or escalate into the full interview.
-
-- **Two triggers, same two shapes as full Plan mode:** the feature-creation
-  wizard's Plan field (`Mode` step, `mode_focus == 3`) and the dashboard's `Q`
-  (re-run on the selected feature, parallel to `P`). `Q` mirrors `P`'s exact
-  arming: `resume_paused_plan_interview()` first, so a parked interview of
-  either kind resumes rather than starting a second one
-  (`handlers/normal.rs`).
-- **One `PlanInterviewState`, a `kind` flag.** `PlanInterviewMode::{Full,
-  Quick}` (`app/state.rs`) — the two share every `PlanInterviewPhase`, the
-  round/synthesis dispatch, and the entire Q&A UI; `kind` only steers which
-  `PromptId` is resolved and how the synthesis response is interpreted. A
-  Quick interview is built with an **empty static question bank**
-  (`PlanInterviewState::for_feature_creation_quick` /
-  `for_feature_quick`), so `advance()`'s existing empty-bank handling — Brief
-  goes straight to `AiConsent`, already true for a project with zero
-  configured plan questions — is what skips Quick Plan past the static
-  question flow with no new phase-machine code.
-- **Prompts:** `PromptId::PlanInterviewQuickRound` /
-  `PlanInterviewQuickSynthesis` (`plan_interview.quick_round` /
-  `.quick_synthesis`), registered like any other prompt (editable via `E`).
-  The round prompt reuses the full round's exact `{"questions":[...]}`
-  contract and parser (`parse_ai_questions`) — only the framing differs,
-  tuned to prefer zero questions for a clear task. `MAX_QUICK_AI_ROUNDS` (1,
-  vs `MAX_AI_ROUNDS` for full) caps a live Quick interview to one adaptive
-  round before synthesis must decide; `PlanInterviewState::max_ai_rounds()`
-  is the one place that reads either constant, keyed off `kind`.
-- **Synthesis is a 3-way outcome, not a markdown document.** The quick
-  synthesis prompt returns one fenced ```json block:
-  `{"outcome":"direct","summary":"..."}` (trivial — proceed with no plan
-  artifact), `{"outcome":"plan","plan":"<markdown>"}` (the nested markdown
-  follows the exact full-mode plan contract, so it drops into the same
-  `AMF_PLAN.md` / Review-gate path unchanged), or
-  `{"outcome":"escalate","reason":"..."}`. Parsed by
-  `plan_interview::parse_quick_synthesis_outcome` into `QuickSynthesisOutcome`
-  (`Direct`/`Plan`/`Escalate`/`Unparseable`); `Unparseable` — and a harness
-  failure — fall back to the same raw-Q&A plan full mode uses on a failed
-  synthesis. Dispatched from `App::apply_quick_synthesis_result`
-  (`app/plan_interview.rs`), the one kind-aware branch inside
-  `poll_plan_interview_synthesis_bg`.
-- **`direct` outcome:** `App::complete_quick_plan_direct` — a
-  feature-creation interview launches the deferred feature exactly like
-  declining to plan at all (`prepared.plan_mode = false`, then
-  `finish_feature_launch_without_interview`, the same path
-  `launch_plan_interview_without_plan` uses); an on-demand interview on an
-  existing feature has nothing to launch, so it just closes. Either way the
-  model's optional `summary` becomes the toast message.
-- **`escalate` outcome:** `App::escalate_quick_plan_to_full` flips a live
-  interview's `kind` to `Full` **in place** — nothing is reset, so the brief
-  and every answer already given carry forward into the full round exactly as
-  the interview decision requires — sets `ai_followups_opted_in`, clears
-  `synthesis_attempted` (the Quick pass was triage and left no plan; left
-  set, the full rounds would end at the raw Q&A review), and
-  re-enters `continue_plan_interview_after_done()` so the ordinary full-mode
-  round/synthesis branching takes over from there with the full `PromptId`s.
-  The user sees an explicit toast ("Quick Plan → full Plan interview: …")
-  naming the model's stated reason.
-- **No `plan_interviews` DB persistence for Quick, by design (v1 scope
-  cut).** `persist_plan_interview_draft` no-ops for `kind == Quick` — every
-  round/synthesis call site's periodic save is a safe no-op rather than
-  needing its own guard — so there is no saved draft to resume and no
-  TODO-origin brief prefill on entry (unlike `start_plan_interview`,
-  `start_quick_plan_interview` skips both). Once escalated, `kind` is `Full`
-  and persistence resumes normally for the rest of the interview.
-  `feature.plan_mode` (the persisted, DB-backed "this feature has a plan to
-  read" flag `ensure_plan_mode_instructions` acts on) needs no Quick sibling:
-  it is set from whichever interview actually produced a plan, kind-agnostic.
-- **Feature-creation Plan field is a 3-way cycle, not two booleans.**
-  `CreateFeatureState::quick_plan: bool` sits alongside the existing
-  `plan_mode: bool` (also `PreparedFeatureLaunch`, `FeaturePreset`) rather
-  than replacing it with an enum — `plan_mode` is also the persisted
-  `Feature`/DB/`FeaturePreset` field, and an enum there would ripple into
-  schema and the automation JSON API this feature doesn't need to touch.
-  `CreateFeatureState::cycle_plan_choice(forward)` steps
-  `(plan_mode, quick_plan)` through `(false,false) → (true,true) →
-  (true,false) → (false,false)` (None → Quick Plan → Full Plan → None),
-  bound to Up/Down at the Plan field like every other Mode-step control.
-  **Not** threaded through the `on_worktree_created` hook continuation
-  (`app/hooks.rs`) in v1: a feature created through that path with Quick Plan
-  chosen falls back to full Plan mode rather than losing planning entirely —
-  safe, if not the requested variant.
-
-### Editable Headless Prompts
-
-Every one-shot ("headless") AI call AMF makes runs a template from a central
-registry that the user can view and override. See
-`docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
-and `AMF_PLAN.md` for the design decisions.
-
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 24 stable ids
-  (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
-  `.investigation`/`.investigation_merge`/`.quick_round`/`.quick_synthesis`,
-  `learning.answer`,
-  `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
-  `review.question`/`.question_draft` (review questions,
-  `app/review_questions/`),
-  `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`/`.ai_summary`,
-  `session.summary`, and the batched-review set
-  `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
-  holds the built-in text. The 8
-  plan-interview templates keep a single `{{interview_input}}` token carrying
-  the exact JSON payload the models see today (the drift-guard test
-  `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins the six
-  full-mode ones to the `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 16 use granular tokens.
-- **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
-  from a `PromptContext`; a token with no value — declared or not — is left
-  literally, and substituted values are never re-scanned. An override may drop
-  or add tokens freely.
-- **Three override scopes.** Feature (keyed by workdir path) and global
-  overrides live in `amf.db`'s `prompt_overrides` table (`MIGRATION_034`,
-  `src/db/prompt_overrides.rs`: `OverrideScope::{Feature,Global}`, CRUD +
-  `PromptOverrides` in-memory view with a no-DB fallback). Project overrides
-  live in `amf.json` under `ExtensionConfig::prompt_overrides`
-  (`HashMap<prompt_id, PromptOverrideEntry{ template?, harnesses }>`,
-  `src/prompts/project.rs`) — **not** `.amf/prompts/`, because `.amf/` is
-  gitignored dir-wide, and **not** merged from the global `extension` block.
-  Harnesses are keyed by `AgentKind::slug()` (`claude`/`codex`/`opencode`/
-  `pi`).
-- **Precedence.** `resolve_template_layered` (`src/prompts/resolve.rs`):
-  feature → project → global → built-in, nearest wins; within the winning
-  layer a per-harness template beats the shared one, so a nearer *shared*
-  override beats a farther *per-harness* one. Once any layer supplies an
-  override the built-in default is never read (silent "default drift"). Call
-  sites go through `App::resolve_headless_prompt` / `resolve_headless_template`
-  (`app/mod.rs`), read fresh each call.
-- **Manager overlay.** `AppMode::PromptOverrides(Box<PromptOverridesState>)`,
-  `app/prompt_overrides.rs` / `handlers/prompt_overrides.rs` /
-  `ui/dialogs/prompt_overrides.rs`. Dashboard `E` / leader `E`. List → edit
-  the effective template → `Ctrl+S` → scope picker (Feature only with a
-  feature + DB, Project only with a repo, always Global) → harness picker
-  (shared / one) → save. `d`,`d` clears the effective override (every
-  per-harness row at that scope).
-- **Pre-call notice.** `AppMode::PromptPrecall(Box<PendingPrecall>)`,
-  `app/precall.rs`. `precall_gate(action, harness, rendered)` is called by
-  each **user-initiated** gated call site right before it spawns; it stashes
-  the originating mode and returns `false` (caller returns without spawning).
-  `precall_confirm` restores the mode, sets `precall_cleared`, and
-  re-invokes the same `start_*` via `dispatch_precall` — the re-run
-  re-resolves the prompt so an override saved from `e` applies. `precall_edit`
-  opens the manager focused on the prompt (`App::precall_return` brings the
-  notice back on close). `precall_cleared` is wiped after every
-  `dispatch_precall` so a fall-through (e.g. a round with no harness →
-  synthesis) can't leave a stale clearance. **Automated** runs
-  (`learning.answer`, `session.summary`) call `announce_headless_run` — a
-  toast, never the modal — so a queued batch can't deadlock.
-
-### Reasoning level (headless runs)
-
-Wherever AMF lets you pick a headless model, it also lets you pick how hard
-the model thinks.
-
-- **One vocabulary, per-harness flags.** `headless::ReasoningLevel`
-  (`minimal`..`max`) maps through `reasoning_args`: Claude `--effort`, Codex
-  `-c model_reasoning_effort="…"`, OpenCode `--variant`. Pi has no verified flag,
-  so it offers none. `ReasoningLevel::supported_for(harness)` is the verified
-  set; a level the harness cannot express is **dropped, never passed through**
-  (Codex has no `max`; Claude has no `minimal`).
-- **`ModelSel`** (`model` + `reasoning`) is what every `HeadlessRunner` entry and
-  `ClaudeLauncher::spawn_headless` accept via `impl Into<ModelSel>`, so a
-  caller with only a model (`Option<&str>`) is unchanged.
-- **Pickers.** The AI Review (`A`) and Expert plan review model pickers carry
-  `AiModelPickState::{reasoning_levels, reasoning}`; `h`/`l` (or ←/→) cycle
-  Default → each level on the same screen. The row is hidden for a harness
-  with no levels. Expert reasoning is **not persisted** with the interview
-  draft (it would need a migration on the shared `amf.db`); a resumed draft
-  falls back to the `plan_preflight` config entry.
-- **Config.** `review_reasoning` / `review_reasonings` mirror `review_model` /
-  `review_models` (`AppConfig::review_reasoning_for`; Expert plan review never
-  inherits the shared default). Applies to the picker seed, Final Review
-  (walkthrough, co-review, overview, diff explain) and review memory.
-- **Attribution** records the level (`AiReviewAttribution::reasoning`) only when
-  the harness could use it.
-
-### Batched Review of Oversized Diffs
-
-When an AI review's diff would overflow the model, it is split into bounded
-prompts and the findings recombined. Full rationale in
-`docs/batched-review.md`; `AMF_PLAN.md` has the design decisions.
-
-- **`src/diff_split.rs`** — lossless text-level splitting. `SplitDiff::parse`
-  (`split_inclusive('\n')`, CRLF- and no-trailing-newline-safe) →
-  `FileSection { path, header, hunks: Vec<HunkGroup> }`. `pack_file_sections`
-  greedily packs sections into `ReviewBatch::{Files, OversizedFile}` under a
-  token budget; `split_file_by_hunk` divides an oversized file into
-  `HunkSubunit`s (header repeated per slice, `oversized` flag for an
-  un-splittable lone hunk). `merge_hunk_findings` + `HunkOutcome` build the
-  deterministic per-file block.
-- **`src/review_batch.rs`** — orchestration. `trait BatchReviewRunner`
-  (`HeadlessBatchRunner` = prod; `review` renders `review.batch` per file
-  slice, `review_hunk` renders `review.hunk_split` per hunk group with
-  `{{file_path}}` / `{{hunk_label}}` populated) and `trait SynthesisRunner`
-  (`HeadlessSynthesisRunner`). `review_batches` runs each batch, halving on
-  `PromptTooLong` down to a hunk, recording an un-reviewable slice as
-  `UncoveredSlice` rather than dropping it. `synthesize` folds the per-batch
-  texts through `review.synthesis` (shrinking via `review.findings_summary`
-  and halving on overflow; deterministic concat fallback with
-  `synthesis_ran=false`). `batched_review` chains parse → pack → review →
-  synthesize into one `SynthesizedReview { text, synthesis_ran, uncovered }`.
-  `BatchProgress` enum feeds the UI.
-- **Size estimation / typed error** live in `src/headless.rs`:
-  `estimate_prompt_tokens` (bytes ÷ `PROMPT_ESTIMATE_BYTES_PER_TOKEN`),
-  `default_prompt_budget_tokens` (Claude/Codex 128k, OpenCode/Pi 96k),
-  `will_overflow` / `will_overflow_with_budget` (budget `0` = gate off), and
-  `PromptTooLong` + `is_prompt_too_long_message` / `as_prompt_too_long`
-  (best-effort classifier over the four CLIs' overflow phrasings), emitted by
-  `run_command` / `run_jsonl_command`.
-- **Wired into** the `W` AI PR review (`app/ai_review.rs`: `begin_ai_pr_review`
-  resolves `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary` +
-  `App::review_prompt_budget`; `run_ai_pr_review` branches to
-  `run_batched_ai_pr_review` when the pre-send estimate overflows **and** when
-  the single pass itself returns `PromptTooLong` — so a `0` budget still gets
-  the batched fallback with adaptive halving; `batched_coverage_note` prepends
-  the "⚠ Partial coverage" banner to `AiReviewOutcome::summary`) and
-  final-review co-review (`app/review.rs`: `generate_co_review` → worker thread
-  `run_batched_co_review` → `DiffViewerState::co_review_bg` → `poll_co_review`
-  → `apply_co_review_text`; a `0` budget skips the pre-send hunk-split entirely
-  and the single pass truncates the body with a visible marker).
-  `review_destination.rs` is untouched. The plan
-  interview has a non-diff guard instead: `plan_interview::guard_context_for_prompt`
-  drops the README/`CLAUDE.md` excerpts and notes it in the dialog footer.
-- **Config**: `AppConfig::review_prompt_budget_tokens` (global) /
-  `ExtensionConfig::review_prompt_budget_tokens` (project `amf.json`,
-  project-over-global), resolved by `App::review_prompt_budget(repo, harness)`.
-
-### Agent Limits & Resource Health (resources/)
-
-Guards against AMF quietly exhausting host memory. Everything here
-is advisory: a tripped gate asks, it never refuses, and a missing
-signal is always "no gate" rather than a block.
-
-```text
-resources/
-├── mem.rs      # probe() -> Option<MemorySnapshot>: /proc/meminfo
-│               # narrowed by cgroup v2 limits on Linux, sysctl +
-│               # vm_stat on macOS, None everywhere else
-├── limits.rs   # LiveHarnesses census + active_harness_sessions();
-│               # HeadlessLease counts in-flight headless runs
-├── procs.rs    # ps-backed process list/tree, pid liveness,
-│               # SIGTERM-then-SIGKILL tree termination, VS Code
-│               # window attribution
-└── doctor.rs   # `amf doctor` checks + text/JSON rendering
-                # (reads via AmfDb::open_read_only + setup::read_config:
-                #  no file creation, no migration, no journal change)
-```
-
-- **Pre-start gate** (`app/resource_gate.rs`): `check_start_preconditions()`
-  combines the agent count (harness sessions across all projects +
-  headless leases, tripping at `active >= limit`) and available
-  memory into one result. The gate lives in the **launch primitives**
-  (`ensure_feature_running`, `ensure_feature_running_for_new_session`,
-  `create_agent_session_labeled`, and the three
-  `ensure_feature_running_with_*_session` pickers), not on entry points:
-  each takes a `StartIntent` so a new caller must pick a policy.
-   - `Approved` — an upstream gate already cleared this start.
-   - `Ask(PendingStart)` — park in `AppMode::ConfirmResourceStart`,
-     replayed by `confirm_pending_start()`. Used by the dashboard start,
-     session adds, `enter_view`, and `switch_view_to_feature`.
-   - `Warn(&str)` — toast and proceed, for flows whose resume state lives
-     in the `AppMode` the dialog would replace (TODO spawn, PR triage,
-     final review, saved-transcript pickers).
-
-  The gate only fires when the call will actually launch, so re-entering a
-  running feature never asks. Creation paths call `autostart_allowed()`
-  instead, which warns and skips rather than prompting.
-- **Headless accounting**: `HeadlessLease` is acquired inside
-  `run_command` / `run_jsonl_command` (`headless.rs`), so every
-  `HeadlessRunner` caller is counted; poll-driven runs hold a
-  `LeasedChild` instead. Dropping one **kills** the run: it terminates the
-  process tree and reaps it on a background thread, holding the lease until
-  the process is really gone (`std::process::Child` only detaches on drop,
-  which would leave an abandoned harness running but uncounted).
-- **Editor tracking**: `launched_editors` (`MIGRATION_017`, plus
-  `proc_started_at` in `MIGRATION_018`; `db/editors.rs`). VS Code launches
-  with `--new-window` and is recorded **not-owned**; a background thread
-  then attributes the new window process (new PID + worktree in argv) and
-  only then marks it `dedicated`, storing the process's own start time.
-  Reusing a running VS Code produces no new process, so that launch stays
-  not-owned for good. `app/editor_ops.rs` revalidates identity before
-  signalling — argv matched on **path boundaries** plus that start time, so
-  a recycled PID never passes — and skips a window whose process is hosting
-  more than one window (`procs::vscode_window_count`), because VS Code is a
-  singleton and the others are the user's. It kills the process tree and
-  returns a killed/skipped/pending report used by `do_stop_feature` and the
-  dormant overlay.
-- **Launch/stop race**: a stop during the seconds before attribution has
-  nothing to kill, so `App::pending_editor_launches` hands the job over:
-  `kill_tracked_editors` flips the launch's `PendingLaunchState` to
-  `Reclaim` and the resolver closes the window it finds instead of recording
-  it. The resolver holds the launch's mutex across deciding *and* writing,
-  so either the stop claims it or the stop finds the row already owned.
-- **Dormancy** (`app/dormant.rs`): idle (tmux `window_activity`) **and**
-  unattended (`Feature::last_accessed`), both configurable; `z` opens
-  `AppMode::Dormant`.
+`/amf:pr-status` forks onto Haiku. `/build`, `/check`, `/lint`,
+`/amf:pr-create` and `/amf:pr-continue` inherit the session model on purpose:
+they depend on the session's context. AMF's product-side model pickers and
+advice (`model_evidence.rs`, `model_analysis/`) are separate from this section.

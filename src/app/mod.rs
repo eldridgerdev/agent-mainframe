@@ -77,6 +77,7 @@ pub(crate) mod supervised_edits;
 mod switcher;
 mod sync;
 mod syntax;
+pub(crate) mod terminal_notes;
 pub(crate) mod toast;
 mod todo_state;
 mod todos;

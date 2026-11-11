@@ -1295,3 +1295,79 @@ fn send_input_and_remove_refuse_agent_sessions_and_bad_keys() {
     );
     assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
 }
+
+#[test]
+fn create_session_notes_are_stored_replaced_and_removed_with_the_terminal() {
+    use crate::app::terminal_notes::{load, sidebar_text};
+    let dir = TempDir::new().unwrap();
+    let (mut app, agent_id, _) = app_with_terminal_and_agent({
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_kill_window().returning(|_, _| Ok(()));
+        tmux
+    });
+    app.store.projects[0].features[0].workdir = dir.path().into();
+    let request = crate::automation::CreateSessionRequest {
+        feature_session_id: Some(agent_id.clone()),
+        kind: "terminal".into(),
+        label: Some("web".into()),
+        notes: Some("Run `npm run dev`, then open :3000".into()),
+        ..Default::default()
+    };
+    let created = app.create_session_from_request(&request).unwrap();
+    let id = created.session_id.clone().unwrap();
+    assert_eq!(sidebar_text(dir.path()).as_deref(), Some("web"));
+    let entries = load(dir.path());
+    assert_eq!(entries[0].id, id);
+    assert!(entries[0].body.contains("open :3000"));
+
+    // Reusing the terminal replaces its notes rather than adding a second block.
+    let mut again = request.clone();
+    again.reuse = true;
+    again.notes = Some("Now run the tests".into());
+    let reused = app.create_session_from_request(&again).unwrap();
+    assert!(reused.reused);
+    let entries = load(dir.path());
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].body, "Now run the tests");
+
+    // Removing the terminal removes its notes, and with them the section.
+    app.remove_session_from_request(&crate::automation::RemoveSessionRequest {
+        target: crate::automation::FeatureTarget {
+            feature_session_id: Some(agent_id),
+            ..Default::default()
+        },
+        session: crate::automation::SessionSelector {
+            session_id: Some(id),
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    assert!(sidebar_text(dir.path()).is_none());
+}
+
+#[test]
+fn create_session_rejects_notes_for_agents_and_oversize_notes() {
+    let (mut app, agent_id, _) = app_with_terminal_and_agent(MockTmuxOps::new());
+    let base = crate::automation::CreateSessionRequest {
+        feature_session_id: Some(agent_id),
+        kind: "terminal".into(),
+        dry_run: true,
+        notes: Some("n".into()),
+        ..Default::default()
+    };
+    assert!(app.create_session_from_request(&base).is_ok());
+    let mut agent = base.clone();
+    agent.kind = "claude".into();
+    assert!(
+        app.create_session_from_request(&agent)
+            .unwrap_err()
+            .to_string()
+            .contains("notes require a terminal")
+    );
+    let mut big = base;
+    big.notes = Some("n".repeat(crate::app::terminal_notes::MAX_NOTES_BYTES + 1));
+    assert!(app.create_session_from_request(&big).is_err());
+}

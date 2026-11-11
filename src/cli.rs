@@ -246,6 +246,7 @@ const CREATE_SESSION_SCHEMA: &str = "Request JSON:
     \"command\": string | null terminal only: text pasted into the new terminal
     \"run\": bool default false, press Enter after command
     \"reuse\": bool default false, terminal only: reuse a live terminal with this label
+    \"notes\": string | null terminal only: markdown notes for the user (sidebar, leader u)
     \"dry_run\": bool default false
   }
 Target: feature_session_id, else tmux_session, else project_name + feature.

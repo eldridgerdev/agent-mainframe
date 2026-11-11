@@ -10,5 +10,6 @@
   "command": null,
   "run": false,
   "reuse": false,
+  "notes": null,
   "dry_run": false
 }

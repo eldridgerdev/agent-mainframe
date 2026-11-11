@@ -106,6 +106,13 @@ amf automation create-session --file docs/automation/create-session.template.jso
 - `reuse`: terminal sessions only. If a live terminal with the same `label` already
   exists in the feature, return it (`reused: true`) instead of creating another;
   `command` is still sent to it.
+- `notes`: terminal sessions only. Markdown reference notes for the user, such as
+  the commands to run and what to look for. They are stored in
+  `.amf/terminal-notes.json` and a rendered `.amf/terminal-notes.md` (generated, gitignored), one entry per terminal, and
+  shown in the agent sidebar as a **Terminal Notes** section that lists the
+  terminals with notes. The section is absent when there are none. `leader u` opens
+  the notes in the markdown viewer. With `reuse`, new notes replace that terminal's
+  earlier ones; removing the terminal removes its notes. Limit 64 KiB.
 - `dry_run`: validate the request and describe the session without launching it,
   running custom pre-checks, or changing AMF state.
 

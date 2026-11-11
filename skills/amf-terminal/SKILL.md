@@ -10,8 +10,10 @@ It appears in the feature's session list, inherits this working directory, and
 is cleaned up with the feature.
 
 ```bash
-echo '{"kind":"terminal","label":"dev server","command":"npm run dev","run":true,"reuse":true}' \
-  | amf automation create-session
+cat <<'JSON' | amf automation create-session
+{"kind":"terminal","label":"dev server","reuse":true,
+ "notes":"Run `npm run dev`, then open http://localhost:3000 and try the login form."}
+JSON
 ```
 
 With no target in the request, AMF uses `$AMF_FEATURE_SESSION_ID`, which is
@@ -22,6 +24,12 @@ set in your environment, so you never need the project or feature name. Use
 - `command` + `run`: paste the command and press Enter. Omit `run` to leave
   the command typed for the user to review and run themselves. Omit `command`
   for an empty shell.
+- `notes`: markdown the user can read beside the terminal. **Whenever you ask
+  the user to run something in the terminal, put what they need in `notes`**:
+  the exact commands in code blocks, what success looks like, and anything to
+  report back. It appears in the sidebar's Terminal Notes section (`leader u`
+  opens it), so they need not scroll back through the conversation. Keep it
+  short. With `reuse`, new notes replace that terminal's old ones.
 - `reuse: true`: if a live terminal with that label exists, use it instead of
   opening another. Always set it, so a restarted server reuses its terminal.
 - `--dry-run` validates without creating anything.

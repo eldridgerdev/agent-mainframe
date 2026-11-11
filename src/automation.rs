@@ -280,6 +280,10 @@ pub struct CreateSessionRequest {
     pub command: Option<String>,
     /// Press Enter after `command`. Requires `command`.
     pub run: bool,
+    /// Terminal sessions only: markdown reference notes for the user (commands
+    /// to run, what to look for). Shown in the sidebar's Terminal Notes section
+    /// and opened with `leader u`. On `reuse` they replace the earlier notes.
+    pub notes: Option<String>,
     /// Terminal sessions only: reuse a live terminal with the same label
     /// instead of creating another.
     pub reuse: bool,

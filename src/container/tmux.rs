@@ -266,6 +266,9 @@ impl TmuxOps for SandboxTmux {
     fn capture_pane(&self, session: &str, window: &str) -> Result<String> {
         self.inner.capture_pane(session, window)
     }
+    fn capture_pane_history(&self, session: &str, window: &str, lines: u32) -> Result<String> {
+        self.inner.capture_pane_history(session, window, lines)
+    }
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()> {
         self.inner.paste_text(session, window, text)
     }

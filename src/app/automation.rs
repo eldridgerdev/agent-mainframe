@@ -1607,6 +1607,13 @@ impl App {
     }
 }
 
+fn automation_kind_name(kind: &SessionKind) -> String {
+    match kind {
+        SessionKind::Terminal => "terminal".to_string(),
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
 #[cfg(test)]
 mod prompt_readiness_tests {
     use super::*;
@@ -1647,12 +1654,5 @@ mod prompt_readiness_tests {
                 );
             }
         }
-    }
-}
-
-fn automation_kind_name(kind: &SessionKind) -> String {
-    match kind {
-        SessionKind::Terminal => "terminal".to_string(),
-        other => format!("{other:?}").to_lowercase(),
     }
 }

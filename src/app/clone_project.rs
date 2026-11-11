@@ -159,6 +159,8 @@ pub enum CloneProjectError {
     },
     /// Creating or changing the projects root was refused or failed.
     ProjectsRoot(String),
+    /// "Run in container" cannot use SSH: the sandbox has no SSH agent or keys.
+    ContainerNeedsHttps,
 }
 
 impl fmt::Display for CloneProjectError {
@@ -192,6 +194,10 @@ impl fmt::Display for CloneProjectError {
                 root.display()
             ),
             Self::ProjectsRoot(m) => write!(f, "{m}"),
+            Self::ContainerNeedsHttps => write!(
+                f,
+                "Running in a container needs an https:// URL: the sandbox has no SSH keys or agent, by design."
+            ),
         }
     }
 }
@@ -228,6 +234,10 @@ struct Preflighted {
 
 struct ActiveClone {
     handle: CloneHandle,
+    /// Env the clone ran with; finalize reuses it so the branch is read by the
+    /// same (containerized or host) git.
+    env: GitEnv,
+    containerized: bool,
     url: ParsedUrl,
     name: String,
     branch: Option<String>,
@@ -251,6 +261,9 @@ pub struct CloneProjectJob {
     last: Option<CloneTarget>,
     /// Harness to register the cloned project with (set by the GUI).
     preferred_agent: Option<crate::project::AgentKind>,
+    /// Run the clone in a container and register the project as containerized.
+    /// Set by the interface before pre-flight; a change resets the pre-flight.
+    containerized: bool,
 }
 
 impl Default for CloneProjectJob {
@@ -270,6 +283,7 @@ impl Default for CloneProjectJob {
             phase: ClonePhase::Idle,
             last: None,
             preferred_agent: None,
+            containerized: false,
         }
     }
 }
@@ -419,6 +433,28 @@ impl App {
         });
     }
 
+    /// Choose whether the next clone runs in a container (and the project is
+    /// registered as containerized). Invalidates a finished pre-flight, since
+    /// its result came from a different git.
+    pub fn set_clone_containerized(&mut self, containerized: bool) {
+        let job = self.clone_job();
+        if job.containerized == containerized {
+            return;
+        }
+        job.containerized = containerized;
+        job.preflighted = None;
+        // An in-flight pre-flight ran with the other git; drop it so its
+        // result can never be accepted for this setting (its id no longer
+        // matches, and the thread is cancelled).
+        job.retire_preflight();
+        if matches!(
+            job.phase,
+            ClonePhase::PreflightDone { .. } | ClonePhase::PreflightRunning
+        ) {
+            job.phase = ClonePhase::Idle;
+        }
+    }
+
     /// Derive the project name and directory (`<projects root>/<repo>`) from a
     /// URL typed by the user.
     pub fn derive_clone_target(
@@ -429,6 +465,9 @@ impl App {
             .clone_job()
             .parse_url(url_text)
             .map_err(CloneProjectError::Url)?;
+        if self.clone_job().containerized && parsed.kind != url::UrlKind::Https {
+            return Err(CloneProjectError::ContainerNeedsHttps);
+        }
         let root = self.config.projects_root();
         Ok(DerivedTarget {
             dest: dest::destination(&root, &parsed.repo_name),
@@ -448,6 +487,9 @@ impl App {
             .clone_job()
             .parse_url(url_text)
             .map_err(CloneProjectError::Url)?;
+        if self.clone_job().containerized && parsed.kind != url::UrlKind::Https {
+            return Err(CloneProjectError::ContainerNeedsHttps);
+        }
         let name = name.trim();
         if name.is_empty() {
             return Err(CloneProjectError::EmptyName);
@@ -598,8 +640,15 @@ impl App {
         job.next_id += 1;
         let id = job.next_id;
         let cancel: CancelToken = Arc::new(AtomicBool::new(false));
+        let containerized = job.containerized;
+        let settings = self.config.projects.container.clone();
+        let job = self.clone_job();
         let opts = PreflightOptions {
-            env: job.env.clone(),
+            env: if containerized {
+                job.env.in_container(&settings, None)
+            } else {
+                job.env.clone()
+            },
             ..PreflightOptions::default()
         };
         let tx = job.tx.clone();
@@ -608,7 +657,14 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("clone-preflight".into())
             .spawn(move || {
-                let report = preflight::run(&url, &opts, &token);
+                // Docker, the runtime and the image are checked (and the
+                // image built, which can take minutes) before the short
+                // per-command timeouts start.
+                let report =
+                    match containerized.then(|| crate::container::image::ensure_ready(&settings)) {
+                        Some(Err(e)) => preflight::container_unavailable(format!("{e:#}")),
+                        _ => preflight::run(&url, &opts, &token),
+                    };
                 let _ = tx.send((id, report));
             });
         match spawned {
@@ -695,6 +751,7 @@ impl App {
             return Err(CloneProjectError::Busy);
         }
         let target = self.validate_clone_target(url_text, dest, name)?;
+        let settings = self.config.projects.container.clone();
         let job = self.clone_job();
         match (&job.phase, &job.preflighted) {
             (ClonePhase::PreflightDone { blocked: false, .. }, Some(p))
@@ -707,11 +764,19 @@ impl App {
             _ => return Err(CloneProjectError::PreflightRequired),
         }
         let branch = job.preflighted.as_ref().and_then(|p| p.branch.clone());
-        let handle = runner::start(&job.env, &target.url.raw, &target.dest)
+        let containerized = job.containerized;
+        let env = if containerized {
+            job.env.in_container(&settings, Some(target.dest.clone()))
+        } else {
+            job.env.clone()
+        };
+        let handle = runner::start(&env, &target.url.raw, &target.dest)
             .map_err(|e| CloneProjectError::Start(e.to_string()))?;
         job.phase = ClonePhase::Cloning { progress: None };
         job.clone = Some(ActiveClone {
             handle,
+            env,
+            containerized,
             url: target.url.clone(),
             name: target.name.clone(),
             branch,
@@ -771,14 +836,16 @@ impl App {
     /// Success path: finalize with registration through the one existing
     /// project-creation path. Failure rolls the directory back.
     fn register_cloned_project(&mut self) {
-        let (env, mut active) = {
+        let mut active = {
             let job = self.clone_job();
             let Some(active) = job.clone.take() else {
                 return;
             };
             job.phase = ClonePhase::Registering;
-            (job.env.clone(), active)
+            active
         };
+        let env = active.env.clone();
+        let containerized = active.containerized;
         let preferred_agent = self.clone_job().preferred_agent.take();
         let name = active.name.clone();
         let result = finalize(
@@ -792,6 +859,7 @@ impl App {
                     project_name: name.to_string(),
                     preferred_agent: preferred_agent.clone(),
                     dry_run: false,
+                    containerized,
                 })
                 .map(|_| ())
             },

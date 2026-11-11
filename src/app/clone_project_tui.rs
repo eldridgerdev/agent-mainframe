@@ -29,10 +29,11 @@ impl App {
     /// is replaced, or cleared when the URL stops being usable (so emptying
     /// the field leaves the form exactly as it was before any URL).
     pub(crate) fn refresh_create_project_url(&mut self) {
-        let url = match &self.mode {
-            AppMode::CreatingProject(state) => state.url.trim().to_string(),
+        let (url, containerized) = match &self.mode {
+            AppMode::CreatingProject(state) => (state.url.trim().to_string(), state.containerized),
             _ => return,
         };
+        self.set_clone_containerized(containerized);
         // Whatever the form last complained about may be about the old URL.
         self.message = None;
         let derived = if url.is_empty() {
@@ -87,11 +88,13 @@ impl App {
         let AppMode::CreatingProject(form) = &self.mode else {
             return;
         };
-        let (url, path, name) = (
+        let (url, path, name, containerized) = (
             form.url.clone(),
             PathBuf::from(&form.path),
             form.name.clone(),
+            form.containerized,
         );
+        self.set_clone_containerized(containerized);
         match self.start_clone_preflight(&url, &path, &name) {
             Ok(()) => {
                 let AppMode::CreatingProject(form) =

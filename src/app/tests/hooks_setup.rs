@@ -229,6 +229,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -404,6 +405,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -1078,6 +1080,7 @@ fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -1145,6 +1148,7 @@ fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -2063,6 +2067,7 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         created_at: now,
         preferred_agent: AgentKind::Claude,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 4,
@@ -2115,6 +2120,7 @@ fn reselecting_the_current_project_harness_skips_the_probe() {
         created_at: Utc::now(),
         preferred_agent: AgentKind::Claude,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 4,

@@ -891,12 +891,13 @@ impl App {
             ));
         }
 
-        let project = Project::new(
+        let mut project = Project::new(
             request.project_name.clone(),
             project_path.clone(),
             is_git,
             preferred_agent,
         );
+        project.containerized = request.containerized;
         let project_id = project.id.clone();
         self.store.add_project(project);
         self.save()?;

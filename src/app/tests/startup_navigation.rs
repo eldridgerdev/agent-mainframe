@@ -210,6 +210,7 @@ fn visible_items_prioritizes_non_worktree_features() {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: true,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 2,

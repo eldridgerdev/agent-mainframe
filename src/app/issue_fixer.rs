@@ -1186,6 +1186,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         };
         let store = crate::project::ProjectStore {
             version: crate::project::CURRENT_PROJECT_STORE_VERSION,
@@ -1698,6 +1699,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         };
         let store = crate::project::ProjectStore {
             version: crate::project::CURRENT_PROJECT_STORE_VERSION,

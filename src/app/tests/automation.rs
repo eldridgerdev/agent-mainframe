@@ -41,6 +41,7 @@ fn create_project_automation_creates_project() {
         project_name: "automation-project".to_string(),
         preferred_agent: None,
         dry_run: false,
+        containerized: false,
     };
 
     let response = app.create_project_from_request(&request).unwrap();

@@ -32,6 +32,7 @@ impl App {
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
         let store_path = db.path.clone();
+        let sandbox: std::sync::Arc<crate::container::tmux::SandboxRegistry> = Default::default();
         let mut app = Self {
             sidebar_runtime,
             store,
@@ -145,7 +146,11 @@ impl App {
             ipc_tool_feature_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
-            tmux: Box::new(TmuxManager),
+            tmux: Box::new(crate::container::tmux::SandboxTmux::new(
+                Box::new(TmuxManager),
+                std::sync::Arc::clone(&sandbox),
+            )),
+            sandbox,
             worktree: std::sync::Arc::new(WorktreeManager),
             debug_log: DebugLog::default(),
             pending_debug_log_entries: VecDeque::new(),
@@ -196,6 +201,7 @@ impl App {
             }
         }
         app.refresh_fs_watch_paths();
+        app.sync_sandbox_registry();
         app.load_terminal_prs_from_db();
         // A version-mismatched -C client hangs without delivering any
         // events; leaving the observer unset keeps the faster 5s
@@ -405,6 +411,7 @@ impl App {
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,
+            sandbox: Default::default(),
             worktree: worktree.into(),
             debug_log: DebugLog::default(),
             pending_debug_log_entries: VecDeque::new(),

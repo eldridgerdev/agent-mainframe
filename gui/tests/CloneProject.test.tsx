@@ -281,3 +281,18 @@ it("errors from Create and Choose stay inside the panel", async () => {
   expect(screen.getByRole("group", { name: "Projects folder missing" })).toBeTruthy();
   expect(count("clone_project_derive")).toBe(1);
 });
+
+it("Run in container tells the backend before it derives, and shows the backend's SSH refusal", async () => {
+  mount();
+  await typeUrl();
+  expect(calls.find((c) => c.command === "clone_project_set_containerized")?.args).toEqual({ containerized: false });
+
+  handlers.clone_project_derive = () => fail("Running in a container needs an https:// URL: the sandbox has no SSH keys or agent, by design.");
+  fireEvent.click(screen.getByRole("checkbox", { name: /Run in container/ }));
+  expect((await screen.findByRole("alert")).textContent).toMatch(/needs an https:\/\/ URL/);
+
+  const order = calls.map((c) => c.command).filter((c) => c === "clone_project_set_containerized" || c === "clone_project_derive");
+  const lastSet = order.lastIndexOf("clone_project_set_containerized");
+  expect(order.lastIndexOf("clone_project_derive")).toBeGreaterThan(lastSet);
+  expect(calls.filter((c) => c.command === "clone_project_set_containerized").at(-1)?.args).toEqual({ containerized: true });
+});

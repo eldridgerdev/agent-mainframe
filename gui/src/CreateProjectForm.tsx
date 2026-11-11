@@ -5,7 +5,7 @@ import {
   AgentSlug, CLONE_PROJECT_EVENT, CloneFix, CloneProjectSnapshot, CreateProjectRequest, HarnessInfo,
   allowedHarnesses, asGuiError, cloneProjectCancel, cloneProjectDerive, cloneProjectPreflight,
   cloneProjectCreateRoot, cloneProjectReset, cloneProjectRootStatus, cloneProjectSetRoot,
-  cloneProjectSnapshot, cloneProjectStart, createProject,
+  cloneProjectSetContainerized, cloneProjectSnapshot, cloneProjectStart, createProject,
 } from "./api";
 import { CloneProgressView, FailureNotice, PreflightChecklist, ProjectsRootPanel } from "./CloneProjectPanels";
 import { Field, Modal, Spinner } from "./ui";
@@ -63,6 +63,7 @@ export default function CreateProjectForm({
   const [dest, setDest] = useState("");
   const [destEdited, setDestEdited] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [containerized, setContainerized] = useState(false);
   const [snap, setSnap] = useState<CloneProjectSnapshot | null>(null);
   const [cloneError, setCloneError] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ message: string; advice: string | null; fixes: CloneFix[] } | null>(null);
@@ -131,7 +132,8 @@ export default function CreateProjectForm({
     }
     let stale = false;
     const timer = setTimeout(() => {
-      cloneProjectDerive(typed).then(
+      // The backend refuses SSH URLs in container mode, so it must know first.
+      cloneProjectSetContainerized(containerized).then(() => cloneProjectDerive(typed)).then(
         (derived) => {
           if (stale) return;
           setUrlError(null);
@@ -142,9 +144,9 @@ export default function CreateProjectForm({
       );
     }, DERIVE_DEBOUNCE_MS);
     return () => { stale = true; clearTimeout(timer); };
-    // Edits to name/dest must not re-derive; only the URL does.
+    // Edits to name/dest must not re-derive; only the URL and mode do.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [url, containerized]);
 
   // Progress arrives as an event; a slow poll covers one that is missed.
   useEffect(() => {
@@ -363,6 +365,20 @@ export default function CreateProjectForm({
             spellCheck={false}
           />
         </Field>
+        {cloneMode && (
+          <label className="row small">
+            <input
+              type="checkbox"
+              checked={containerized}
+              onChange={(event) => { setContainerized(event.target.checked); setCloneError(null); setFailure(null); onEdit(); }}
+            />
+            <span>
+              <strong>Run in container</strong> — clone and run this project's agents and terminals in
+              a locked-down Docker container with only the checkout mounted and network limited to an
+              allowlist. Needs an HTTPS URL; use for code you don't trust.
+            </span>
+          </label>
+        )}
         {cloneMode && failure && <FailureNotice {...failure} />}
         {cloneMode && cloneError && (
           <p className="field-error" role="alert"><strong>Could not start.</strong> {cloneError}</p>

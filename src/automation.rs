@@ -236,6 +236,10 @@ pub struct CreateProjectRequest {
     pub project_name: String,
     pub preferred_agent: Option<AgentKind>,
     pub dry_run: bool,
+    /// Register the project as containerized. Set only by the clone-from-URL
+    /// flow, never accepted from an automation request or shown in its schema.
+    #[serde(skip)]
+    pub containerized: bool,
 }
 
 impl Default for CreateProjectRequest {
@@ -245,6 +249,7 @@ impl Default for CreateProjectRequest {
             project_name: String::new(),
             preferred_agent: None,
             dry_run: false,
+            containerized: false,
         }
     }
 }

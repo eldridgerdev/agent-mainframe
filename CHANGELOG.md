@@ -12,6 +12,22 @@ are tagged.
 
 ### Added
 
+- **Run a cloned project in a container.** When you clone from a URL, `Ctrl+O`
+  in the terminal form (or the *Run in container* checkbox in the desktop app)
+  clones inside a throwaway Docker container and registers the project as
+  containerized. Its agent and terminal sessions then run in a long-lived
+  container per feature that mounts only the project's checkout and a per-project
+  home volume for agent logins: no capabilities, no root, no host `$HOME`, SSH
+  keys or Docker socket, and the git config and hooks are read-only so code in the
+  container cannot plant a command for AMF's own git calls. Network access goes
+  through an allowlisting proxy (`projects.container.egress_allowlist`, default:
+  agent APIs, GitHub, npm, PyPI, crates.io); the sandbox has no other route out.
+  `projects.container.runtime` picks the OCI runtime: `runc` (default), `runsc`
+  (gVisor) or `kata` for a stronger boundary. Container mode needs an HTTPS URL,
+  Docker, and a one-time agent login inside the container. AMF also refuses to run
+  the host harness with tools or repository config enabled inside such a project.
+  See `docs/container-projects.md` for the threat model and limits.
+
 - **Create a project by cloning a git URL.** The new-project form (`N` in the
   terminal UI, and the desktop app's new-project form) has an optional URL field
   for HTTPS or SSH git URLs. The destination defaults to a folder named after the

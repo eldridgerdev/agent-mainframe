@@ -298,6 +298,12 @@ export interface CloneProjectSnapshot {
 /** Event carrying a `CloneProjectSnapshot` whenever the flow changes. */
 export const CLONE_PROJECT_EVENT = "clone_project_changed";
 
+/** Run the clone, and every later session, in a container. Call before
+ * deriving/validating: container mode refuses SSH URLs. */
+export function cloneProjectSetContainerized(containerized: boolean): Promise<void> {
+  return invoke("clone_project_set_containerized", { containerized });
+}
+
 export function cloneProjectDerive(url: string): Promise<DerivedCloneTarget> {
   return invoke("clone_project_derive", { url });
 }

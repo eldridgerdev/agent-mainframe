@@ -972,6 +972,7 @@ pub(super) mod tests {
                 created_at: now,
                 preferred_agent: AgentKind::default(),
                 is_git: true,
+                containerized: false,
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],

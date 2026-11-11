@@ -208,6 +208,17 @@ fn first_line(s: &str) -> &str {
         .trim()
 }
 
+/// The report for a containerized clone whose sandbox cannot be used (Docker
+/// missing, runtime not registered, image missing or failed to build). Shown
+/// as the failed `git` check, since the sandbox is where git runs.
+pub fn container_unavailable(message: impl Into<String>) -> PreflightReport {
+    PreflightReport {
+        outcome: Outcome::Failed,
+        checks: vec![fail(CheckId::Git, message, None)],
+        default_branch: None,
+    }
+}
+
 /// Run the pre-flight checks for `url`. Blocking; call from a worker thread.
 pub fn run(url: &ParsedUrl, opts: &PreflightOptions, cancel: &CancelToken) -> PreflightReport {
     let mut checks = Vec::new();

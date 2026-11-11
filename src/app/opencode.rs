@@ -269,6 +269,7 @@ impl App {
         opencode_session_id: &str,
         target_session_id: Option<&str>,
     ) -> Result<()> {
+        self.sync_sandbox_registry();
         // Same launch this feature's own start would do, reached from the
         // saved-transcript picker: gate it too. The picked session id lives in
         // the picker's state, which the confirmation dialog would replace, so

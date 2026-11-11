@@ -45,8 +45,8 @@ echo '{"label":"dev server"}' | amf automation remove-session
 - **Restart** with `key: "C-c"` then a new `text` + `run`.
 - **Clean up** terminals you created once they are no longer useful
   (`remove-session`). Never remove one the user opened.
-- Input and removal only work on terminal and custom sessions, never on agent
-  sessions.
+- Input and removal work on any non-agent session (terminal, custom, nvim,
+  VS Code), never on agent sessions.
 - For a quick one-shot command whose output only you need (a build, a test
   run), just run it in your own shell. Use a Terminal Session for things the
   user should watch or interact with: servers, TUIs, REPLs, manual testing.

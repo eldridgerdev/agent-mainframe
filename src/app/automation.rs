@@ -206,7 +206,18 @@ impl App {
                 session.tmux_window.clone(),
                 feature.tmux_session.clone(),
             );
-            self.deliver_terminal_command(&tmux_session, &window, request)?;
+            if request.command.is_some() {
+                response.message =
+                    match self.deliver_terminal_command(&tmux_session, &window, request) {
+                        Err(err) => {
+                            format!("Reused existing terminal; could not send command: {err}")
+                        }
+                        Ok(()) if request.run => {
+                            "Reused existing terminal and ran command".to_string()
+                        }
+                        Ok(()) => "Reused existing terminal; command typed but not run".to_string(),
+                    };
+            }
             self.log_info(
                 "automation",
                 format!("Automation reused terminal session {id}"),
@@ -562,8 +573,7 @@ impl App {
         let (pi, fi, si) = self.resolve_driveable_session(&request.target, &request.session)?;
         let session = &self.store.projects[pi].features[fi].sessions[si];
         let (session_id, label) = (session.id.clone(), session.label.clone());
-        self.selection = Selection::Session(pi, fi, si);
-        self.remove_session()?;
+        self.remove_session_at(pi, fi, si)?;
         Ok(SessionActionResponse {
             msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
             action: crate::automation::REMOVE_SESSION_ACTION,

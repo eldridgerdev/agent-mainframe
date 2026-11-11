@@ -2125,7 +2125,12 @@ impl TmuxManager {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let text = String::from_utf8_lossy(&output.stdout);
+        // `-S -N` starts N rows into scrollback and still includes the whole
+        // visible pane, so trim to exactly the last `lines` lines.
+        let all: Vec<&str> = text.trim_end().lines().collect();
+        let keep = all.len().saturating_sub(lines as usize);
+        Ok(all[keep..].join("\n"))
     }
 
     /// Capture pane content with ANSI escape sequences preserved

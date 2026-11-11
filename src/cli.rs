@@ -908,13 +908,25 @@ fn read_json_input_or_empty(file: Option<&PathBuf>) -> Result<String> {
     if reads_stdin && std::io::stdin().is_terminal() {
         return Ok("{}".to_string());
     }
-    match read_json_input(file) {
-        Err(err) if err.to_string().contains("payload is empty") => Ok("{}".to_string()),
-        other => other,
-    }
+    let payload = read_json_payload(file)?;
+    Ok(if payload.is_empty() {
+        "{}".to_string()
+    } else {
+        payload
+    })
 }
 
 fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
+    let payload = read_json_payload(file)?;
+    if payload.is_empty() {
+        anyhow::bail!("Automation request payload is empty");
+    }
+    Ok(payload)
+}
+
+/// Read and trim the request body; empty is returned as-is for the caller to
+/// judge.
+fn read_json_payload(file: Option<&PathBuf>) -> Result<String> {
     use std::io::Read;
 
     let mut payload = String::new();
@@ -930,12 +942,7 @@ fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
         }
     }
 
-    let payload = payload.trim();
-    if payload.is_empty() {
-        anyhow::bail!("Automation request payload is empty");
-    }
-
-    Ok(payload.to_string())
+    Ok(payload.trim().to_string())
 }
 
 /// `amf doctor`. Runs entirely outside the TUI, so printing to stdout is the

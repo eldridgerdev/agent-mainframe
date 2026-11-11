@@ -1516,6 +1516,9 @@ pub struct CreateProjectState {
     /// so an edit is never overwritten.
     pub name_derived: bool,
     pub path_derived: bool,
+    /// Run the clone, and every later session, in a container (Ctrl+O). Only
+    /// meaningful with a URL; the project is registered as containerized.
+    pub containerized: bool,
 }
 
 /// The clone flow's pre-flight / progress screens, reached from the New
@@ -1567,6 +1570,7 @@ impl CreateProjectState {
             url_error: None,
             name_derived: false,
             path_derived: false,
+            containerized: false,
         }
     }
 }

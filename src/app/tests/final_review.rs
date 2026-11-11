@@ -98,6 +98,7 @@ fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 5,

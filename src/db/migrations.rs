@@ -268,6 +268,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Retain screenshot ownership independently of live sessions",
             MIGRATION_047,
         ),
+        (
+            "Persist whether a project runs its sessions in a container",
+            MIGRATION_048,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1213,6 +1217,11 @@ CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
 /// Historical scope ownership survives replacement of the live workspace store.
 const MIGRATION_047: &str = "CREATE TABLE screenshot_scopes (scope_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, feature_id TEXT NOT NULL, session_id TEXT NOT NULL, workdir TEXT NOT NULL, owner_json TEXT NOT NULL, retired INTEGER NOT NULL DEFAULT 0); CREATE INDEX screenshot_scopes_session ON screenshot_scopes(project_id,feature_id,session_id,workdir,retired);";
 
+/// Container-mode projects must stay containerized across restarts and
+/// conflict reloads; the flag is part of the full-replace store.
+const MIGRATION_048: &str =
+    "ALTER TABLE projects ADD COLUMN containerized INTEGER NOT NULL DEFAULT 0;";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1259,7 +1268,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1298,7 +1307,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1393,7 +1402,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
     }
 
     #[test]
@@ -1734,7 +1743,7 @@ mod tests {
         conn.execute_batch(
             "DROP TABLE screenshot_scopes;
              ALTER TABLE feature_sessions DROP COLUMN stopped;
-             DELETE FROM schema_version WHERE version >= 45;
+             ALTER TABLE projects DROP COLUMN containerized; DELETE FROM schema_version WHERE version >= 45;
              INSERT INTO projects (id, name, repo, created_at)
              VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
              INSERT INTO features (
@@ -1776,7 +1785,7 @@ mod tests {
              DROP TABLE remote_devices;
              DROP TABLE model_research;
              ALTER TABLE feature_sessions DROP COLUMN stopped;
-             DELETE FROM schema_version WHERE version >= 41;
+             ALTER TABLE projects DROP COLUMN containerized; DELETE FROM schema_version WHERE version >= 41;
              INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
              VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
         )
@@ -1818,7 +1827,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1831,7 +1840,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 47);
+        assert_eq!(rows, 48);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -2000,7 +2009,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
@@ -2118,7 +2127,7 @@ mod tests {
                  (7, 1, 'old', 'fixing', NULL, '2026-01-01 00:00:00', 'b1', '$1'),
                  (7, 1, 'new', 'done', 'kept', '2026-02-01 00:00:00', 'b2', '$2');
              DROP TABLE screenshot_scopes;
-             DELETE FROM schema_version WHERE version >= 46;",
+             ALTER TABLE projects DROP COLUMN containerized; DELETE FROM schema_version WHERE version >= 46;",
         )
         .unwrap();
         let triage = crate::app::pr_review::TriageState::Skipped;

@@ -225,6 +225,8 @@ pub fn draw_create_project_dialog(
     let enter_label = if matches!(state.step, CreateProjectStep::Agent) {
         if state.url.trim().is_empty() {
             " confirm  "
+        } else if state.containerized {
+            " clone in container: run pre-flight  "
         } else {
             " clone: run pre-flight  "
         }
@@ -257,6 +259,26 @@ pub fn draw_create_project_dialog(
             ));
             hints.push(Span::raw(" choose harness"));
         }
+    }
+    if !state.url.trim().is_empty() || state.containerized {
+        hints.push(Span::styled(
+            "  Ctrl+O",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hints.push(Span::styled(
+            if state.containerized {
+                " [x] run in container"
+            } else {
+                " [ ] run in container"
+            },
+            if state.containerized {
+                Style::default()
+                    .fg(theme.success.to_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                muted
+            },
+        ));
     }
     if state.path_is_git == Some(false) && state.url.trim().is_empty() {
         hints.push(Span::styled(

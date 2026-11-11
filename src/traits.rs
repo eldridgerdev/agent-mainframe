@@ -27,8 +27,25 @@ pub trait TmuxOps: Send + Sync {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()>;
+    /// As [`Self::create_session_with_window`], with the first pane running
+    /// `command` instead of the user's shell (no host shell ever starts).
+    fn create_session_with_command(
+        &self,
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()>;
     fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()>;
     fn create_window(&self, session: &str, window: &str, workdir: &Path) -> Result<()>;
+    /// As [`Self::create_window`], with the pane running `command`.
+    fn create_window_with_command(
+        &self,
+        session: &str,
+        window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()>;
     fn launch_claude(
         &self,
         session: &str,

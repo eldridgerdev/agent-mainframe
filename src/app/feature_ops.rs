@@ -159,6 +159,12 @@ impl App {
             self.store.projects[pi].features[fi].tmux_session = current;
             return Err(error);
         }
+        // Docker objects are named after the tmux session. The old session is
+        // absent from tmux (checked above), so anything still running under
+        // its name is a leftover: remove it rather than orphan it.
+        if self.store.projects[pi].containerized {
+            crate::container::runtime::teardown(&current);
+        }
         self.log_warn(
             "tmux",
             format!("Assigned distinct tmux session {replacement} to feature {feature_id}"),
@@ -1248,6 +1254,8 @@ impl App {
             .map(|launch| launch.args.clone())
             .unwrap_or_default();
         self.disambiguate_feature_tmux_session(pi, fi)?;
+        // After any rename above: the registry is keyed by tmux session name.
+        self.sync_sandbox_registry();
         // Ask before any of the setup below runs, and only when this call will
         // really start something: an already-running session means the harness
         // is already counted, and re-entering its feature must not prompt.

@@ -271,6 +271,7 @@ impl App {
             project_name: state.name.clone(),
             preferred_agent: Some(state.agent.clone()),
             dry_run: false,
+            containerized: false,
         };
 
         let response = match self.create_project_from_request(&request) {

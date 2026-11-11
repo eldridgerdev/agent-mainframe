@@ -1032,6 +1032,8 @@ fn merge_project(target: &mut Project, incoming: Project) {
     target.created_at = incoming.created_at;
     target.preferred_agent = incoming.preferred_agent;
     target.is_git = incoming.is_git;
+    // Never cleared by a merge: an older snapshot must not unsandbox a project.
+    target.containerized |= incoming.containerized;
 }
 
 fn merge_feature_vec(mut existing: Vec<Feature>, incoming: Vec<Feature>) -> Vec<Feature> {

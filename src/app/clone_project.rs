@@ -443,7 +443,14 @@ impl App {
         }
         job.containerized = containerized;
         job.preflighted = None;
-        if matches!(job.phase, ClonePhase::PreflightDone { .. }) {
+        // An in-flight pre-flight ran with the other git; drop it so its
+        // result can never be accepted for this setting (its id no longer
+        // matches, and the thread is cancelled).
+        job.retire_preflight();
+        if matches!(
+            job.phase,
+            ClonePhase::PreflightDone { .. } | ClonePhase::PreflightRunning
+        ) {
             job.phase = ClonePhase::Idle;
         }
     }

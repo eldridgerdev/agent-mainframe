@@ -164,10 +164,10 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
     let prompt_templates = super::prompt_templates::load(conn)?;
 
     let mut proj_stmt = conn.prepare(
-        "SELECT id, name, repo, collapsed, preferred_agent, is_git, created_at
+        "SELECT id, name, repo, collapsed, preferred_agent, is_git, created_at, containerized
          FROM projects ORDER BY sort_order ASC, rowid ASC",
     )?;
-    let project_ids: Vec<(String, String, String, bool, String, bool, String)> = proj_stmt
+    let project_ids: Vec<(String, String, String, bool, String, bool, String, bool)> = proj_stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -177,12 +177,15 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
                 row.get(4)?,
                 row.get(5)?,
                 row.get(6)?,
+                row.get(7)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut projects = Vec::new();
-    for (id, name, repo, collapsed, preferred_agent, is_git, created_at) in project_ids {
+    for (id, name, repo, collapsed, preferred_agent, is_git, created_at, containerized) in
+        project_ids
+    {
         let features = load_features(conn, &id)?;
         projects.push(Project {
             id,
@@ -193,7 +196,7 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
             created_at: dt_from_str(&created_at),
             preferred_agent: agent_from_str(&preferred_agent),
             is_git,
-            containerized: false,
+            containerized,
         });
     }
 
@@ -559,8 +562,8 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
     for (pi, project) in store.projects.iter().enumerate() {
         conn.execute(
             "INSERT INTO projects
-             (id, name, repo, collapsed, preferred_agent, is_git, created_at, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, name, repo, collapsed, preferred_agent, is_git, created_at, sort_order, containerized)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 project.id,
                 project.name,
@@ -570,6 +573,7 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                 project.is_git as i32,
                 dt_to_str(&project.created_at),
                 pi as i64,
+                project.containerized as i32,
             ],
         )?;
 
@@ -1158,5 +1162,30 @@ mod tests {
             save_checked(&db.conn, &store, 0).unwrap(),
             SaveOutcome::Saved { new_version: 1 }
         );
+    }
+
+    #[test]
+    fn containerized_flag_round_trips_through_the_db() {
+        let (_tmp, db) = open_temp_db();
+        let mut sandboxed = Project::new(
+            "sbx".into(),
+            "/tmp/sbx".into(),
+            true,
+            crate::project::AgentKind::Claude,
+        );
+        sandboxed.containerized = true;
+        let plain = Project::new(
+            "plain".into(),
+            "/tmp/plain".into(),
+            true,
+            crate::project::AgentKind::Claude,
+        );
+        let mut store = empty_store();
+        store.projects.push(sandboxed);
+        store.projects.push(plain);
+        db.save_store(&store).unwrap();
+        let loaded = db.load_store().unwrap();
+        assert!(loaded.projects[0].containerized);
+        assert!(!loaded.projects[1].containerized);
     }
 }

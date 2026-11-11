@@ -84,7 +84,9 @@ pub fn ensure_running(spec: &SandboxSpec) -> Result<()> {
     image::docker_available()?;
     let names = Names::for_session(&spec.tmux_session);
     let egress = spec.settings.egress_allowlist_enabled;
-    if is_running(&names.sandbox) && (!egress || is_running(&names.proxy)) {
+    let sandbox_up = is_running(&names.sandbox);
+    let proxy_up = !egress || is_running(&names.proxy);
+    if sandbox_up && proxy_up {
         return Ok(());
     }
     if !image::image_exists(&spec.settings.image) {
@@ -94,10 +96,12 @@ pub fn ensure_running(spec: &SandboxSpec) -> Result<()> {
             spec.settings.image
         );
     }
-    teardown_names(&names);
 
     let uid_gid = args::host_uid_gid();
-    if egress {
+    // Restart only what is missing: tearing down a live sandbox would kill
+    // every `docker exec` pane in the feature's other windows.
+    if egress && !proxy_up {
+        let _ = docker_ok(&["rm", "-f", &names.proxy]);
         let dir = write_proxy_conf(spec, &names)?;
         if !docker_ok(&["network", "inspect", &names.network]) {
             docker(&args::network_create(&names))?;
@@ -105,7 +109,10 @@ pub fn ensure_running(spec: &SandboxSpec) -> Result<()> {
         docker(&args::proxy_run(spec, &uid_gid, &names, &dir)?)?;
         docker(&args::proxy_connect(&names))?;
     }
-    docker(&args::sandbox_run(spec, &uid_gid, &names)?)?;
+    if !sandbox_up {
+        let _ = docker_ok(&["rm", "-f", &names.sandbox]);
+        docker(&args::sandbox_run(spec, &uid_gid, &names)?)?;
+    }
     Ok(())
 }
 

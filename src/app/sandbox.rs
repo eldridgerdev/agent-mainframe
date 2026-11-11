@@ -5,6 +5,53 @@ use std::collections::HashMap;
 use super::App;
 use crate::container::args::SandboxSpec;
 
+/// Git metadata the sandbox must not be able to rewrite, because host git (AMF's
+/// own diff/status calls, the user's shell prompt) reads it and honours
+/// `core.fsmonitor`, hooks and `gitdir:` redirects by running commands.
+///
+/// Mounted read-only on top of the writable checkout: the repository's config
+/// and hooks, every linked worktree's `.git` file (a rewritten `gitdir:` line
+/// would point host git at a config the sandbox chose) and each
+/// `.git/worktrees/<n>/{gitdir,commondir,config.worktree}`. Only paths that
+/// exist can be mounted, so a `.git/commondir` that does not exist yet cannot
+/// be pre-empted; `docs/container-projects.md` states that limit.
+pub(crate) fn git_protected_paths(
+    repo: &std::path::Path,
+    workdirs: &[&std::path::PathBuf],
+) -> Vec<std::path::PathBuf> {
+    let git_dir = repo.join(".git");
+    let mut out = Vec::new();
+    if git_dir.is_dir() {
+        for n in ["config", "hooks", "commondir", "config.worktree"] {
+            let p = git_dir.join(n);
+            if p.exists() {
+                out.push(p);
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(git_dir.join("worktrees")) {
+            let mut dirs: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            dirs.sort();
+            for d in dirs {
+                for n in ["gitdir", "commondir", "config.worktree"] {
+                    let p = d.join(n);
+                    if p.is_file() {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    for wd in workdirs {
+        // A linked worktree's `.git` is a file; the repo root's is the
+        // directory handled above.
+        let dot_git = wd.join(".git");
+        if dot_git.is_file() && !out.contains(&dot_git) {
+            out.push(dot_git);
+        }
+    }
+    out
+}
+
 impl App {
     /// Rebuild the registry from the store: every feature of a containerized
     /// project gets a [`SandboxSpec`]. Cheap, and called wherever sessions can
@@ -25,14 +72,8 @@ impl App {
                 if !feature.workdir.starts_with(&project.repo) {
                     mounts.push(feature.workdir.clone());
                 }
-                let git_dir = project.repo.join(".git");
-                // Only a directory `.git` has a config and hooks of its own to
-                // protect (a linked worktree's `.git` is a file).
-                let protect: Vec<_> = ["config", "hooks"]
-                    .iter()
-                    .map(|n| git_dir.join(n))
-                    .filter(|p| p.exists())
-                    .collect();
+                let workdirs: Vec<_> = project.features.iter().map(|f| &f.workdir).collect();
+                let protect = git_protected_paths(&project.repo, &workdirs);
                 specs.insert(
                     feature.tmux_session.clone(),
                     SandboxSpec {
@@ -47,12 +88,17 @@ impl App {
             }
         }
         self.sandbox.replace_all(specs);
+        // The repo and every feature workdir: a worktree outside the repo is
+        // mounted into the sandbox and is just as untrusted.
         crate::headless::set_untrusted_roots(
             self.store
                 .projects
                 .iter()
                 .filter(|p| p.containerized)
-                .map(|p| p.repo.clone())
+                .flat_map(|p| {
+                    std::iter::once(p.repo.clone())
+                        .chain(p.features.iter().map(|f| f.workdir.clone()))
+                })
                 .collect(),
         );
     }
@@ -199,5 +245,31 @@ mod git_protection_tests {
                 repo.path().join(".git/hooks")
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod worktree_protection_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_git_files_and_metadata_are_protected() {
+        let repo = tempfile::tempdir().unwrap();
+        let g = repo.path().join(".git");
+        std::fs::create_dir_all(g.join("hooks")).unwrap();
+        std::fs::create_dir_all(g.join("worktrees/f")).unwrap();
+        std::fs::write(g.join("config"), "").unwrap();
+        std::fs::write(g.join("worktrees/f/gitdir"), "x").unwrap();
+        std::fs::write(g.join("worktrees/f/commondir"), "../..").unwrap();
+        let wd = repo.path().join(".worktrees/f");
+        std::fs::create_dir_all(&wd).unwrap();
+        std::fs::write(wd.join(".git"), "gitdir: x").unwrap();
+
+        let got = git_protected_paths(repo.path(), &[&wd]);
+        assert!(got.contains(&g.join("config")));
+        assert!(got.contains(&g.join("hooks")));
+        assert!(got.contains(&g.join("worktrees/f/gitdir")));
+        assert!(got.contains(&g.join("worktrees/f/commondir")));
+        assert!(got.contains(&wd.join(".git")));
     }
 }

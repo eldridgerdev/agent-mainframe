@@ -1841,6 +1841,17 @@ impl TmuxManager {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()> {
+        Self::create_session_with_window_command(session, first_window, workdir, None)
+    }
+
+    /// As [`Self::create_session_with_window`], but the first pane runs
+    /// `command` (via the shell) instead of the user's login shell.
+    pub fn create_session_with_window_command(
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: Option<&str>,
+    ) -> Result<()> {
         if Self::session_exists(session) {
             bail!("tmux session '{}' already exists", session);
         }
@@ -1848,17 +1859,19 @@ impl TmuxManager {
         let workdir_str = workdir.to_string_lossy();
         Self::set_global_default_terminal_if_needed()?;
 
+        let mut new_session_args = vec![
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-n",
+            first_window,
+            "-c",
+            &workdir_str,
+        ];
+        new_session_args.extend(command);
         Self::run_with_private_socket_recovery(
-            &[
-                "new-session",
-                "-d",
-                "-s",
-                session,
-                "-n",
-                first_window,
-                "-c",
-                &workdir_str,
-            ],
+            &new_session_args,
             "Failed to create tmux session",
             "tmux new-session failed",
         )?;
@@ -1884,20 +1897,33 @@ impl TmuxManager {
 
     /// Add a new window to an existing tmux session.
     pub fn create_window(session: &str, window_name: &str, workdir: &Path) -> Result<()> {
+        Self::create_window_command(session, window_name, workdir, None)
+    }
+
+    /// As [`Self::create_window`], but the pane runs `command` (via the shell)
+    /// instead of the user's login shell.
+    pub fn create_window_command(
+        session: &str,
+        window_name: &str,
+        workdir: &Path,
+        command: Option<&str>,
+    ) -> Result<()> {
         let workdir_str = workdir.to_string_lossy();
         Self::set_session_default_terminal_if_needed(session)?;
 
         let target = format!("{}:", session);
+        let mut args = vec![
+            "new-window",
+            "-t",
+            &target,
+            "-n",
+            window_name,
+            "-c",
+            &workdir_str,
+        ];
+        args.extend(command);
         Self::run(
-            &[
-                "new-window",
-                "-t",
-                &target,
-                "-n",
-                window_name,
-                "-c",
-                &workdir_str,
-            ],
+            &args,
             "Failed to create tmux window",
             "tmux new-window failed",
         )?;
@@ -2528,6 +2554,31 @@ impl TmuxOps for TmuxManager {
         workdir: &Path,
     ) -> Result<()> {
         TmuxManager::create_session_with_window(session, first_window, workdir)
+    }
+
+    fn create_session_with_command(
+        &self,
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
+        TmuxManager::create_session_with_window_command(
+            session,
+            first_window,
+            workdir,
+            Some(command),
+        )
+    }
+
+    fn create_window_with_command(
+        &self,
+        session: &str,
+        window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
+        TmuxManager::create_window_command(session, window, workdir, Some(command))
     }
 
     fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()> {

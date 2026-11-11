@@ -159,6 +159,12 @@ impl App {
             self.store.projects[pi].features[fi].tmux_session = current;
             return Err(error);
         }
+        // Docker objects are named after the tmux session. The old session is
+        // absent from tmux (checked above), so anything still running under
+        // its name is a leftover: remove it rather than orphan it.
+        if self.store.projects[pi].containerized {
+            crate::container::runtime::teardown(&current);
+        }
         self.log_warn(
             "tmux",
             format!("Assigned distinct tmux session {replacement} to feature {feature_id}"),

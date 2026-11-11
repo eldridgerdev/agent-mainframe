@@ -2,8 +2,8 @@
 //! container.
 //!
 //! For a session in the [`SandboxRegistry`] the decorator (1) makes sure the
-//! feature's containers are running, (2) creates each window normally and then
-//! replaces the pane's host shell with `docker exec` into the sandbox, and
+//! feature's containers are running, (2) creates each window running
+//! `docker exec` into the sandbox as its initial command (never a host shell), and
 //! (3) types agent launch commands into that shell instead of running the
 //! host-resolved binaries. Everything else, and every session not in the
 //! registry, goes straight to the inner implementation, so non-sandboxed
@@ -73,17 +73,6 @@ impl SandboxTmux {
         );
         self.inner.send_keys(session, window, &cmd)
     }
-
-    /// Start the containers and swap the freshly created pane's shell for one
-    /// inside them.
-    fn enter_sandbox(&self, spec: &SandboxSpec, window: &str) -> Result<()> {
-        let names = Names::for_session(&spec.tmux_session);
-        self.inner.send_keys(
-            &spec.tmux_session,
-            window,
-            &exec_shell_command(&names, &spec.workdir),
-        )
-    }
 }
 
 fn quoted_args(args: &[String]) -> String {
@@ -123,9 +112,38 @@ impl TmuxOps for SandboxTmux {
         };
         // Containers first: a failure here leaves no half-made tmux session.
         runtime::ensure_running(&spec)?;
+        // The pane starts as `docker exec`, never as a host shell, so the
+        // user's shell startup never runs in the untrusted checkout and a
+        // dead container closes the pane instead of leaving a host shell.
+        let names = Names::for_session(&spec.tmux_session);
+        self.inner.create_session_with_command(
+            session,
+            first_window,
+            workdir,
+            &exec_shell_command(&names, &spec.workdir),
+        )
+    }
+
+    fn create_session_with_command(
+        &self,
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
         self.inner
-            .create_session_with_window(session, first_window, workdir)?;
-        self.enter_sandbox(&spec, first_window)
+            .create_session_with_command(session, first_window, workdir, command)
+    }
+
+    fn create_window_with_command(
+        &self,
+        session: &str,
+        window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
+        self.inner
+            .create_window_with_command(session, window, workdir, command)
     }
 
     fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()> {
@@ -137,11 +155,14 @@ impl TmuxOps for SandboxTmux {
             return self.inner.create_window(session, window, workdir);
         };
         runtime::ensure_running(&spec)?;
-        self.inner.create_window(session, window, workdir)?;
         // Windows other than the feature root start in their own directory.
-        let mut spec = spec;
-        spec.workdir = workdir.to_path_buf();
-        self.enter_sandbox(&spec, window)
+        let names = Names::for_session(&spec.tmux_session);
+        self.inner.create_window_with_command(
+            session,
+            window,
+            workdir,
+            &exec_shell_command(&names, workdir),
+        )
     }
 
     fn launch_claude(

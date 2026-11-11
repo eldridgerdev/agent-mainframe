@@ -31,9 +31,12 @@ agent, keys or `gh` login, so private repositories are not supported.
 
 The sandbox container gets: the host uid (never root), `--cap-drop ALL`,
 `no-new-privileges`, a read-only root filesystem, a 512 MB `/tmp`, memory and
-pid limits, the project's checkout (read-write) with `.git/config` and
-`.git/hooks` on top of it read-only, and a named volume `amf-sbx-home-<project>`
-as `$HOME`. It never gets your home directory, SSH keys, host `~/.claude`, the
+pid limits, the project's checkout (read-write) with `.git/config`,
+`.git/hooks`, every linked worktree's `.git` file and each
+`.git/worktrees/<n>/{gitdir,commondir}` on top of it read-only, and a named volume `amf-sbx-home-<project>`
+as `$HOME`. Only git files that exist can be mounted read-only, so a
+`.git/commondir` created later from inside the sandbox is not blocked; treat
+host git commands run in a containerized checkout as a residual risk. It never gets your home directory, SSH keys, host `~/.claude`, the
 Docker socket, or AMF's state.
 
 ## Settings

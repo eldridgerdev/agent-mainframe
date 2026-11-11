@@ -704,6 +704,42 @@ fn select_interview_harness_with(
         .find(|harness| is_available(harness))
 }
 
+/// Checkout roots of projects that run in a container. The host harness is
+/// never started in one of these with tools or repo-controlled config enabled:
+/// that would run the repository's hooks, MCP servers or plugins on the host,
+/// which is exactly what the sandbox exists to prevent. Set by the app.
+static UNTRUSTED_ROOTS: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+pub fn set_untrusted_roots(roots: Vec<std::path::PathBuf>) {
+    *UNTRUSTED_ROOTS.lock().unwrap() = roots;
+}
+
+fn refuse_unrestricted_in_untrusted(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+) -> Result<()> {
+    refuse_unrestricted_in(&UNTRUSTED_ROOTS.lock().unwrap(), harness, spec, workdir)
+}
+
+fn refuse_unrestricted_in(
+    roots: &[std::path::PathBuf],
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+) -> Result<()> {
+    let untrusted = roots.iter().any(|root| workdir.starts_with(root));
+    if untrusted && !headless_command_is_read_only(harness, spec) {
+        anyhow::bail!(
+            "{} was not started: {} belongs to a project that runs in a container, and this run would let the repository's own settings execute on your machine. Use the project's agent session (it runs in the container) instead.",
+            harness.display_name(),
+            workdir.display()
+        );
+    }
+    Ok(())
+}
+
 fn run_command(
     harness: &AgentKind,
     spec: &HeadlessCommand,
@@ -783,6 +819,7 @@ fn run_cancellable_command_with_options(
     } = options;
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::Ordering;
+    refuse_unrestricted_in_untrusted(harness, spec, workdir)?;
     anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
     let args = assemble_args_with(harness, spec, &[], sel);
     let child = Command::new(&spec.binary)
@@ -920,6 +957,7 @@ fn run_command_with_args(
     prompt: &str,
     sel: ModelSel<'_>,
 ) -> Result<String> {
+    refuse_unrestricted_in_untrusted(harness, spec, workdir)?;
     // Held for the whole run so the concurrency gate sees headless work.
     // Taken here rather than at each call site: every path out of this
     // function — spawn failure, `?`, cancellation, panic — releases it.
@@ -1000,6 +1038,7 @@ fn run_jsonl_command(
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<String> {
     use std::os::unix::process::CommandExt;
+    refuse_unrestricted_in_untrusted(harness, spec, workdir)?;
     let check_cancelled = || -> Result<()> {
         anyhow::ensure!(
             !cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Relaxed)),
@@ -2001,6 +2040,28 @@ fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
             trailing: vec![],
             envs: vec![],
         }),
+    }
+}
+
+#[cfg(test)]
+mod untrusted_root_tests {
+    use super::*;
+
+    #[test]
+    fn unrestricted_runs_are_refused_inside_untrusted_roots_only() {
+        let roots = vec![std::path::PathBuf::from("/code/hostile")];
+        let open = command_for(&AgentKind::Claude, false);
+        let restricted = command_for(&AgentKind::Claude, true);
+        let inside = Path::new("/code/hostile/.worktrees/f");
+        let outside = Path::new("/code/mine");
+
+        let err = refuse_unrestricted_in(&roots, &AgentKind::Claude, &open, inside)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("runs in a container"), "{err}");
+        refuse_unrestricted_in(&roots, &AgentKind::Claude, &open, outside).unwrap();
+        // Isolated, no-tools runs stay available: nothing of the repo runs.
+        refuse_unrestricted_in(&roots, &AgentKind::Claude, &restricted, inside).unwrap();
     }
 }
 

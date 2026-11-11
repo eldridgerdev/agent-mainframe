@@ -279,6 +279,7 @@ fn main() {
             commands::clone_project::clone_project_reset,
             commands::clone_project::clone_project_snapshot,
             commands::clone_project::clone_project_root_status,
+            commands::clone_project::clone_project_set_containerized,
             commands::clone_project::clone_project_create_root,
             commands::clone_project::clone_project_set_root,
             steering_analyze,

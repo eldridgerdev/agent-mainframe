@@ -1268,6 +1268,7 @@ fn store_with_single_agent_session(
         created_at: now,
         preferred_agent: agent,
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -1424,6 +1425,7 @@ fn sync_session_status_shows_agent_token_usage() {
         created_at: now,
         preferred_agent: AgentKind::Claude,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 5,
@@ -1780,6 +1782,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         created_at,
         preferred_agent: AgentKind::Codex,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 5,
@@ -1916,6 +1919,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         created_at,
         preferred_agent: AgentKind::Codex,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 5,
@@ -2032,6 +2036,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         created_at,
         preferred_agent: AgentKind::Codex,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 5,
@@ -2131,6 +2136,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         created_at,
         preferred_agent: AgentKind::Claude,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 5,

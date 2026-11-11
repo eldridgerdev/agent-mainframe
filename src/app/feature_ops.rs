@@ -1248,6 +1248,8 @@ impl App {
             .map(|launch| launch.args.clone())
             .unwrap_or_default();
         self.disambiguate_feature_tmux_session(pi, fi)?;
+        // After any rename above: the registry is keyed by tmux session name.
+        self.sync_sandbox_registry();
         // Ask before any of the setup below runs, and only when this call will
         // really start something: an already-running session means the harness
         // is already counted, and re-entering its feature must not prompt.

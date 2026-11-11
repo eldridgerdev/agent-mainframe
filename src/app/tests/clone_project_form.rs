@@ -624,3 +624,68 @@ fn missing_non_root_parent_shows_the_old_error_without_a_prompt() {
     assert!(app.message.as_deref().unwrap().starts_with("Error:"));
     assert!(!tmp.path().join("elsewhere").exists());
 }
+
+fn ctrl(app: &mut App, c: char) {
+    crate::handlers::handle_key(
+        app,
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+        40,
+    )
+    .unwrap();
+}
+
+#[test]
+fn ctrl_o_toggles_container_mode_without_typing_into_a_field() {
+    let mut app = new_app();
+    app.start_create_project();
+    assert!(!form(&app).containerized);
+    ctrl(&mut app, 'o');
+    assert!(form(&app).containerized);
+    assert!(form(&app).name.is_empty(), "Ctrl+O must not type an 'o'");
+    ctrl(&mut app, 'o');
+    assert!(!form(&app).containerized);
+}
+
+#[test]
+fn container_mode_refuses_ssh_urls_and_says_why() {
+    let mut app = new_app();
+    app.start_create_project();
+    press(&mut app, KeyCode::BackTab); // to the URL field
+    type_text(&mut app, "git@github.com:o/r.git");
+    assert_eq!(form(&app).url_error, None, "fine without a container");
+    assert_eq!(form(&app).name, "r");
+
+    ctrl(&mut app, 'o');
+    let err = form(&app)
+        .url_error
+        .clone()
+        .expect("ssh refused in container mode");
+    assert!(err.contains("https://"), "{err}");
+
+    // Back to https: the error clears and a name is derived again.
+    for _ in 0..40 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    type_text(&mut app, "https://github.com/o/r.git");
+    assert_eq!(form(&app).url_error, None);
+    assert_eq!(form(&app).name, "r");
+}
+
+#[test]
+fn toggling_container_mode_discards_a_finished_preflight() {
+    let mut app = new_app();
+    app.set_clone_phase_for_test(
+        ClonePhase::PreflightDone {
+            checks: vec![],
+            default_branch: Some("main".into()),
+            blocked: false,
+        },
+        Some("https://github.com/o/r.git"),
+    );
+    assert!(app.clone_project_snapshot().can_start);
+    app.set_clone_containerized(true);
+    assert!(
+        !app.clone_project_snapshot().can_start,
+        "the host git's pre-flight says nothing about the sandbox"
+    );
+}

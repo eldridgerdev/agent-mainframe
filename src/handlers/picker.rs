@@ -1179,6 +1179,7 @@ mod tests {
                 created_at: now,
                 preferred_agent: AgentKind::Codex,
                 is_git: false,
+                containerized: false,
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],

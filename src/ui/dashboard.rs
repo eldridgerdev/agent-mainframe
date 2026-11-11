@@ -1512,6 +1512,7 @@ mod tests {
                     created_at: now,
                     preferred_agent: AgentKind::Claude,
                     is_git: false,
+                    containerized: false,
                 }],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
@@ -1874,6 +1875,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: false,
+            containerized: false,
         };
         (
             ProjectStore {
@@ -2538,6 +2540,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Codex,
             is_git: false,
+            containerized: false,
         };
         let mut app = App::new_for_test(
             ProjectStore {
@@ -2648,6 +2651,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: false,
+            containerized: false,
         };
         let mut app = App::new_for_test(
             ProjectStore {
@@ -2761,6 +2765,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: false,
+            containerized: false,
         };
         let mut app = App::new_for_test(
             ProjectStore {
@@ -2874,6 +2879,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Opencode,
             is_git: false,
+            containerized: false,
         };
         let mut app = App::new_for_test(
             ProjectStore {
@@ -2971,6 +2977,7 @@ mod tests {
             created_at: now,
             preferred_agent: AgentKind::Codex,
             is_git: false,
+            containerized: false,
         };
         let mut app = App::new_for_test(
             ProjectStore {

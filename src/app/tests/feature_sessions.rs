@@ -775,6 +775,7 @@ fn create_feature_branch_enter_allows_same_name_in_different_project() {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     });
     let mut app = app_in_creating_feature_mode(store, "other-project", "my-feat", false);
 
@@ -949,6 +950,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 2,
@@ -989,6 +991,7 @@ fn project_only_store(repo: &std::path::Path) -> ProjectStore {
         created_at: now,
         preferred_agent: AgentKind::Claude,
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -1079,6 +1082,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         created_at: now,
         preferred_agent: agent.clone(),
         is_git: true,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 2,
@@ -1277,6 +1281,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -1414,6 +1419,7 @@ fn restore_claude_session_only_affects_the_targeted_session() {
             created_at: now,
             preferred_agent: AgentKind::Claude,
             is_git: true,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
@@ -1787,6 +1793,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
         created_at: now,
         preferred_agent: AgentKind::Codex,
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 4,
@@ -2003,6 +2010,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         created_at: now,
         preferred_agent: AgentKind::Codex,
         is_git: true,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 4,
@@ -2530,6 +2538,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: true,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 2,
@@ -3603,6 +3612,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 4,
@@ -3712,6 +3722,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
         project_name: "automation-project".to_string(),
         preferred_agent: None,
         dry_run: true,
+        containerized: false,
     };
 
     let response = app.create_project_from_request(&request).unwrap();

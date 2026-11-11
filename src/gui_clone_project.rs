@@ -62,6 +62,13 @@ pub fn set_projects_root(gui: &mut GuiHandle, path: &str) -> GuiResult<PathBuf> 
         .map_err(input_error)
 }
 
+/// Run the clone, and every later session, in a container. Set before
+/// deriving or validating: container mode refuses SSH URLs.
+pub fn set_containerized(gui: &mut GuiHandle, containerized: bool) {
+    gui.app_for_workflow()
+        .set_clone_containerized(containerized);
+}
+
 /// Derive the project name and directory for `url`.
 pub fn derive(gui: &mut GuiHandle, url: &str) -> GuiResult<DerivedCloneTarget> {
     let derived = gui

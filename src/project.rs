@@ -915,6 +915,11 @@ pub struct Project {
     pub preferred_agent: AgentKind,
     #[serde(default)]
     pub is_git: bool,
+    /// Created from an untrusted URL with "run in container": its clone and
+    /// every session run in a container with only the checkout mounted. Never
+    /// cleared implicitly; see `docs/container-projects.md`.
+    #[serde(default)]
+    pub containerized: bool,
 }
 
 impl Project {
@@ -928,6 +933,7 @@ impl Project {
             created_at: Utc::now(),
             preferred_agent,
             is_git,
+            containerized: false,
         }
     }
 }
@@ -1386,6 +1392,7 @@ impl ProjectStore {
                     created_at: p.created_at,
                     preferred_agent: AgentKind::default(),
                     is_git: true,
+                    containerized: false,
                 }
             })
             .collect();
@@ -1849,6 +1856,7 @@ mod tests {
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
                 is_git: true,
+                containerized: false,
             }],
             session_bookmarks: vec![SessionBookmark {
                 project_id: "project-1".to_string(),
@@ -1963,6 +1971,7 @@ mod tests {
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Codex,
                 is_git: false,
+                containerized: false,
             }],
             session_bookmarks: vec![
                 SessionBookmark {
@@ -2029,6 +2038,7 @@ mod tests {
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Codex,
                 is_git: true,
+                containerized: false,
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],
@@ -2128,6 +2138,7 @@ mod tests {
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
                 is_git: true,
+                containerized: false,
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],

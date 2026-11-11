@@ -193,6 +193,7 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
             created_at: dt_from_str(&created_at),
             preferred_agent: agent_from_str(&preferred_agent),
             is_git,
+            containerized: false,
         });
     }
 
@@ -817,6 +818,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         };
 
         let mut store = empty_store();
@@ -910,6 +912,7 @@ mod tests {
                 created_at: Utc::now(),
                 preferred_agent: crate::project::AgentKind::Claude,
                 is_git: true,
+                containerized: false,
             });
         }
 
@@ -934,6 +937,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         });
         db.save_store(&store).unwrap();
 
@@ -948,6 +952,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         });
         db.save_store(&store2).unwrap();
 
@@ -1027,6 +1032,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         });
 
         db.save_store(&store).unwrap();
@@ -1068,6 +1074,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         });
         // A first writer's save, establishing version 1.
         save_checked(&db.conn, &store, 0).unwrap();
@@ -1085,6 +1092,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: crate::project::AgentKind::Claude,
             is_git: true,
+            containerized: false,
         });
         let outcome = save_checked(&db.conn, &stale_store, 0).unwrap();
 

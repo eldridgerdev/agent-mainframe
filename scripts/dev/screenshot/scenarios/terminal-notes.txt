@@ -1,0 +1,33 @@
+# terminal-notes: an agent opens two Terminal Sessions and leaves reference
+# notes on them. The sidebar gains a Terminal Notes section, and leader u reads
+# the notes in the markdown viewer. Offline fixtures make no model calls.
+shim:codex:../automation-codex-fixture.py
+run:python3 "$REPO_ROOT/scripts/dev/screenshot/seed-terminal-notes.py" "$AMF_BIN" "$SHOT_ROOT"
+wait:5000
+note:The agent targeted its own feature with only its session id and added two terminals, dev server and tests. They appear beside the agent in the feature's session list.
+expect:notes-demo
+expect:dev server
+expect:tests
+shot:terminals-created
+key:/|wait:500
+text:Codex 1|wait:500
+key:Enter|wait:750
+key:Enter|wait:1500
+note:Viewing the agent session, the sidebar shows a Terminal Notes section naming the terminals that have notes, with the leader u hint to open them.
+expect:Terminal Notes
+expect:<leader u>
+expect:dev server
+expect:tests
+shot:sidebar-terminal-notes
+key:C-Space
+wait:500
+key:u
+wait:1500
+note:Leader u opens the notes in the markdown viewer so the user has the commands the agent asked them to run right beside the conversation.
+expect:Terminal notes
+expect:npm run dev
+expect:npm test -- --runInBand
+expect:localhost:3000/login
+expect_not:amf-terminal-notes
+expect_not:<!--
+shot:notes-viewer

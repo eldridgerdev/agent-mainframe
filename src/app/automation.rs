@@ -159,6 +159,14 @@ impl App {
         if request.run && request.command.is_none() {
             bail!("run requires command");
         }
+        if let Some(notes) = request.notes.as_deref() {
+            if !is_terminal {
+                bail!("notes require a terminal session");
+            }
+            if notes.len() > super::terminal_notes::MAX_NOTES_BYTES {
+                bail!("notes are too long");
+            }
+        }
         if request.reuse && !is_terminal {
             bail!("reuse is only supported for terminal sessions");
         }
@@ -217,6 +225,15 @@ impl App {
                         }
                         Ok(()) => "Reused existing terminal; command typed but not run".to_string(),
                     };
+            }
+            if let Some(notes) = request.notes.as_deref() {
+                let workdir = feature.workdir.clone();
+                let label = session.label.clone();
+                if let Err(err) = super::terminal_notes::set_notes(&workdir, &id, &label, notes) {
+                    response
+                        .message
+                        .push_str(&format!("; notes not saved: {err}"));
+                }
             }
             self.log_info(
                 "automation",
@@ -280,6 +297,8 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("Session removed while creating it"))?;
         let window = session.tmux_window.clone();
         let tmux_session = feature.tmux_session.clone();
+        let workdir = feature.workdir.clone();
+        let session_label = session.label.clone();
         response.tmux_session = tmux_session.clone();
         response.tmux_window = Some(window.clone());
         response.session_id = Some(id.clone());
@@ -307,6 +326,13 @@ impl App {
             } else {
                 response.message = "Created session; command typed but not run".to_string();
             }
+        }
+        if let Some(notes) = request.notes.as_deref()
+            && let Err(err) = super::terminal_notes::set_notes(&workdir, &id, &session_label, notes)
+        {
+            response
+                .message
+                .push_str(&format!("; notes not saved: {err}"));
         }
         Ok(response)
     }

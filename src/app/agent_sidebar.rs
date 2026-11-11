@@ -58,6 +58,9 @@ pub(crate) struct AgentSidebarData {
     pub issue_source_text: Option<String>,
     pub pr_triage_text: Option<String>,
     pub plan_text: String,
+    /// Terminals the agent left reference notes for, one label per line.
+    /// `None` hides the section.
+    pub notes_text: Option<String>,
     pub context_snapshot: Option<SessionContextSnapshot>,
     pub context_hint_visible: bool,
 }
@@ -81,6 +84,7 @@ pub enum SidebarSectionKind {
     Usage,
     Context,
     Plan,
+    Notes,
     Issue,
     PrTriage,
     Work,
@@ -97,6 +101,7 @@ impl SidebarSectionKind {
             Self::Usage => "Usage",
             Self::Context => "Context",
             Self::Plan => "Plan",
+            Self::Notes => "Terminal Notes",
             Self::Issue => "Issue",
             Self::PrTriage => "PR Triage",
             Self::Work => "Work",
@@ -131,6 +136,9 @@ pub(crate) fn sidebar_section_bodies(data: &AgentSidebarData) -> Vec<(SidebarSec
     }
     if non_empty(&data.plan_text) {
         sections.push((SidebarSectionKind::Plan, data.plan_text.clone()));
+    }
+    if let Some(notes) = data.notes_text.as_deref().filter(|text| non_empty(text)) {
+        sections.push((SidebarSectionKind::Notes, notes.to_string()));
     }
     if let Some(issue) = data
         .issue_source_text
@@ -481,6 +489,7 @@ impl App {
                 issue_source_text: issue_source_sidebar_text(feature),
                 pr_triage_text: pr_triage_sidebar_text(self, feature, runtime),
                 plan_text: plan_sidebar_text(self, feature),
+                notes_text: super::terminal_notes::sidebar_text(&feature.workdir),
                 context_snapshot: common.context_snapshot,
                 context_hint_visible: common.context_hint_visible,
             },
@@ -536,6 +545,7 @@ impl App {
                 issue_source_text: issue_source_sidebar_text(feature),
                 pr_triage_text: pr_triage_sidebar_text(self, feature, runtime),
                 plan_text: plan_sidebar_text(self, feature),
+                notes_text: super::terminal_notes::sidebar_text(&feature.workdir),
                 context_snapshot: common.context_snapshot,
                 context_hint_visible: common.context_hint_visible,
             },
@@ -601,6 +611,7 @@ impl App {
                 issue_source_text: issue_source_sidebar_text(feature),
                 pr_triage_text: pr_triage_sidebar_text(self, feature, runtime),
                 plan_text: plan_sidebar_text(self, feature),
+                notes_text: super::terminal_notes::sidebar_text(&feature.workdir),
                 context_snapshot: common.context_snapshot,
                 context_hint_visible: common.context_hint_visible,
             },
@@ -647,6 +658,7 @@ impl App {
                 issue_source_text: issue_source_sidebar_text(feature),
                 pr_triage_text: pr_triage_sidebar_text(self, feature, runtime),
                 plan_text: plan_sidebar_text(self, feature),
+                notes_text: super::terminal_notes::sidebar_text(&feature.workdir),
                 context_snapshot: common.context_snapshot,
                 context_hint_visible: common.context_hint_visible,
             },

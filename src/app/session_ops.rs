@@ -2004,6 +2004,9 @@ impl App {
             )
         };
 
+        // Reference notes an agent left for this terminal go with it.
+        let _ = super::terminal_notes::clear_notes(&workdir, &session_id);
+
         // Run the custom session cleanup after a successful removal.
         if is_custom {
             if let Some(ref cmd) = on_stop {

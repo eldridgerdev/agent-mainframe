@@ -2110,6 +2110,24 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Plain text of the last `lines` lines of a window, scrollback included
+    /// and without escape sequences.
+    pub fn capture_pane_text_history(session: &str, window: &str, lines: u32) -> Result<String> {
+        let target = format!("{}:{}", session, window);
+        let start = format!("-{lines}");
+        let output = Self::command()
+            .args(["capture-pane", "-t", &target, "-p", "-J", "-S", &start])
+            .output()
+            .context("Failed to capture pane history")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "tmux capture-pane failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
     /// Capture pane content with ANSI escape sequences preserved
     pub fn capture_pane_ansi(session: &str, window: &str) -> Result<String> {
         Self::capture_pane_ansi_from_line(session, window, 0, 0)
@@ -2611,6 +2629,10 @@ impl TmuxOps for TmuxManager {
 
     fn capture_pane(&self, session: &str, window: &str) -> Result<String> {
         TmuxManager::capture_pane(session, window)
+    }
+
+    fn capture_pane_history(&self, session: &str, window: &str, lines: u32) -> Result<String> {
+        TmuxManager::capture_pane_text_history(session, window, lines)
     }
 
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()> {

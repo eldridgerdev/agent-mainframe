@@ -235,15 +235,28 @@ See docs/automation/README.md for responses.";
 
 const CREATE_SESSION_SCHEMA: &str = "Request JSON:
   {
-    \"project_name\": string (required) existing AMF project
-    \"feature\": string (required) existing feature name
+    \"project_name\": string existing AMF project (see target below)
+    \"feature\": string existing feature name (see target below)
+    \"feature_session_id\": string | null any session id in the feature
+    \"tmux_session\": string | null the feature's tmux session name
     \"kind\": string (required) claude, codex, opencode, pi, terminal or custom session name
     \"label\": string | null
     \"initial_prompt\": string | null
     \"submit_prompt\": bool default false
+    \"command\": string | null terminal only: text pasted into the new terminal
+    \"run\": bool default false, press Enter after command
+    \"reuse\": bool default false, terminal only: reuse a live terminal with this label
     \"dry_run\": bool default false
   }
+Target: feature_session_id, else tmux_session, else project_name + feature.
+With none of them set, $AMF_FEATURE_SESSION_ID (set inside AMF agent sessions)
+selects the caller's own feature.
 Reads --file or stdin. See docs/automation/README.md.";
+
+const SESSION_TARGET_HELP: &str = "Target: feature_session_id, else tmux_session, else
+project_name + feature. With none set, $AMF_FEATURE_SESSION_ID (set inside AMF
+agent sessions) selects the caller's own feature. Select the session with
+session_id or label. Reads --file or stdin. See docs/automation/README.md.";
 
 const CREATE_FEATURE_SCHEMA: &str = "\
 Request JSON (all fields optional unless marked required):
@@ -324,6 +337,46 @@ enum AutomationCommands {
         dry_run: bool,
         /// Timeout in milliseconds while waiting for AMF to reply.
         #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
+    /// List a feature's sessions (id, kind, label, running) from JSON input
+    #[command(after_help = SESSION_TARGET_HELP)]
+    ListSessions {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 30000)]
+        timeout_ms: u64,
+    },
+    /// Read a session's recent output. JSON: optional `lines` (default 200, max 5000)
+    #[command(after_help = SESSION_TARGET_HELP)]
+    CaptureSession {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 30000)]
+        timeout_ms: u64,
+    },
+    /// Type into a terminal/custom session. JSON: `text`, `run`, `key` (e.g. C-c)
+    #[command(after_help = SESSION_TARGET_HELP)]
+    SendSessionInput {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 30000)]
+        timeout_ms: u64,
+    },
+    /// Stop and delete a terminal/custom session
+    #[command(after_help = SESSION_TARGET_HELP)]
+    RemoveSession {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 30000)]
         timeout_ms: u64,
     },
     /// Create a single feature/worktree inside an existing AMF project from JSON input
@@ -846,6 +899,21 @@ fn draw_loading(frame: &mut Frame, message: &str, hint: &str) {
     frame.render_widget(paragraph, rect);
 }
 
+/// [`read_json_input`] for requests whose every field is optional: an
+/// interactive stdin (nothing piped) or an empty body means `{}`.
+fn read_json_input_or_empty(file: Option<&PathBuf>) -> Result<String> {
+    use std::io::IsTerminal;
+
+    let reads_stdin = file.is_none_or(|path| path.as_os_str() == "-");
+    if reads_stdin && std::io::stdin().is_terminal() {
+        return Ok("{}".to_string());
+    }
+    match read_json_input(file) {
+        Err(err) if err.to_string().contains("payload is empty") => Ok("{}".to_string()),
+        other => other,
+    }
+}
+
 fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
     use std::io::Read;
 
@@ -952,6 +1020,31 @@ fn run_doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn env_feature_session_id() -> Option<String> {
+    std::env::var(automation::FEATURE_SESSION_ID_ENV).ok()
+}
+
+fn parse_session_request<T: serde::de::DeserializeOwned>(
+    file: Option<&PathBuf>,
+    action: &str,
+) -> Result<T> {
+    // An empty body means "all defaults", so `amf automation list-sessions`
+    // works with no input from inside an agent session.
+    let payload = read_json_input_or_empty(file)?;
+    serde_json::from_str(&payload).with_context(|| format!("Invalid {action} JSON payload"))
+}
+
+fn send_session_automation(payload: serde_json::Value, timeout_ms: u64) -> Result<()> {
+    let socket = ipc::socket_path();
+    let outbound = serde_json::to_string(&payload)?;
+    let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+    );
+    Ok(())
+}
+
 fn run_automation_command(command: AutomationCommands) -> Result<()> {
     match command {
         AutomationCommands::CreateProject {
@@ -986,6 +1079,9 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             if dry_run {
                 request.dry_run = true;
             }
+            if request.target().is_empty() {
+                request.feature_session_id = std::env::var(automation::FEATURE_SESSION_ID_ENV).ok();
+            }
 
             let socket = ipc::socket_path();
             let outbound = serde_json::to_string(&request.ipc_payload())?;
@@ -995,6 +1091,30 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
                 serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
             );
             Ok(())
+        }
+        AutomationCommands::ListSessions { file, timeout_ms } => {
+            let mut request: automation::ListSessionsRequest =
+                parse_session_request(file.as_ref(), "list_sessions")?;
+            request.target.fill_from_env(env_feature_session_id());
+            send_session_automation(request.ipc_payload(), timeout_ms)
+        }
+        AutomationCommands::CaptureSession { file, timeout_ms } => {
+            let mut request: automation::CaptureSessionRequest =
+                parse_session_request(file.as_ref(), "capture_session")?;
+            request.target.fill_from_env(env_feature_session_id());
+            send_session_automation(request.ipc_payload(), timeout_ms)
+        }
+        AutomationCommands::SendSessionInput { file, timeout_ms } => {
+            let mut request: automation::SendSessionInputRequest =
+                parse_session_request(file.as_ref(), "send_session_input")?;
+            request.target.fill_from_env(env_feature_session_id());
+            send_session_automation(request.ipc_payload(), timeout_ms)
+        }
+        AutomationCommands::RemoveSession { file, timeout_ms } => {
+            let mut request: automation::RemoveSessionRequest =
+                parse_session_request(file.as_ref(), "remove_session")?;
+            request.target.fill_from_env(env_feature_session_id());
+            send_session_automation(request.ipc_payload(), timeout_ms)
         }
         AutomationCommands::CreateFeature {
             file,

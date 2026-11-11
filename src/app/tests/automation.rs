@@ -1073,3 +1073,225 @@ fn create_feature_automation_attaches_existing_worktree() {
     let err = app.create_feature_from_request(&request).unwrap_err();
     assert!(err.to_string().contains("already used by feature"), "{err}");
 }
+
+fn app_with_terminal_and_agent(tmux: MockTmuxOps) -> (App, String, String) {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let feature = &mut store.projects[0].features[0];
+    let agent_id = feature
+        .add_session_named(SessionKind::Claude, "Claude".into())
+        .id
+        .clone();
+    let terminal_id = feature
+        .add_session_named(SessionKind::Terminal, "dev server".into())
+        .id
+        .clone();
+    let app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    (app, agent_id, terminal_id)
+}
+
+#[test]
+fn feature_target_fills_only_when_empty() {
+    use crate::automation::FeatureTarget;
+    let mut empty = FeatureTarget::default();
+    empty.fill_from_env(Some("sess-1".into()));
+    assert_eq!(empty.feature_session_id.as_deref(), Some("sess-1"));
+
+    let mut named = FeatureTarget {
+        project_name: "p".into(),
+        feature: "f".into(),
+        ..Default::default()
+    };
+    named.fill_from_env(Some("sess-1".into()));
+    assert!(named.feature_session_id.is_none());
+
+    let mut blank = FeatureTarget::default();
+    blank.fill_from_env(Some("  ".into()));
+    assert!(blank.is_empty());
+}
+
+#[test]
+fn create_session_targets_callers_feature_by_session_id_and_runs_command() {
+    let (mut app, agent_id, _) = app_with_terminal_and_agent({
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .withf(|_, _, text| text == "npm run dev")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux
+    });
+    let dir = TempDir::new().unwrap();
+    app.store.projects[0].features[0].workdir = dir.path().into();
+    let request = crate::automation::CreateSessionRequest {
+        feature_session_id: Some(agent_id),
+        kind: "terminal".into(),
+        label: Some("web".into()),
+        command: Some("npm run dev".into()),
+        run: true,
+        ..Default::default()
+    };
+    let response = app.create_session_from_request(&request).unwrap();
+    assert!(!response.reused);
+    assert_eq!(response.message, "Created session and ran command");
+    assert!(
+        app.store.projects[0].features[0]
+            .sessions
+            .iter()
+            .any(|s| s.label == "web" && s.kind == SessionKind::Terminal)
+    );
+}
+
+#[test]
+fn create_session_validates_terminal_only_fields() {
+    let (mut app, agent_id, _) = app_with_terminal_and_agent(MockTmuxOps::new());
+    let base = crate::automation::CreateSessionRequest {
+        feature_session_id: Some(agent_id),
+        kind: "terminal".into(),
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut request = base.clone();
+    request.run = true;
+    assert!(
+        app.create_session_from_request(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("run requires command")
+    );
+    let mut request = base.clone();
+    request.kind = "claude".into();
+    request.command = Some("ls".into());
+    assert!(app.create_session_from_request(&request).is_err());
+    let mut request = base.clone();
+    request.kind = "claude".into();
+    request.reuse = true;
+    assert!(app.create_session_from_request(&request).is_err());
+    let mut request = base;
+    request.feature_session_id = Some("nope".into());
+    assert!(
+        app.create_session_from_request(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("No AMF session")
+    );
+}
+
+#[test]
+fn create_session_reuse_returns_live_terminal_with_label() {
+    let (mut app, agent_id, terminal_id) = app_with_terminal_and_agent({
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name().times(0);
+        tmux
+    });
+    let request = crate::automation::CreateSessionRequest {
+        feature_session_id: Some(agent_id),
+        kind: "terminal".into(),
+        label: Some("dev server".into()),
+        command: Some("rs".into()),
+        reuse: true,
+        ..Default::default()
+    };
+    let response = app.create_session_from_request(&request).unwrap();
+    assert!(response.reused);
+    assert_eq!(response.session_id.as_deref(), Some(terminal_id.as_str()));
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+}
+
+#[test]
+fn list_and_capture_sessions() {
+    use crate::automation::{CaptureSessionRequest, FeatureTarget, ListSessionsRequest};
+    let (app, agent_id, terminal_id) = app_with_terminal_and_agent({
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_capture_pane_history()
+            .withf(|_, _, lines| *lines == 5000)
+            .returning(|_, _, _| Ok("ready on :3000\n\n\n".into()));
+        tmux
+    });
+    let target = FeatureTarget {
+        feature_session_id: Some(agent_id),
+        ..Default::default()
+    };
+    let listed = app
+        .list_sessions_from_request(&ListSessionsRequest {
+            target: target.clone(),
+        })
+        .unwrap();
+    assert_eq!(listed.sessions.len(), 2);
+    assert!(listed.sessions.iter().all(|s| s.running));
+    assert_eq!(listed.sessions[1].kind, "terminal");
+
+    let captured = app
+        .capture_session_from_request(&CaptureSessionRequest {
+            target,
+            session: crate::automation::SessionSelector {
+                label: Some("dev server".into()),
+                ..Default::default()
+            },
+            lines: Some(999_999),
+        })
+        .unwrap();
+    assert_eq!(captured.session_id, terminal_id);
+    assert_eq!(captured.text, "ready on :3000");
+}
+
+#[test]
+fn send_input_and_remove_refuse_agent_sessions_and_bad_keys() {
+    use crate::automation::{
+        FeatureTarget, RemoveSessionRequest, SendSessionInputRequest, SessionSelector,
+    };
+    let (mut app, agent_id, terminal_id) = app_with_terminal_and_agent({
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-c")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux
+    });
+    let target = FeatureTarget {
+        feature_session_id: Some(agent_id.clone()),
+        ..Default::default()
+    };
+    let agent = SessionSelector {
+        session_id: Some(agent_id),
+        ..Default::default()
+    };
+    let terminal = SessionSelector {
+        session_id: Some(terminal_id),
+        ..Default::default()
+    };
+    let send = |key: &str, session: &SessionSelector| SendSessionInputRequest {
+        target: target.clone(),
+        session: session.clone(),
+        key: Some(key.into()),
+        ..Default::default()
+    };
+    let err = app
+        .send_session_input_from_request(&send("C-c", &agent))
+        .unwrap_err();
+    assert!(err.to_string().contains("agent session"));
+    assert!(
+        app.send_session_input_from_request(&send("-t", &terminal))
+            .is_err()
+    );
+    app.send_session_input_from_request(&send("C-c", &terminal))
+        .unwrap();
+    assert!(
+        app.remove_session_from_request(&RemoveSessionRequest {
+            target,
+            session: agent,
+        })
+        .is_err()
+    );
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+}

@@ -4,10 +4,12 @@ use anyhow::{Context, Result, bail};
 
 use super::*;
 use crate::automation::{
-    AutomationHookPrompt, BatchFeatureAutomationResult, CreateBatchFeaturesRequest,
-    CreateBatchFeaturesResponse, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
-    CreateProjectResponse, CreateSessionRequest, CreateSessionResponse, SeedAiReviewRequest,
-    SeedAiReviewResponse,
+    AutomationHookPrompt, BatchFeatureAutomationResult, CaptureSessionRequest,
+    CaptureSessionResponse, CreateBatchFeaturesRequest, CreateBatchFeaturesResponse,
+    CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
+    CreateSessionRequest, CreateSessionResponse, FeatureTarget, ListSessionsRequest,
+    ListSessionsResponse, RemoveSessionRequest, SeedAiReviewRequest, SeedAiReviewResponse,
+    SendSessionInputRequest, SessionActionResponse, SessionSelector, SessionSummary,
 };
 use crate::extension::{HookPrompt, merge_project_extension_config};
 use crate::project::{normalized_feature_name, tmux_session_name, worktree_name};
@@ -108,8 +110,9 @@ impl App {
         &mut self,
         request: &CreateSessionRequest,
     ) -> Result<CreateSessionResponse> {
-        if request.project_name.trim().is_empty() || request.feature.trim().is_empty() {
-            bail!("project_name and feature are required");
+        let target = request.target();
+        if target.is_empty() {
+            bail!("project_name and feature (or feature_session_id) are required");
         }
         if request
             .label
@@ -118,17 +121,7 @@ impl App {
         {
             bail!("Session label cannot be empty");
         }
-        let pi = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == request.project_name)
-            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", request.project_name))?;
-        let fi = self.store.projects[pi]
-            .features
-            .iter()
-            .position(|f| f.name == request.feature)
-            .ok_or_else(|| anyhow::anyhow!("Feature '{}' not found", request.feature))?;
+        let (pi, fi) = self.resolve_automation_feature(&target)?;
         let agent = match request.kind.as_str() {
             "claude" => Some(AgentKind::Claude),
             "codex" => Some(AgentKind::Codex),
@@ -152,6 +145,23 @@ impl App {
         if request.initial_prompt.is_some() && agent.is_none() {
             bail!("initial_prompt requires an agent harness session");
         }
+        let is_terminal = agent.is_none() && custom.is_none();
+        if request.command.is_some() && !is_terminal {
+            bail!("command requires a terminal session; agent sessions take initial_prompt");
+        }
+        if request
+            .command
+            .as_deref()
+            .is_some_and(|c| c.trim().is_empty())
+        {
+            bail!("command cannot be empty");
+        }
+        if request.run && request.command.is_none() {
+            bail!("run requires command");
+        }
+        if request.reuse && !is_terminal {
+            bail!("reuse is only supported for terminal sessions");
+        }
         if let Some(agent) = &agent
             && !self.allows_agent_for_repo(repo, agent)
         {
@@ -173,12 +183,34 @@ impl App {
             tmux_session: self.store.projects[pi].features[fi].tmux_session.clone(),
             tmux_window: None,
             session_id: None,
+            reused: false,
             message: format!(
                 "Dry run: would create '{}' session in '{}'",
-                label, request.feature
+                label, self.store.projects[pi].features[fi].name
             ),
         };
         if request.dry_run {
+            return Ok(response);
+        }
+        if request.reuse
+            && let Some(reused) = self.live_terminal_with_label(pi, fi, &label)
+        {
+            let feature = &self.store.projects[pi].features[fi];
+            let session = &feature.sessions[reused];
+            response.tmux_window = Some(session.tmux_window.clone());
+            response.session_id = Some(session.id.clone());
+            response.reused = true;
+            response.message = "Reused existing terminal".to_string();
+            let (id, window, tmux_session) = (
+                session.id.clone(),
+                session.tmux_window.clone(),
+                feature.tmux_session.clone(),
+            );
+            self.deliver_terminal_command(&tmux_session, &window, request)?;
+            self.log_info(
+                "automation",
+                format!("Automation reused terminal session {id}"),
+            );
             return Ok(response);
         }
         let kind = agent
@@ -235,8 +267,10 @@ impl App {
             .iter()
             .find(|session| session.id == id)
             .ok_or_else(|| anyhow::anyhow!("Session removed while creating it"))?;
-        response.tmux_session = feature.tmux_session.clone();
-        response.tmux_window = Some(session.tmux_window.clone());
+        let window = session.tmux_window.clone();
+        let tmux_session = feature.tmux_session.clone();
+        response.tmux_session = tmux_session.clone();
+        response.tmux_window = Some(window.clone());
         response.session_id = Some(id.clone());
         response.message = if request.initial_prompt.is_some() {
             if request.submit_prompt {
@@ -252,7 +286,292 @@ impl App {
             request.initial_prompt.as_deref(),
             request.submit_prompt,
         );
+        if request.command.is_some() {
+            if let Err(err) = self.deliver_terminal_command(&tmux_session, &window, request) {
+                // The terminal exists; report the failed delivery without
+                // pretending the whole request failed.
+                response.message = format!("Created session; could not send command: {err}");
+            } else if request.run {
+                response.message = "Created session and ran command".to_string();
+            } else {
+                response.message = "Created session; command typed but not run".to_string();
+            }
+        }
         Ok(response)
+    }
+
+    /// Paste the request's `command` into a terminal window, then Enter when
+    /// `run` is set. A no-op without a command. tmux queues keystrokes on the
+    /// pty, so this is safe immediately after the window is created.
+    fn deliver_terminal_command(
+        &self,
+        tmux_session: &str,
+        window: &str,
+        request: &CreateSessionRequest,
+    ) -> Result<()> {
+        let Some(command) = request.command.as_deref() else {
+            return Ok(());
+        };
+        self.tmux.paste_text(tmux_session, window, command)?;
+        if request.run {
+            self.tmux.send_key_name(tmux_session, window, "Enter")?;
+        }
+        Ok(())
+    }
+
+    /// Index of a live (window up, not individually stopped) terminal session
+    /// in the feature carrying `label`, if any.
+    fn live_terminal_with_label(&self, pi: usize, fi: usize, label: &str) -> Option<usize> {
+        let feature = self.store.projects.get(pi)?.features.get(fi)?;
+        if feature.status == ProjectStatus::Stopped {
+            return None;
+        }
+        feature.sessions.iter().position(|s| {
+            s.kind == SessionKind::Terminal
+                && s.label == label
+                && !s.stopped
+                && self
+                    .tmux
+                    .window_exists(&feature.tmux_session, &s.tmux_window)
+        })
+    }
+
+    /// Resolve an automation target to `(project, feature)` indices.
+    pub(crate) fn resolve_automation_feature(
+        &self,
+        target: &FeatureTarget,
+    ) -> Result<(usize, usize)> {
+        if let Some(id) = target
+            .feature_session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            return self
+                .session_indices_by_id(id)
+                .map(|(pi, fi, _)| (pi, fi))
+                .ok_or_else(|| anyhow::anyhow!("No AMF session with id '{id}'"));
+        }
+        if let Some(name) = target.tmux_session.as_deref().filter(|s| !s.is_empty()) {
+            return self
+                .store
+                .projects
+                .iter()
+                .enumerate()
+                .find_map(|(pi, p)| {
+                    p.features
+                        .iter()
+                        .position(|f| f.tmux_session == name)
+                        .map(|fi| (pi, fi))
+                })
+                .ok_or_else(|| anyhow::anyhow!("No feature with tmux session '{name}'"));
+        }
+        if target.project_name.trim().is_empty() || target.feature.trim().is_empty() {
+            bail!("project_name and feature (or feature_session_id) are required");
+        }
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == target.project_name)
+            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", target.project_name))?;
+        let fi = self.store.projects[pi]
+            .features
+            .iter()
+            .position(|f| f.name == target.feature)
+            .ok_or_else(|| anyhow::anyhow!("Feature '{}' not found", target.feature))?;
+        Ok((pi, fi))
+    }
+
+    /// Resolve a selector to a tmux-backed session index within a feature.
+    /// An id wins over a label; an ambiguous label is an error rather than a
+    /// guess, since the caller may be about to send input or delete.
+    fn resolve_automation_session(
+        &self,
+        pi: usize,
+        fi: usize,
+        selector: &SessionSelector,
+    ) -> Result<usize> {
+        let feature = &self.store.projects[pi].features[fi];
+        if let Some(id) = selector.session_id.as_deref().filter(|s| !s.is_empty()) {
+            return feature
+                .sessions
+                .iter()
+                .position(|s| s.id == id && s.kind.is_tmux_backed())
+                .ok_or_else(|| anyhow::anyhow!("No terminal-backed session with id '{id}'"));
+        }
+        let Some(label) = selector.label.as_deref().filter(|s| !s.is_empty()) else {
+            bail!("session_id or label is required");
+        };
+        let mut matches = feature
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.label == label && s.kind.is_tmux_backed());
+        let first = matches
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No session labeled '{label}'"))?;
+        if matches.next().is_some() {
+            bail!("More than one session is labeled '{label}'; use session_id");
+        }
+        Ok(first.0)
+    }
+
+    /// Like [`Self::resolve_automation_session`], but refuses agent harness
+    /// sessions: an automation caller (usually an agent) may drive terminals,
+    /// never type into or delete an agent, including itself.
+    fn resolve_driveable_session(
+        &self,
+        target: &FeatureTarget,
+        selector: &SessionSelector,
+    ) -> Result<(usize, usize, usize)> {
+        let (pi, fi) = self.resolve_automation_feature(target)?;
+        let si = self.resolve_automation_session(pi, fi, selector)?;
+        let session = &self.store.projects[pi].features[fi].sessions[si];
+        if session.kind.is_agent_harness() {
+            bail!(
+                "'{}' is an agent session; only terminal and custom sessions can be driven",
+                session.label
+            );
+        }
+        Ok((pi, fi, si))
+    }
+
+    pub fn list_sessions_from_request(
+        &self,
+        request: &ListSessionsRequest,
+    ) -> Result<ListSessionsResponse> {
+        let (pi, fi) = self.resolve_automation_feature(&request.target)?;
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        let sessions = feature
+            .sessions
+            .iter()
+            .map(|s| {
+                let backed = s.kind.is_tmux_backed();
+                SessionSummary {
+                    session_id: s.id.clone(),
+                    kind: automation_kind_name(&s.kind),
+                    label: s.label.clone(),
+                    tmux_window: backed.then(|| s.tmux_window.clone()),
+                    running: backed
+                        && feature.status != ProjectStatus::Stopped
+                        && !s.stopped
+                        && self
+                            .tmux
+                            .window_exists(&feature.tmux_session, &s.tmux_window),
+                }
+            })
+            .collect();
+        Ok(ListSessionsResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::LIST_SESSIONS_ACTION,
+            ok: true,
+            project_name: project.name.clone(),
+            feature: feature.name.clone(),
+            tmux_session: feature.tmux_session.clone(),
+            sessions,
+        })
+    }
+
+    /// Output of a terminal-backed session. Reading is allowed for agent
+    /// sessions too; it changes nothing.
+    pub fn capture_session_from_request(
+        &self,
+        request: &CaptureSessionRequest,
+    ) -> Result<CaptureSessionResponse> {
+        const DEFAULT_LINES: u32 = 200;
+        const MAX_LINES: u32 = 5000;
+        let (pi, fi) = self.resolve_automation_feature(&request.target)?;
+        let si = self.resolve_automation_session(pi, fi, &request.session)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        let lines = request.lines.unwrap_or(DEFAULT_LINES).clamp(1, MAX_LINES);
+        if feature.status == ProjectStatus::Stopped
+            || session.stopped
+            || !self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+        {
+            bail!("Session '{}' is not running", session.label);
+        }
+        let raw =
+            self.tmux
+                .capture_pane_history(&feature.tmux_session, &session.tmux_window, lines)?;
+        // tmux pads the screen with blank rows below the cursor.
+        let text = raw.trim_end().to_string();
+        Ok(CaptureSessionResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::CAPTURE_SESSION_ACTION,
+            ok: true,
+            session_id: session.id.clone(),
+            label: session.label.clone(),
+            text,
+        })
+    }
+
+    pub fn send_session_input_from_request(
+        &self,
+        request: &SendSessionInputRequest,
+    ) -> Result<SessionActionResponse> {
+        if request.text.is_none() && request.key.is_none() {
+            bail!("text or key is required");
+        }
+        if request.run && request.text.is_none() {
+            bail!("run requires text");
+        }
+        if let Some(key) = request.key.as_deref()
+            && (key.is_empty() || key.starts_with('-') || key.contains(char::is_whitespace))
+        {
+            bail!("key must be a single tmux key name such as C-c or Enter");
+        }
+        let (pi, fi, si) = self.resolve_driveable_session(&request.target, &request.session)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        if feature.status == ProjectStatus::Stopped
+            || session.stopped
+            || !self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+        {
+            bail!("Session '{}' is not running", session.label);
+        }
+        let (tmux_session, window) = (&feature.tmux_session, &session.tmux_window);
+        if let Some(text) = request.text.as_deref() {
+            self.tmux.paste_text(tmux_session, window, text)?;
+            if request.run {
+                self.tmux.send_key_name(tmux_session, window, "Enter")?;
+            }
+        }
+        if let Some(key) = request.key.as_deref() {
+            self.tmux.send_key_name(tmux_session, window, key)?;
+        }
+        Ok(SessionActionResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::SEND_SESSION_INPUT_ACTION,
+            ok: true,
+            session_id: session.id.clone(),
+            label: session.label.clone(),
+            message: "Sent input".to_string(),
+        })
+    }
+
+    pub fn remove_session_from_request(
+        &mut self,
+        request: &RemoveSessionRequest,
+    ) -> Result<SessionActionResponse> {
+        let (pi, fi, si) = self.resolve_driveable_session(&request.target, &request.session)?;
+        let session = &self.store.projects[pi].features[fi].sessions[si];
+        let (session_id, label) = (session.id.clone(), session.label.clone());
+        self.selection = Selection::Session(pi, fi, si);
+        self.remove_session()?;
+        Ok(SessionActionResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::REMOVE_SESSION_ACTION,
+            ok: true,
+            session_id,
+            label,
+            message: "Removed session".to_string(),
+        })
     }
 
     fn validate_automation_prompt(prompt: Option<&str>, submit: bool) -> Result<()> {
@@ -1317,5 +1636,12 @@ mod prompt_readiness_tests {
                 );
             }
         }
+    }
+}
+
+fn automation_kind_name(kind: &SessionKind) -> String {
+    match kind {
+        SessionKind::Terminal => "terminal".to_string(),
+        other => format!("{other:?}").to_lowercase(),
     }
 }

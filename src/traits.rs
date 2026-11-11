@@ -58,6 +58,8 @@ pub trait TmuxOps: Send + Sync {
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
     fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
     fn capture_pane(&self, session: &str, window: &str) -> Result<String>;
+    /// Plain text of the last `lines` lines, including scrollback.
+    fn capture_pane_history(&self, session: &str, window: &str, lines: u32) -> Result<String>;
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()>;
     fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()>;
     fn resize_pane(&self, session: &str, window: &str, cols: u16, rows: u16) -> Result<()>;

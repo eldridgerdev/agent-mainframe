@@ -90,12 +90,22 @@ amf automation create-session --file docs/automation/create-session.template.jso
 ```
 
 - `project_name` and `feature`: exact existing AMF project and feature names.
+  Alternatively `feature_session_id` (any session id in the feature) or
+  `tmux_session` selects the feature, and wins over the names. With no target at
+  all, the CLI uses `$AMF_FEATURE_SESSION_ID`, which AMF sets in every agent
+  session, so an agent can act on its own feature with just `{"kind": "terminal"}`.
 - `kind`: `claude`, `codex`, `opencode`, `pi`, `terminal`, or a custom session name
   configured in `amf.json`. Built-in names take precedence over custom names.
 - `label`: optional display label; defaults to the kind name.
 - `initial_prompt`: optional nonempty task for a built-in agent harness.
 - `submit_prompt`: defaults to `false`; paste an unsent draft for review. Set `true`
   to paste and send Enter. Requires `initial_prompt`.
+- `command`: terminal sessions only. Text pasted into the new terminal; with
+  `run: true` Enter is pressed after it. Without `run` it is typed but not executed.
+  Delivery failure is reported in `message` and does not fail the request.
+- `reuse`: terminal sessions only. If a live terminal with the same `label` already
+  exists in the feature, return it (`reused: true`) instead of creating another;
+  `command` is still sent to it.
 - `dry_run`: validate the request and describe the session without launching it,
   running custom pre-checks, or changing AMF state.
 
@@ -108,6 +118,31 @@ A successful real response includes `ok`, `dry_run`, `tmux_session`, `tmux_windo
 `session_id`, and `message`, with `type: "automation-result"` and
 `action: "create_session"`. Dry runs return null window and session IDs because
 nothing was created. Failures return `ok: false` and `error`.
+
+### Driving terminal sessions
+
+Four more actions work on a feature's existing sessions. Each takes the same
+target fields as `create-session` (defaulting to `$AMF_FEATURE_SESSION_ID`) and
+selects a session by `session_id` or `label`; an ambiguous label is an error.
+Input and removal refuse agent harness sessions. An empty request means all
+defaults for `list-sessions`.
+
+```bash
+amf automation list-sessions
+echo '{"label":"dev server","lines":100}' | amf automation capture-session
+echo '{"label":"dev server","key":"C-c"}' | amf automation send-session-input
+echo '{"label":"dev server","text":"npm run dev","run":true}' | amf automation send-session-input
+echo '{"label":"dev server"}' | amf automation remove-session
+```
+
+- `list-sessions` returns `sessions[]` with `session_id`, `kind`, `label`,
+  `tmux_window` and `running`.
+- `capture-session` returns `text`: the last `lines` lines (default 200, max
+  5000) of plain text including scrollback, trailing blanks trimmed. It also works
+  on agent sessions, since reading changes nothing.
+- `send-session-input` pastes `text` (Enter after it when `run`) and/or sends one
+  tmux key name such as `C-c`, `Enter` or `q`. Requires a running session.
+- `remove-session` kills the window and deletes the session record.
 
 ### Initial prompts
 

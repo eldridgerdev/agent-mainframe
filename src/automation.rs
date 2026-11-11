@@ -11,6 +11,158 @@ pub const CREATE_SESSION_ACTION: &str = "create_session";
 pub const CREATE_FEATURE_ACTION: &str = "create_feature";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
 pub const SEED_AI_REVIEW_ACTION: &str = "seed_ai_review";
+pub const LIST_SESSIONS_ACTION: &str = "list_sessions";
+pub const CAPTURE_SESSION_ACTION: &str = "capture_session";
+pub const SEND_SESSION_INPUT_ACTION: &str = "send_session_input";
+pub const REMOVE_SESSION_ACTION: &str = "remove_session";
+
+/// Environment variable AMF sets in every agent session. It holds the agent's
+/// own session id, which identifies the feature it is working in.
+pub const FEATURE_SESSION_ID_ENV: &str = "AMF_FEATURE_SESSION_ID";
+
+/// Which feature an automation request acts on. Resolution order:
+/// `feature_session_id` (any session id in the feature, e.g. the agent's own),
+/// then `tmux_session`, then `project_name` + `feature`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct FeatureTarget {
+    pub project_name: String,
+    pub feature: String,
+    pub feature_session_id: Option<String>,
+    pub tmux_session: Option<String>,
+}
+
+impl FeatureTarget {
+    pub fn is_empty(&self) -> bool {
+        self.project_name.trim().is_empty()
+            && self.feature.trim().is_empty()
+            && self.feature_session_id.as_deref().is_none_or(str::is_empty)
+            && self.tmux_session.as_deref().is_none_or(str::is_empty)
+    }
+
+    /// Fill an empty target from the calling agent's environment, so a
+    /// harness running inside AMF can act on its own feature without knowing
+    /// its project or feature names. An explicit target is never touched.
+    pub fn fill_from_env(&mut self, env_session_id: Option<String>) {
+        if self.is_empty()
+            && let Some(id) = env_session_id.filter(|id| !id.trim().is_empty())
+        {
+            self.feature_session_id = Some(id);
+        }
+    }
+}
+
+/// Picks one session inside the targeted feature: by id, else by label.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SessionSelector {
+    pub session_id: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListSessionsRequest {
+    #[serde(flatten)]
+    pub target: FeatureTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CaptureSessionRequest {
+    #[serde(flatten)]
+    pub target: FeatureTarget,
+    #[serde(flatten)]
+    pub session: SessionSelector,
+    /// Most recent lines to return, including scrollback. Default 200.
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SendSessionInputRequest {
+    #[serde(flatten)]
+    pub target: FeatureTarget,
+    #[serde(flatten)]
+    pub session: SessionSelector,
+    /// Text pasted into the session.
+    pub text: Option<String>,
+    /// Press Enter after `text`.
+    pub run: bool,
+    /// A tmux key name sent after the text, e.g. `C-c`, `Enter`, `q`.
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoveSessionRequest {
+    #[serde(flatten)]
+    pub target: FeatureTarget,
+    #[serde(flatten)]
+    pub session: SessionSelector,
+}
+
+macro_rules! session_ipc_payload {
+    ($ty:ty, $action:expr) => {
+        impl $ty {
+            pub fn ipc_payload(&self) -> serde_json::Value {
+                let mut payload = serde_json::to_value(self).expect("serializable request");
+                payload["type"] = AUTOMATION_REQUEST_TYPE.into();
+                payload["action"] = $action.into();
+                payload
+            }
+        }
+    };
+}
+session_ipc_payload!(ListSessionsRequest, LIST_SESSIONS_ACTION);
+session_ipc_payload!(CaptureSessionRequest, CAPTURE_SESSION_ACTION);
+session_ipc_payload!(SendSessionInputRequest, SEND_SESSION_INPUT_ACTION);
+session_ipc_payload!(RemoveSessionRequest, REMOVE_SESSION_ACTION);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub kind: String,
+    pub label: String,
+    pub tmux_window: Option<String>,
+    /// Whether the session's tmux window is currently up.
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListSessionsResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub project_name: String,
+    pub feature: String,
+    pub tmux_session: String,
+    pub sessions: Vec<SessionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CaptureSessionResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub session_id: String,
+    pub label: String,
+    pub text: String,
+}
+
+/// Reply for `send_session_input` and `remove_session`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionActionResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub session_id: String,
+    pub label: String,
+    pub message: String,
+}
 
 /// Deterministic fixture data for the AI Review pane. This is intentionally an
 /// automation-only test seam: it never launches a model or contacts GitHub.
@@ -120,14 +272,35 @@ impl CreateProjectRequest {
 pub struct CreateSessionRequest {
     pub project_name: String,
     pub feature: String,
+    /// Alternative to `project_name` + `feature`: any session id in the
+    /// target feature. The CLI fills it from `$AMF_FEATURE_SESSION_ID` when no
+    /// target is given.
+    pub feature_session_id: Option<String>,
+    pub tmux_session: Option<String>,
     pub kind: String,
     pub label: Option<String>,
     pub initial_prompt: Option<String>,
     pub submit_prompt: bool,
+    /// Terminal sessions only: shell text pasted into the new terminal.
+    pub command: Option<String>,
+    /// Press Enter after `command`. Requires `command`.
+    pub run: bool,
+    /// Terminal sessions only: reuse a live terminal with the same label
+    /// instead of creating another.
+    pub reuse: bool,
     pub dry_run: bool,
 }
 
 impl CreateSessionRequest {
+    pub fn target(&self) -> FeatureTarget {
+        FeatureTarget {
+            project_name: self.project_name.clone(),
+            feature: self.feature.clone(),
+            feature_session_id: self.feature_session_id.clone(),
+            tmux_session: self.tmux_session.clone(),
+        }
+    }
+
     pub fn ipc_payload(&self) -> serde_json::Value {
         let mut payload = serde_json::to_value(self).expect("serializable request");
         payload["type"] = AUTOMATION_REQUEST_TYPE.into();
@@ -146,6 +319,8 @@ pub struct CreateSessionResponse {
     pub tmux_session: String,
     pub tmux_window: Option<String>,
     pub session_id: Option<String>,
+    /// An existing terminal with the requested label was reused (`reuse`).
+    pub reused: bool,
     pub message: String,
 }
 
@@ -428,6 +603,33 @@ mod tests {
         assert!(!default.no_start);
         let request: CreateFeatureRequest = serde_json::from_str(r#"{"no_start": true}"#).unwrap();
         assert_eq!(request.ipc_payload()["no_start"], true);
+    }
+
+    #[test]
+    fn session_requests_round_trip_flattened_target_and_selector() {
+        let request = SendSessionInputRequest {
+            target: FeatureTarget {
+                feature_session_id: Some("agent-1".into()),
+                ..Default::default()
+            },
+            session: SessionSelector {
+                label: Some("dev server".into()),
+                ..Default::default()
+            },
+            text: Some("rs".into()),
+            run: true,
+            key: Some("C-c".into()),
+        };
+        let payload = request.ipc_payload();
+        assert_eq!(payload["action"], SEND_SESSION_INPUT_ACTION);
+        assert_eq!(payload["feature_session_id"], "agent-1");
+        assert_eq!(payload["label"], "dev server");
+        let back: SendSessionInputRequest = serde_json::from_value(payload).unwrap();
+        assert_eq!(back.target, request.target);
+        assert_eq!(back.session.label.as_deref(), Some("dev server"));
+        assert!(back.run);
+        let empty: CaptureSessionRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.target.is_empty() && empty.lines.is_none());
     }
 
     #[test]

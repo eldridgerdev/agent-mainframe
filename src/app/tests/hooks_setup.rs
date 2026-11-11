@@ -1659,6 +1659,13 @@ fn injected_skills_stay_out_of_git_status_without_adding_a_gitignore() {
                     .join("skills/amf-interact/SKILL.md")
                     .is_file()
             );
+            assert!(
+                workdir
+                    .join(root)
+                    .join("skills/amf-terminal/SKILL.md")
+                    .is_file(),
+                "{agent:?} gets the terminal-session skill"
+            );
             assert!(!workdir.join(root).join(".gitignore").exists(), "{agent:?}");
         }
 

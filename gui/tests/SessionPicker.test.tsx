@@ -240,6 +240,39 @@ it("keeps the dialog on a failed pre-check, then attaches an autolaunched custom
   state.client.clear();
 });
 
+it.each([true, false])("keeps a custom agent prompt editable and unsent (autolaunch=%s)", async (autolaunch) => {
+  const added = { id: "reviewer", kind: "claude", label: "Reviewer", tmux_window: "reviewer" };
+  let state: ReturnType<typeof mountApp> | null = null;
+  state = mountApp((command) => {
+    if (command !== "add_custom_session") throw new Error(`Unexpected command: ${command}`);
+    return {
+      status: "added", label: "Reviewer", autolaunch, draft_prompt: "Review the changes\nKeep this editable",
+      message: "Added 'Reviewer'",
+      target: { project_id: "project", feature_id: "feature", session_id: "reviewer" },
+    };
+  });
+  const picker = await openPicker();
+  fireEvent.click(picker.getByRole("radio", { name: "Dev server" }));
+  fireEvent.click(picker.getByRole("button", { name: "Create session" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "New session" })).toBeNull());
+  // The creation result can arrive before the workspace poll includes the session.
+  await act(async () => { await state!.client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  if (!autolaunch) expect(screen.queryByRole("tab", { name: /Reviewer/ })).toBeNull();
+  state!.setCurrent(snapshot([added]));
+  await act(async () => { await state!.client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  const tab = await screen.findByRole("tab", { name: /Reviewer/ });
+  if (!autolaunch) {
+    expect(tab.getAttribute("aria-selected")).toBe("false");
+    fireEvent.click(tab);
+  }
+  const draft = await screen.findByRole("textbox", { name: "Draft prompt" }) as HTMLTextAreaElement;
+  await waitFor(() => expect(draft.value).toBe("Review the changes\nKeep this editable"));
+  fireEvent.change(draft, { target: { value: "Edited before sending" } });
+  expect(draft.value).toBe("Edited before sending");
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_submit_prompt")).toBe(false);
+  state!.client.clear();
+});
+
 it("opens VS Code into its own tab and reaches it again from the tree", async () => {
   let state: ReturnType<typeof mountApp> | null = null;
   state = mountApp((command, args) => {

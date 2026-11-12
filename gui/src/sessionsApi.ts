@@ -37,7 +37,7 @@ export interface NewSessionOptions {
 }
 
 export type AddCustomSessionResponse =
-  | { status: "added"; target: SessionTarget; label: string; autolaunch: boolean; message: string }
+  | { status: "added"; target: SessionTarget; label: string; autolaunch: boolean; draft_prompt: string | null; message: string }
   | { status: "pre_check_failed"; name: string; pre_check: string; output: string };
 
 export interface OpenVscodeResponse {
@@ -90,7 +90,7 @@ export type SessionChoice =
 export type SessionCreated =
   /** A tab to show; `focus` false keeps the current tab (a custom session
    *  without `autolaunch`, as the TUI stays on its dashboard). */
-  | { outcome: "session"; target: SessionTarget; label: string; kind: NewSessionKind | "custom"; focus: boolean }
+  | { outcome: "session"; target: SessionTarget; label: string; kind: NewSessionKind | "custom"; focus: boolean; draftPrompt?: string }
   | { outcome: "vscode"; response: OpenVscodeResponse }
   | { outcome: "pre_check_failed"; name: string; preCheck: string; output: string };
 
@@ -105,7 +105,7 @@ export async function createSession(
       target, name: choice.name, revision: choice.revision, label, approved,
     });
     return response.status === "added"
-      ? { outcome: "session", target: response.target, label: response.label, kind: "custom", focus: response.autolaunch }
+      ? { outcome: "session", target: response.target, label: response.label, kind: "custom", focus: response.autolaunch, draftPrompt: response.draft_prompt ?? undefined }
       : { outcome: "pre_check_failed", name: response.name, preCheck: response.pre_check, output: response.output };
   }
   if (choice.kind === "vscode") {

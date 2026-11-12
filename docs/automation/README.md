@@ -97,9 +97,11 @@ amf automation create-session --file docs/automation/create-session.template.jso
 - `kind`: `claude`, `codex`, `opencode`, `pi`, `terminal`, or a custom session name
   configured in `amf.json`. Built-in names take precedence over custom names.
 - `label`: optional display label; defaults to the kind name.
-- `initial_prompt`: optional nonempty task for a built-in agent harness.
-- `submit_prompt`: defaults to `false`; paste an unsent draft for review. Set `true`
-  to paste and send Enter. Requires `initial_prompt`.
+- `initial_prompt`: optional nonempty task for a built-in agent harness or a
+  custom session declaring `agent`. Overrides a custom session's configured prompt.
+- `submit_prompt`: defaults to `false`; load an editable, unsent draft into AMF's
+  composer without pasting into the harness. Set `true` to wait for the harness,
+  paste and send Enter. Requires an explicit `initial_prompt` in the request.
 - `command`: terminal sessions only. Text pasted into the new terminal; with
   `run: true` Enter is pressed after it. Without `run` it is typed but not executed.
   Delivery failure is reported in `message` and does not fail the request.
@@ -155,18 +157,41 @@ echo '{"label":"dev server"}' | amf automation remove-session
 
 `create-feature` and `create-batch-features` also accept `initial_prompt` and
 `submit_prompt`. A batch gives the same task to each newly started feature's
-primary agent. Prompts are queued after launch; AMF waits for the harness input
-UI before using bracketed paste, then optionally sends Enter. The response
-acknowledges creation, not completion of the task or prompt delivery.
+primary agent. With `submit_prompt: false` (the default), AMF seeds its own
+composer draft immediately, without waiting for or pasting into the harness.
+The current view stays open; selecting the new agent restores the editable text.
+With `submit_prompt: true`, prompts are queued after launch; AMF waits for the
+harness input UI before using bracketed paste and sending Enter. The response
+acknowledges creation, not completion of the task or submitted prompt delivery.
 
-AMF waits up to two minutes for the input UI. Complete any first-run login/trust
-screens during that interval. Timeout or paste failures are recorded in the debug
-log. Pending prompts live in the running dashboard process and are cancelled when
-the target session is removed or stopped; restarting AMF drops them. Features left
-stopped by the resource limit receive no prompt; check `started` in the response.
-Terminal and custom sessions do not accept `initial_prompt`.
+For submitted prompts, AMF waits up to two minutes for the input UI. Complete any
+first-run login/trust screens during that interval. Timeout or paste failures are
+recorded in the debug log. Pending submissions live in the running dashboard
+process and are cancelled when the target session is removed or stopped.
+Restarting AMF drops pending submissions and unsent composer drafts. Features
+left stopped by the resource limit receive no prompt; check `started` in the
+response. Terminals and custom sessions without `agent` do not accept `initial_prompt`.
 Feature requests with `no_start: true` reject `initial_prompt` and
 `submit_prompt: true`, since no live session will receive the prompt.
+
+Custom agent sessions can also declare a default in `amf.json`:
+
+```json
+{
+  "custom_sessions": [{
+    "name": "reviewer",
+    "agent": "claude",
+    "command": "python3 scripts/launch_reviewer.py",
+    "initial_prompt": "Review the changes and suggest improvements."
+  }]
+}
+```
+
+Creating this session from the TUI picker, desktop picker, or automation seeds
+AMF's composer, unsent. The prompt must be nonempty and contain no NUL bytes.
+It is applied once on creation; restarting an existing session does not seed it
+again. Wrappers should launch the harness without pasting a second copy of the
+prompt into its input.
 
 ## Create Feature
 

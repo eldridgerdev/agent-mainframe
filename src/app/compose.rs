@@ -224,6 +224,28 @@ pub(crate) fn split_compose_parts(
 }
 
 impl App {
+    /// Seed a newly created agent's composer without changing the current view
+    /// or sending input to its harness. Resolve the saved session identity after
+    /// launch/save, since a conflicting writer may have removed the new row.
+    pub(crate) fn seed_session_compose_draft(&mut self, session_id: &str, text: &str) {
+        let Some((pi, fi, si)) = self.session_indices_by_id(session_id) else {
+            return;
+        };
+        let feature = &self.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        if !session.kind.is_agent_harness() {
+            return;
+        }
+        let key = compose_target_key(&feature.tmux_session, &session.tmux_window);
+        self.compose_drafts.insert(
+            key,
+            ComposeDraft {
+                text: text.to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
     pub fn start_compose_clipboard_paste(&mut self) {
         if self.compose_clipboard_paste.is_some() {
             self.push_toast_warning("Paste already in progress");

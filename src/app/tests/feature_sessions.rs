@@ -62,6 +62,7 @@ fn custom_codex_add_retains_launcher_and_enables_agent_sidebar() {
         name: "orchestrator".into(),
         agent: Some(AgentKind::Codex),
         command: Some("python3 scripts/launch_orchestrator.py".into()),
+        initial_prompt: Some("Review the changes\nKeep this editable".into()),
         on_stop: Some("cleanup-orchestrator".into()),
         ..Default::default()
     };
@@ -91,10 +92,46 @@ fn custom_codex_add_retains_launcher_and_enables_agent_sidebar() {
     assert_eq!(session.kind, SessionKind::Codex);
     assert_eq!(session.command, config.command);
     assert_eq!(session.on_stop, config.on_stop);
+    let key = crate::app::compose::compose_target_key(&feature.tmux_session, &session.tmux_window);
+    assert_eq!(
+        app.compose_drafts[&key].text,
+        "Review the changes\nKeep this editable"
+    );
+    assert!(app.pending_automation_prompts.is_empty());
     let sidebar = app
         .assemble_agent_sidebar(feature, Some(session), &session.kind, &Default::default())
         .unwrap();
     assert_eq!(sidebar.data.agent_kind, SessionKind::Codex);
+}
+
+#[test]
+fn custom_session_rejects_invalid_initial_prompts_before_launch() {
+    for (agent, text) in [
+        (None, "Task"),
+        (Some(AgentKind::Claude), " \n"),
+        (Some(AgentKind::Codex), "Task\0"),
+    ] {
+        let root = TempDir::new().unwrap();
+        let mut app = App::new_for_test(
+            store_with_repo(root.path().into(), ProjectStatus::Idle),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let config = crate::extension::CustomSessionConfig {
+            name: "custom".into(),
+            agent,
+            initial_prompt: Some(text.into()),
+            ..Default::default()
+        };
+        assert!(
+            app.add_custom_session_type_named(0, 0, &config, "Task".into())
+                .unwrap_err()
+                .to_string()
+                .contains("initial_prompt")
+        );
+        assert!(app.store.projects[0].features[0].sessions.is_empty());
+        assert!(app.compose_drafts.is_empty());
+    }
 }
 
 #[test]

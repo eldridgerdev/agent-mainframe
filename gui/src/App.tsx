@@ -485,14 +485,18 @@ export default function App() {
     setTabByFeature((current) => ({ ...current, [target.feature_id]: target.session_id }));
     markPending(target);
     if (draftPrompt !== undefined) {
-      const key = sessionKey(target);
-      setDrafts((current) => ({
-        ...current,
-        // A handoff to an existing session must preserve its unsent message.
-        [key]: current[key] ? `${current[key]}${DRAFT_SEPARATOR}${draftPrompt}` : draftPrompt,
-      }));
-      setComposerFocusKey(key);
+      seedSessionDraft(target, draftPrompt);
     }
+  }
+
+  function seedSessionDraft(target: SessionTarget, draftPrompt: string) {
+    const key = sessionKey(target);
+    setDrafts((current) => ({
+      ...current,
+      // A handoff to an existing session must preserve its unsent message.
+      [key]: current[key] ? `${current[key]}${DRAFT_SEPARATOR}${draftPrompt}` : draftPrompt,
+    }));
+    setComposerFocusKey(key);
   }
 
   async function openBookmarkedSession(target: SessionTarget, what = "Bookmarked session") {
@@ -830,8 +834,12 @@ export default function App() {
         setView({ kind: "feature", projectId: variables.target.project_id, featureId });
         setTabByFeature((current) => ({ ...current, [featureId]: TODOS_TAB }));
       } else if (created.focus) {
-        openSession(created.target);
+        openSession(created.target, created.draftPrompt);
       } else {
+        if (created.draftPrompt !== undefined) {
+          markPending(created.target);
+          seedSessionDraft(created.target, created.draftPrompt);
+        }
         pushToast({ tone: "info", title: "Session added", message: `Added '${created.label}'. Its tab is ready when you want it.` });
       }
     },

@@ -389,17 +389,25 @@ fn custom_agent_creation_exposes_codex_sidebar_and_preserves_its_command() {
     std::fs::write(
         root.path().join("amf.json"),
         r#"{
-        "custom_sessions":[{"name":"orchestrator","agent":"codex","command":"python3 launcher.py"}]
+        "custom_sessions":[{"name":"orchestrator","agent":"codex","command":"python3 launcher.py","initial_prompt":"Review the changes\nKeep this editable"}]
     }"#,
     )
     .unwrap();
     let mut request = request(&mut gui, "orchestrator");
     request.approved = true;
     let gui = Mutex::new(gui);
-    let AddCustomSessionResponse::Added { target, .. } = add_custom_session(&gui, request).unwrap()
+    let AddCustomSessionResponse::Added {
+        target,
+        draft_prompt,
+        ..
+    } = add_custom_session(&gui, request).unwrap()
     else {
         panic!("expected added session")
     };
+    assert_eq!(
+        draft_prompt.as_deref(),
+        Some("Review the changes\nKeep this editable")
+    );
     let mut gui = gui.into_inner().unwrap();
     let view = gui.session_sidebar(&target).unwrap();
     assert_eq!(view.harness, SessionKind::Codex);

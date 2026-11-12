@@ -835,6 +835,9 @@ impl App {
         }
 
         self.save()?;
+        if let Some(text) = &config.initial_prompt {
+            self.seed_session_compose_draft(&session_record.id, text);
+        }
         Ok(config.autolaunch.unwrap_or(false))
     }
 
@@ -960,6 +963,9 @@ impl App {
             let si = feature.sessions.len() - 1;
             app.selection = Selection::Session(pi, fi, si);
             app.save_new_builtin_tmux_session(&feature_id, &tmux_session, &session_record)?;
+            if let Some(text) = &config.initial_prompt {
+                app.seed_session_compose_draft(&session_record.id, text);
+            }
             Ok(session_record.id)
         })
     }
@@ -970,6 +976,9 @@ impl App {
         fi: usize,
         config: &crate::extension::CustomSessionConfig,
     ) -> Result<()> {
+        config
+            .validate_initial_prompt()
+            .map_err(anyhow::Error::msg)?;
         if let Some(agent) = &config.agent {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];

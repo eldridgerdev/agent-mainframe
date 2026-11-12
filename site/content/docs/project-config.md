@@ -44,7 +44,8 @@ When a custom command runs an agent, declare its harness with `agent`:
   "custom_sessions": [{
     "name": "orchestrator",
     "agent": "codex",
-    "command": "python3 scripts/launch_orchestrator.py"
+    "command": "python3 scripts/launch_orchestrator.py",
+    "initial_prompt": "Review the changes and suggest improvements."
   }]
 }
 ```
@@ -54,11 +55,23 @@ agent sidebar, context and usage tracking, and agent actions. Without `agent`,
 the session is a generic command window. Set this field in `amf.json`; the
 config wizard preserves it when editing the other fields.
 
+Optional `initial_prompt` seeds AMF's composer with editable, unsent text when
+the session is created from either picker or automation. It requires `agent`,
+must be nonempty and cannot contain NUL bytes. The config wizard preserves it.
+The draft appears when you open the session; ordinary restarts do not seed it
+again. Composer drafts are kept in memory and are lost when AMF closes.
+
 AMF supplies the agent environment and its usual launch arguments even through
 a wrapper script. The wrapper must invoke the harness by name through inherited
-PATH and preserve its environment. Custom model flags and prompt prefilling
-can remain in the wrapper. AMF restores the original PATH before starting the
+PATH and preserve its environment. Keep custom model flags in the wrapper;
+use `initial_prompt` for AMF composer prefilling instead of pasting into the
+harness's own input. AMF restores the original PATH before starting the
 harness so agents it launches independently do not inherit the wrapper.
+
+`amf automation create-session` accepts `initial_prompt` for custom agent
+sessions too. An explicit request prompt overrides the configured default.
+`submit_prompt: false` (the default) seeds AMF's composer; `true` waits for the
+harness input, pastes the requested text and sends Enter.
 
 An existing generic session with an unambiguous matching saved command is
 recognized on startup or config reload, preserving its session ID, tmux window,

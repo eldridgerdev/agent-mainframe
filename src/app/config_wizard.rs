@@ -287,6 +287,10 @@ impl App {
                             .editing_index
                             .and_then(|i| state.sessions.get(i))
                             .and_then(|s| s.agent.clone()),
+                        initial_prompt: state
+                            .editing_index
+                            .and_then(|i| state.sessions.get(i))
+                            .and_then(|s| s.initial_prompt.clone()),
                         description: option_string(state.field_values.get(1)),
                         command: option_string(state.field_values.get(2)),
                         window_name: option_string(state.field_values.get(3)),

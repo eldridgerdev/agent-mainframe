@@ -4,7 +4,7 @@
   screenshots follow-up is also done — see "Screenshots pass" below.
 - **Owner:** unassigned
 - **Relates to:** `site/content/docs/*.md` (the Zola docs site), `README.md`
-  (source of truth the site was seeded from), `CLAUDE.md` (implementation
+  (source of truth the site was seeded from), `docs/development/features/` (implementation
   detail for the features below, not user-facing).
 
 ## Why / problem
@@ -12,7 +12,7 @@
 `site/content/docs/` (10 pages: quick-start, installation, core-concepts,
 keybindings, learning-mode, review-and-pr-feedback, prompts-and-todos,
 custom-prompts, attention-and-limits, configuration) covers the features
-README leads with, but an audit against `src/` and `CLAUDE.md`'s feature
+README leads with, but an audit against `src/` and the `docs/development/features/`
 notes turned up shipped, user-facing functionality with **no page, section,
 or mention anywhere on the site** — including two (`amf doctor`, the
 automation CLI) that are already written up in README's Troubleshooting/

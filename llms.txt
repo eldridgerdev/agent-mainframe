@@ -18,7 +18,7 @@ Key features:
 ## Documentation
 
 - [README](https://github.com/eldridgerdev/agent-mainframe/blob/main/README.md): Install, quick start, keybindings, configuration, themes, and architecture
-- [CLAUDE.md](https://github.com/eldridgerdev/agent-mainframe/blob/main/CLAUDE.md): Architecture and module map for working in the codebase
+- [Architecture guide](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/development/architecture.md): Module map and where to start for each kind of change
 - [AGENTS.md](https://github.com/eldridgerdev/agent-mainframe/blob/main/AGENTS.md): Guidance for AI agents contributing to the project
 
 ## Guides

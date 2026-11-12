@@ -64,6 +64,10 @@ Test entries are existing suites or files; use the focused commands in
 
 ## Feature modules
 
+Per-feature implementation notes and invariants live in [features/](features/):
+TODOs, Learning Mode, the plan interview, headless prompts, batched review and
+resource health. Read the matching note before changing that area.
+
 [Feature ownership and runtime lifetimes](feature-ownership.md) maps the PR Triage,
 Final Review, and Learning submodules and explains their different close/reopen
 and stale-result rules. [GUI workflow boundaries](gui-workflows.md) describes

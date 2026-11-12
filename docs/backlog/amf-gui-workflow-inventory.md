@@ -741,7 +741,7 @@ grepping `src/app/**/*.rs` (excluding `tests/`) for `ratatui::`, `vt100::`,
 `crossterm::event`, `KeyEvent`, `KeyCode`. Dashboard-level entry keys are
 read from `src/handlers/normal.rs`; nested-mode entry points are read from
 their own handler file. Feature groupings follow `docs/development/
-architecture.md` and the feature sections of `CLAUDE.md`.
+architecture.md` and the feature notes in `docs/development/features/`.
 
 Presentation coupling column: **Clean** = no direct ratatui/vt100/crossterm
 import found; **Coupled** = the module directly imports one or more of

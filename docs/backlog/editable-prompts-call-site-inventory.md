@@ -5,7 +5,7 @@
 `prompt_overrides`, the override manager (`E`), and the pre-call notice. This
 file is kept as the reference map from prompt IDs to call sites and
 placeholder sets. See `CHANGELOG.md` and the "Editable Headless Prompts"
-section of `CLAUDE.md`.
+note in `docs/development/features/headless-prompts.md`.
 
 ---
 

@@ -1,13 +1,10 @@
 ---
 name: amf:screenshot
 description: >
-  Capture screenshots (PNG) or a GIF of AMF's own TUI running in an
-  isolated, throwaway instance, as visual proof a feature/UI change
-  works, then, when explicitly requested, publish them to a private
-  Cloudflare Pages review gallery. A terminal often will not render
-  PNGs/GIFs inline, so raw files alone are not a usable deliverable. Use only when the user explicitly
-  asks for visual proof ("show me a screenshot of X", "prove the
-  dashboard renders Y") — not automatically after every UI change.
+  Capture PNG screenshots or a GIF of AMF's own TUI in an isolated,
+  throwaway instance as visual proof of a UI change and, when asked,
+  publish them to the private review gallery. Use only when the user
+  explicitly asks for visual proof.
 allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read Skill Artifact
 ---
 

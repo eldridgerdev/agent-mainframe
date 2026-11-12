@@ -1,11 +1,9 @@
 ---
 name: amf:add-preset
 description: >
-  Add a feature preset to this AMF workspace. Use when the user
-  wants a named template that pre-configures agent harness, mode,
-  branch prefix, plan mode, review, and Chrome settings for new
-  features — so they can create a feature with a single selection
-  instead of filling out every field each time.
+  Add a feature preset to this AMF workspace: a named template that
+  pre-fills harness, mode, branch prefix, planning, review and Chrome
+  settings when creating a feature.
 allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[preset name]"
 ---
@@ -25,7 +23,7 @@ Add or update an entry in the `feature_presets` array in
 {
   "name": "Quick Fix",
   "branch_prefix": "fix/",
-  "mode": "normal",
+  "mode": "vibeless",
   "agent": "claude",
   "review": true,
   "plan_mode": false,
@@ -37,30 +35,23 @@ Add or update an entry in the `feature_presets` array in
 |---|---|---|---|
 | `name` | yes | any string | Label shown in the preset picker |
 | `branch_prefix` | no | any string | Prepended to the branch name the user types |
-| `mode` | no | `"normal"`, `"vibeless"` | `vibeless` = diff review on every edit |
-| `agent` | no | `"claude"`, `"opencode"`, `"codex"` | Agent harness to use |
-| `review` | no | `true`, `false` | Enable final review pass when feature finishes |
-| `plan_mode` | no | `true`, `false` | Start with a shared PLAN.md task list |
+| `mode` | no | `"vibeless"`, `"vibe"`, `"supervibe"` | Default `vibeless` (diff review on every edit); `supervibe` skips permission prompts |
+| `agent` | no | `"claude"`, `"opencode"`, `"codex"`, `"pi"` | Agent harness to use |
+| `review` | no | `true`, `false` | Review Mode: the agent keeps a short note per changed file |
+| `plan_mode` | no | `true`, `false` | Run the plan interview first; the plan is saved as `AMF_PLAN.md` |
+| `quick_plan` | no | `true`, `false` | With `plan_mode`, use the shorter Quick Plan triage |
 | `enable_chrome` | no | `true`, `false` | Allow agent to control a browser |
+| `remote_control` | no | `true`, `false` | Start the session with remote control enabled, where allowed |
 
-## Config path (read the legacy file too)
+## Config path
 
-Project config lives at `amf.json` in the repo root. Older checkouts
-keep it at `.amf/config.json`, and the block above falls back to that
-file when `amf.json` is absent — so what you see is the config that is
-actually in effect, not an empty `{}`.
-
-Always **write** to `amf.json`. If the config you read came from the
-legacy path, carry every existing key over into `amf.json` and then
-delete the legacy file:
+Always write `amf.json` in the repo root. If the config shown above came from
+the legacy `.amf/config.json`, carry every existing key over, then delete the
+legacy file so it cannot be mistaken for the live one:
 
 ```bash
 test -f amf.json && rm .amf/config.json
 ```
-
-AMF prefers `amf.json` whenever it exists, so leaving both behind would
-let a stale `.amf/config.json` sit there looking authoritative while
-changing nothing.
 
 ## Scope
 

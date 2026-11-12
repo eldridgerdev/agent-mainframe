@@ -1,11 +1,9 @@
 ---
 name: amf:add-session
 description: >
-  Add a custom tmux session to this AMF workspace. Use when the
-  user wants to add a dev server, build watcher, docker compose,
-  test runner, or any other persistent background process that
-  should appear in the AMF session picker alongside the agent
-  and terminal sessions.
+  Add a custom tmux session to this AMF workspace: a dev server,
+  watcher, docker compose, test runner or agent launcher that appears
+  in the AMF session picker.
 allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[session name and command]"
 ---
@@ -66,24 +64,15 @@ launch-time settings take effect on its next launch. Omit `agent` for ordinary
 servers, shells and tools. Transcript selection uses the chosen harness's native
 resume command; ordinary restarts keep the configured launcher.
 
-## Config path (read the legacy file too)
+## Config path
 
-Project config lives at `amf.json` in the repo root. Older checkouts
-keep it at `.amf/config.json`, and the block above falls back to that
-file when `amf.json` is absent — so what you see is the config that is
-actually in effect, not an empty `{}`.
-
-Always **write** to `amf.json`. If the config you read came from the
-legacy path, carry every existing key over into `amf.json` and then
-delete the legacy file:
+Always write `amf.json` in the repo root. If the config shown above came from
+the legacy `.amf/config.json`, carry every existing key over, then delete the
+legacy file so it cannot be mistaken for the live one:
 
 ```bash
 test -f amf.json && rm .amf/config.json
 ```
-
-AMF prefers `amf.json` whenever it exists, so leaving both behind would
-let a stale `.amf/config.json` sit there looking authoritative while
-changing nothing.
 
 ## Scope
 

@@ -1,11 +1,9 @@
 ---
 name: amf:release-notes
 description: >
-  Update CHANGELOG.md for AMF releases. Use when writing or revising
-  release notes and keep the notes focused on what AMF users will notice:
-  behavior changes, workflow impact, new capabilities, fixes, defaults,
-  compatibility, and migration steps. Avoid implementation details unless
-  they explain user impact.
+  Write or revise AMF release notes in CHANGELOG.md, focused on what
+  users will notice: behavior changes, new capabilities, fixes,
+  defaults, compatibility and migration steps.
 allowed-tools: Bash(cat *) Bash(test *) Edit(CHANGELOG.md)
 ---
 

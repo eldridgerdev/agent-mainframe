@@ -66,45 +66,38 @@ State is persisted in the global SQLite store at `~/.config/amf/amf.db` for ever
 checkout. Tmux sessions use the `amf-` prefix. Configuration controls leader-key
 and refresh timings; consult the code/config instead of assuming fixed intervals.
 
-### Debug Logging
+## Feature notes
 
-**NEVER use `println!` or `eprintln!` in TUI code** - it corrupts
-the terminal display. Use the built-in debug log instead.
+Detailed invariants live in per-feature notes, not in this file. Read the
+matching note **before** changing that area, and update it in the same change.
+Skip the ones the task does not touch.
 
-To view the debug log at runtime, press `D` from the dashboard.
+| Area | Note |
+| --- | --- |
+| TODO lists, scopes, move/copy, spawn from a TODO, implement next, status | [todos.md](docs/development/features/todos.md) |
+| Learning Mode: read-only invariant, tree, anchors, drift, Q&A threads | [learning-mode.md](docs/development/features/learning-mode.md) |
+| Plan interview: reference docs, MCP tools, Quick Plan | [plan-interview.md](docs/development/features/plan-interview.md) |
+| `HeadlessRunner`, prompt registry and overrides, pre-call notice, reasoning levels | [headless-prompts.md](docs/development/features/headless-prompts.md) |
+| Oversized-diff review: splitting, batching, prompt budgets | [batched-review.md](docs/development/features/batched-review.md) |
+| Start gate, headless leases, editor tracking, dormancy, `amf doctor` | [resources.md](docs/development/features/resources.md) |
 
-**Log file location:** `~/.local/state/amf/debug.log`
+## Conventions
 
-You can tail this file in a separate terminal:
-```bash
-tail -f ~/.local/state/amf/debug.log
-```
+### Debug logging
 
-**Usage in code:**
+**Never use `println!` or `eprintln!` in TUI code**: it corrupts the terminal
+display. Log through the app instead, with a short context string (`"amf"`,
+`"sync"`, `"tmux"`, `"worktree"`, `"hooks"`):
 
 ```rust
-// From anywhere with access to `app`:
-app.log_debug("context", format!("value: {}", value));
-app.log_info("context", "operation completed".to_string());
-app.log_warn("context", "something unexpected".to_string());
-app.log_error("context", format!("failed: {}", err));
+app.log_debug("sync", format!("value: {value}"));
+app.log_info("amf", "operation completed".to_string());
+app.log_warn("tmux", "something unexpected".to_string());
+app.log_error("hooks", format!("failed: {err}"));
 ```
 
-**Log levels** (color-coded in UI):
-- `DEBUG` (gray) - detailed tracing
-- `INFO` (green) - normal operations
-- `WARN` (yellow) - unexpected but handled
-- `ERROR` (red) - failures
-
-**Context strings** should be short identifiers like:
-- `"amf"` - app lifecycle
-- `"sync"` - status sync operations
-- `"tmux"` - tmux interactions
-- `"worktree"` - git worktree operations
-- `"hooks"` - lifecycle hooks
-
-Errors from `show_error()` are automatically logged to the
-debug log with level ERROR.
+Read the log at `~/.local/state/amf/debug.log` (or press `D` on the dashboard).
+`show_error()` already logs at ERROR.
 
 ### Local harness configuration
 

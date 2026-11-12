@@ -10,6 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.52.0] - 2026-11-12
+
+Projects can now be cloned from a git URL and run inside a locked-down Docker
+container, with agent and terminal sessions sandboxed per feature. The desktop
+app gains much more of the PR workflow: triage companion features, review
+comments on the Files tab, a folder-tree Changes view with TUI-style keys,
+forking, and choosing where Final Review feedback goes. The terminal UI now
+quits cleanly on SIGINT, SIGTERM and SIGHUP, and forks preserve working
+changes more reliably.
+
 ### Added
 
 - **Run a cloned project in a container.** When you clone from a URL, `Ctrl+O`

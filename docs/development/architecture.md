@@ -57,6 +57,7 @@ Test entries are existing suites or files; use the focused commands in
 | Prompt library and overrides | `app/prompt_library_state.rs`, `app/prompt_override_state.rs`, `prompt_library/`, `prompts/`, `gui_prompts/`, `gui_prompt_overrides.rs` | `app::tests::prompts_configuration`, `gui/tests/PromptLibraryPanel.test.tsx` |
 | Config Wizard | `app/config_wizard.rs` | No focused App suite is currently defined |
 | Harness command/protocol or headless process lifetime | `headless.rs`, `claude.rs`, `codex.rs`, `pi.rs`, `app/opencode.rs` | `headless`, corresponding harness module tests |
+| Run a cloned project in a container | `container/` (`settings`, `args`, `egress`, `image`, `runtime`, `tmux`), `app/sandbox.rs`, `headless.rs` (untrusted-root guard) | `container`, `app::sandbox`, `headless::untrusted_root_tests` |
 | Clone a project from a git URL | `git_clone/` (`url`, `dest`, `env`, `preflight`, `classify`, `runner`, `finalize`), `app/clone_project.rs`, `gui_clone_project.rs`; GUI via `gui_contract.rs` and `gui/src/CreateProjectForm.tsx` | `git_clone`, `app::clone_project`, `app::tests::clone_project_form`, `gui/tests/CloneProject.test.tsx` |
 | Persistence and concurrent writers | `db/`, `app/feature_ops.rs`, `app/mod.rs` | `db`, `app::tests::store_sync` |
 | Resource admission and owned processes | `resources/`, `app/resource_gate.rs`, `app/editor_ops.rs` | `app::tests::resources`, `editor_lifecycle` |

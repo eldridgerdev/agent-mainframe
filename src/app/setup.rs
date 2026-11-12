@@ -54,7 +54,16 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         "interact",
         include_str!("../../skills/amf-interact/SKILL.md"),
     ),
+    (
+        "terminal",
+        include_str!("../../skills/amf-terminal/SKILL.md"),
+    ),
 ];
+/// Skills Pi gets. It has no legacy AMF configuration skills, so it receives
+/// only the portable ones, without changing those existing skill contracts.
+fn pi_gets_skill(name: &str) -> bool {
+    matches!(name, "interact" | "terminal")
+}
 // Embed the actual helpers rather than source-checkout paths: managed projects
 // may have only an installed AMF binary and its injected assistance files.
 const AMF_INTERACTION_ASSETS: &[(&str, &str)] = &[
@@ -86,7 +95,7 @@ const AMF_INTERACTION_ASSETS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v11");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v14");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -1278,7 +1287,7 @@ fn ensure_amf_skills_with_io(io: &mut SetupIo, workdir: &Path, agent: &AgentKind
     for (name, content) in AMF_SKILLS {
         // Pi has no legacy AMF configuration skills. Add only the portable
         // interaction skill, without changing those existing skill contracts.
-        if matches!(agent, AgentKind::Pi) && *name != "interact" {
+        if matches!(agent, AgentKind::Pi) && !pi_gets_skill(name) {
             continue;
         }
         let skill_dir = skills_dir.join(format!("amf-{name}"));
@@ -1334,7 +1343,7 @@ fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
 fn cleanup_amf_skills_with_io(io: &mut SetupIo, workdir: &Path, agent: &AgentKind) {
     let skills_dir = agent_skills_dir(workdir, agent);
     for (name, _) in AMF_SKILLS {
-        if matches!(agent, AgentKind::Pi) && *name != "interact" {
+        if matches!(agent, AgentKind::Pi) && !pi_gets_skill(name) {
             continue;
         }
         let _ = io.remove_dir_all(skills_dir.join(format!("amf-{name}")));

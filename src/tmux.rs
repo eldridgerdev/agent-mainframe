@@ -1841,6 +1841,17 @@ impl TmuxManager {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()> {
+        Self::create_session_with_window_command(session, first_window, workdir, None)
+    }
+
+    /// As [`Self::create_session_with_window`], but the first pane runs
+    /// `command` (via the shell) instead of the user's login shell.
+    pub fn create_session_with_window_command(
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: Option<&str>,
+    ) -> Result<()> {
         if Self::session_exists(session) {
             bail!("tmux session '{}' already exists", session);
         }
@@ -1848,17 +1859,19 @@ impl TmuxManager {
         let workdir_str = workdir.to_string_lossy();
         Self::set_global_default_terminal_if_needed()?;
 
+        let mut new_session_args = vec![
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-n",
+            first_window,
+            "-c",
+            &workdir_str,
+        ];
+        new_session_args.extend(command);
         Self::run_with_private_socket_recovery(
-            &[
-                "new-session",
-                "-d",
-                "-s",
-                session,
-                "-n",
-                first_window,
-                "-c",
-                &workdir_str,
-            ],
+            &new_session_args,
             "Failed to create tmux session",
             "tmux new-session failed",
         )?;
@@ -1884,20 +1897,33 @@ impl TmuxManager {
 
     /// Add a new window to an existing tmux session.
     pub fn create_window(session: &str, window_name: &str, workdir: &Path) -> Result<()> {
+        Self::create_window_command(session, window_name, workdir, None)
+    }
+
+    /// As [`Self::create_window`], but the pane runs `command` (via the shell)
+    /// instead of the user's login shell.
+    pub fn create_window_command(
+        session: &str,
+        window_name: &str,
+        workdir: &Path,
+        command: Option<&str>,
+    ) -> Result<()> {
         let workdir_str = workdir.to_string_lossy();
         Self::set_session_default_terminal_if_needed(session)?;
 
         let target = format!("{}:", session);
+        let mut args = vec![
+            "new-window",
+            "-t",
+            &target,
+            "-n",
+            window_name,
+            "-c",
+            &workdir_str,
+        ];
+        args.extend(command);
         Self::run(
-            &[
-                "new-window",
-                "-t",
-                &target,
-                "-n",
-                window_name,
-                "-c",
-                &workdir_str,
-            ],
+            &args,
             "Failed to create tmux window",
             "tmux new-window failed",
         )?;
@@ -2108,6 +2134,29 @@ impl TmuxManager {
             .context("Failed to capture pane")?;
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Plain text of the last `lines` lines of a window, scrollback included
+    /// and without escape sequences.
+    pub fn capture_pane_text_history(session: &str, window: &str, lines: u32) -> Result<String> {
+        let target = format!("{}:{}", session, window);
+        let start = format!("-{lines}");
+        let output = Self::command()
+            .args(["capture-pane", "-t", &target, "-p", "-J", "-S", &start])
+            .output()
+            .context("Failed to capture pane history")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "tmux capture-pane failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // `-S -N` starts N rows into scrollback and still includes the whole
+        // visible pane, so trim to exactly the last `lines` lines.
+        let all: Vec<&str> = text.trim_end().lines().collect();
+        let keep = all.len().saturating_sub(lines as usize);
+        Ok(all[keep..].join("\n"))
     }
 
     /// Capture pane content with ANSI escape sequences preserved
@@ -2530,6 +2579,31 @@ impl TmuxOps for TmuxManager {
         TmuxManager::create_session_with_window(session, first_window, workdir)
     }
 
+    fn create_session_with_command(
+        &self,
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
+        TmuxManager::create_session_with_window_command(
+            session,
+            first_window,
+            workdir,
+            Some(command),
+        )
+    }
+
+    fn create_window_with_command(
+        &self,
+        session: &str,
+        window: &str,
+        workdir: &Path,
+        command: &str,
+    ) -> Result<()> {
+        TmuxManager::create_window_command(session, window, workdir, Some(command))
+    }
+
     fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()> {
         TmuxManager::set_session_env(session, key, value)
     }
@@ -2611,6 +2685,10 @@ impl TmuxOps for TmuxManager {
 
     fn capture_pane(&self, session: &str, window: &str) -> Result<String> {
         TmuxManager::capture_pane(session, window)
+    }
+
+    fn capture_pane_history(&self, session: &str, window: &str, lines: u32) -> Result<String> {
+        TmuxManager::capture_pane_text_history(session, window, lines)
     }
 
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()> {

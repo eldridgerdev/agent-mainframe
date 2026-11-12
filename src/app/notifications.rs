@@ -10,9 +10,12 @@ use crate::app::attention::AttentionState;
 use crate::app::toast::input_request_toast_message;
 use crate::app::util::latest_prompt_path;
 use crate::automation::{
-    CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
-    CREATE_SESSION_ACTION, CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
-    CreateSessionRequest, SEED_AI_REVIEW_ACTION, SeedAiReviewRequest, automation_error_response,
+    CAPTURE_SESSION_ACTION, CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION,
+    CREATE_PROJECT_ACTION, CREATE_SESSION_ACTION, CaptureSessionRequest,
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest, CreateSessionRequest,
+    LIST_SESSIONS_ACTION, ListSessionsRequest, REMOVE_SESSION_ACTION, RemoveSessionRequest,
+    SEED_AI_REVIEW_ACTION, SEND_SESSION_INPUT_ACTION, SeedAiReviewRequest, SendSessionInputRequest,
+    automation_error_response,
 };
 use crate::token_tracking::{TokenUsageSource, provider_for_session_kind};
 
@@ -911,6 +914,40 @@ impl App {
                         })
                         .unwrap_or_else(|err| {
                             automation_error_response(CREATE_SESSION_ACTION, err.to_string())
+                        })
+                }
+                LIST_SESSIONS_ACTION => serde_json::from_value::<ListSessionsRequest>(raw.clone())
+                    .map_err(|err| anyhow::anyhow!("Invalid automation payload: {err}"))
+                    .and_then(|request| self.list_sessions_from_request(&request))
+                    .and_then(|r| serde_json::to_value(r).map_err(anyhow::Error::from))
+                    .unwrap_or_else(|err| {
+                        automation_error_response(LIST_SESSIONS_ACTION, err.to_string())
+                    }),
+                CAPTURE_SESSION_ACTION => {
+                    serde_json::from_value::<CaptureSessionRequest>(raw.clone())
+                        .map_err(|err| anyhow::anyhow!("Invalid automation payload: {err}"))
+                        .and_then(|request| self.capture_session_from_request(&request))
+                        .and_then(|r| serde_json::to_value(r).map_err(anyhow::Error::from))
+                        .unwrap_or_else(|err| {
+                            automation_error_response(CAPTURE_SESSION_ACTION, err.to_string())
+                        })
+                }
+                SEND_SESSION_INPUT_ACTION => {
+                    serde_json::from_value::<SendSessionInputRequest>(raw.clone())
+                        .map_err(|err| anyhow::anyhow!("Invalid automation payload: {err}"))
+                        .and_then(|request| self.send_session_input_from_request(&request))
+                        .and_then(|r| serde_json::to_value(r).map_err(anyhow::Error::from))
+                        .unwrap_or_else(|err| {
+                            automation_error_response(SEND_SESSION_INPUT_ACTION, err.to_string())
+                        })
+                }
+                REMOVE_SESSION_ACTION => {
+                    serde_json::from_value::<RemoveSessionRequest>(raw.clone())
+                        .map_err(|err| anyhow::anyhow!("Invalid automation payload: {err}"))
+                        .and_then(|request| self.remove_session_from_request(&request))
+                        .and_then(|r| serde_json::to_value(r).map_err(anyhow::Error::from))
+                        .unwrap_or_else(|err| {
+                            automation_error_response(REMOVE_SESSION_ACTION, err.to_string())
                         })
                 }
                 CREATE_FEATURE_ACTION => {

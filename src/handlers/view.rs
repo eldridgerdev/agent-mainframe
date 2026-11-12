@@ -481,6 +481,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('n') => {
             app.open_current_plan_from_view()?;
         }
+        KeyCode::Char('u') => {
+            app.open_terminal_notes_from_view()?;
+        }
         KeyCode::Char('F') => {
             if app.context_hint_is_visible_in_current_view() {
                 app.open_fresh_context_prompt_from_view_with_context_hint();
@@ -717,6 +720,28 @@ mod tests {
 
         crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn leader_u_opens_terminal_notes_only_when_they_exist() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('u')), 20).unwrap();
+        assert!(matches!(&app.mode, AppMode::Viewing(_)), "nothing to open");
+
+        crate::app::terminal_notes::set_notes(repo.path(), "t1", "dev server", "Run `npm run dev`")
+            .unwrap();
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('u')), 20).unwrap();
+        app.complete_markdown_loading();
+        assert!(matches!(
+            &app.mode,
+            AppMode::MarkdownViewer(state)
+                if state.source_path == crate::app::terminal_notes::notes_path(repo.path())
+                    && state.content.contains("npm run dev")
+        ));
     }
 
     #[test]

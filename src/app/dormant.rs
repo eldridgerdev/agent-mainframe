@@ -410,6 +410,7 @@ mod tests {
                 created_at: now,
                 preferred_agent: Default::default(),
                 is_git: true,
+                containerized: false,
             }],
             session_bookmarks: Vec::new(),
             available_harnesses: Vec::new(),

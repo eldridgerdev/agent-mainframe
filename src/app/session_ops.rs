@@ -1931,7 +1931,22 @@ impl App {
             Selection::Session(pi, fi, si) => (*pi, *fi, *si),
             _ => return Ok(()),
         };
+        if let Some(label) = self.remove_session_at(pi, fi, si)? {
+            self.selection = Selection::Feature(pi, fi);
+            self.message = Some(format!("Removed '{}'", label));
+        }
+        Ok(())
+    }
 
+    /// Remove the session at `(pi, fi, si)` without touching the selection or
+    /// the toast, so a background caller (automation) cannot move the user's
+    /// cursor. Returns the removed label, or `None` when nothing was there.
+    pub(crate) fn remove_session_at(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<Option<String>> {
         let (tmux_session, workdir, label, on_stop, session_id, is_custom, clear_sidebar) = {
             let feature = match self
                 .store
@@ -1940,14 +1955,14 @@ impl App {
                 .and_then(|p| p.features.get_mut(fi))
             {
                 Some(f) => f,
-                None => return Ok(()),
+                None => return Ok(None),
             };
 
             let tmux_session = feature.tmux_session.clone();
             let workdir = feature.workdir.clone();
             let session = match feature.sessions.get(si) {
                 Some(s) => s,
-                None => return Ok(()),
+                None => return Ok(None),
             };
             let window = session.tmux_window.clone();
             let label = session.label.clone();
@@ -1989,6 +2004,9 @@ impl App {
             )
         };
 
+        // Reference notes an agent left for this terminal go with it.
+        let _ = super::terminal_notes::clear_notes(&workdir, &session_id);
+
         // Run the custom session cleanup after a successful removal.
         if is_custom {
             if let Some(ref cmd) = on_stop {
@@ -2021,11 +2039,9 @@ impl App {
             self.clear_sidebar_state_for_session(&tmux_session);
         }
 
-        self.selection = Selection::Feature(pi, fi);
         self.save()?;
-        self.message = Some(format!("Removed '{}'", label));
 
-        Ok(())
+        Ok(Some(label))
     }
 
     /// The id of the session at `(pi, fi, si)`, if there is one.

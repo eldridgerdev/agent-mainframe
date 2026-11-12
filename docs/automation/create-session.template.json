@@ -1,9 +1,15 @@
 {
   "project_name": "my-repo",
   "feature": "main",
+  "feature_session_id": null,
+  "tmux_session": null,
   "kind": "codex",
   "label": "Docs from note",
   "initial_prompt": "Review the documentation and suggest improvements.",
   "submit_prompt": false,
+  "command": null,
+  "run": false,
+  "reuse": false,
+  "notes": null,
   "dry_run": false
 }

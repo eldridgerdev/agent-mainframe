@@ -1257,6 +1257,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: AgentKind::Claude,
             is_git: false,
+            containerized: false,
         };
         ProjectStore {
             version: 5,

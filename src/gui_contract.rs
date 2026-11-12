@@ -3213,6 +3213,7 @@ mod tests {
                 project_name: String::new(),
                 preferred_agent: None,
                 dry_run: false,
+                containerized: false,
             })
             .unwrap_err();
 

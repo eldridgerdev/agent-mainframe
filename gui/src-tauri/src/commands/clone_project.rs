@@ -86,6 +86,14 @@ pub(crate) fn clone_project_validate(
 }
 
 #[tauri::command]
+pub(crate) fn clone_project_set_containerized(state: State<AppState>, containerized: bool) {
+    gui_clone_project::set_containerized(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        containerized,
+    );
+}
+
+#[tauri::command]
 pub(crate) fn clone_project_preflight(
     app: AppHandle,
     state: State<AppState>,

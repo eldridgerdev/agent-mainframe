@@ -59,6 +59,7 @@ pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -109,6 +110,7 @@ pub(super) fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectSt
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -185,6 +187,7 @@ pub(super) fn store_with_worktree_agent(
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: true,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -257,6 +260,7 @@ pub(super) fn store_with_custom_session(
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -327,6 +331,7 @@ pub(super) fn store_with_codex_session(
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     ProjectStore {
         version: 2,
@@ -349,6 +354,7 @@ pub(super) fn store_with_empty_project(repo: PathBuf, is_git: bool) -> ProjectSt
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git,
+        containerized: false,
     };
     ProjectStore {
         version: 4,

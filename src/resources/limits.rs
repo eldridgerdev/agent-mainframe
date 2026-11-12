@@ -320,6 +320,7 @@ mod tests {
             created_at: Utc::now(),
             preferred_agent: Default::default(),
             is_git: true,
+            containerized: false,
         }
     }
 

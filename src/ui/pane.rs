@@ -53,6 +53,7 @@ pub(crate) const LEADER_COMMANDS: &[(&str, &str, &str)] = &[
     ("Review & plan", "d", "Diff viewer (all changes / commit)"),
     ("Review & plan", "m", "Markdown viewer"),
     ("Review & plan", "n", "Open current plan"),
+    ("Review & plan", "u", "Terminal notes from the agent"),
     ("Review & plan", "V", "Check pending diff review"),
     ("Review & plan", "f", "Final review"),
     ("Review & plan", "W", "AI Review"),
@@ -656,6 +657,7 @@ fn draw_agent_sidebar(
         issue_source_text: None,
         pr_triage_text: None,
         plan_text: String::new(),
+        notes_text: None,
         context_snapshot: None,
         context_hint_visible: false,
     };
@@ -704,6 +706,15 @@ fn draw_agent_sidebar(
             block = block.title_top(
                 Line::from(Span::styled(
                     " <leader n> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
+        if sidebar_section.title == "Terminal Notes" {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader u> ",
                     Style::default().fg(theme.text_muted.to_color()),
                 ))
                 .alignment(Alignment::Right),
@@ -773,6 +784,10 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
                 }
                 SidebarSectionKind::Plan => {
                     let height = sidebar_section_height(&body, section_width, 1, 2);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Notes => {
+                    let height = sidebar_section_height(&body, section_width, 1, 4);
                     SidebarSection::new(title, body, Constraint::Length(height))
                 }
                 SidebarSectionKind::Issue => {
@@ -1679,6 +1694,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1721,6 +1737,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1804,6 +1821,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1854,6 +1872,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: AMF_PLAN.md".into(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1886,6 +1905,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: Some("1 open PR".into()),
             plan_text: "Current: AMF_PLAN.md".into(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1921,6 +1941,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1948,6 +1969,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: docs/accepted.md".into(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -1959,6 +1981,44 @@ mod tests {
             .expect("plan child row should be present");
 
         assert_eq!(plan.body, "Current: docs/accepted.md");
+    }
+
+    #[test]
+    fn terminal_notes_section_appears_only_when_there_are_notes() {
+        let mut sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            issue_source_text: None,
+            pr_triage_text: None,
+            plan_text: String::new(),
+            notes_text: None,
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+        let titles = |data: &AgentSidebarData| {
+            sidebar_sections(data, 30)
+                .into_iter()
+                .map(|s| s.title)
+                .collect::<Vec<_>>()
+        };
+        assert!(!titles(&sidebar).contains(&"Terminal Notes"));
+        sidebar.notes_text = Some("   ".into());
+        assert!(!titles(&sidebar).contains(&"Terminal Notes"));
+        sidebar.notes_text = Some("dev server\ntests".into());
+        let sections = sidebar_sections(&sidebar, 30);
+        let notes = sections
+            .iter()
+            .find(|s| s.title == "Terminal Notes")
+            .expect("notes section");
+        assert_eq!(notes.body, "dev server\ntests");
     }
 
     #[test]
@@ -1977,6 +2037,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: Some(context_snapshot(
                 70,
                 crate::context_tracking::ContextBand::Warning,
@@ -2018,6 +2079,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: Some(context_snapshot(
                 42,
                 crate::context_tracking::ContextBand::Normal,
@@ -2058,6 +2120,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2085,6 +2148,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: Some(context_snapshot(
                 85,
                 crate::context_tracking::ContextBand::Critical,
@@ -2122,6 +2186,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2175,6 +2240,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2226,6 +2292,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2277,6 +2344,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2324,6 +2392,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2373,6 +2442,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2589,7 +2659,7 @@ mod tests {
 
     #[test]
     fn leader_menu_fits_without_scrolling_when_terminal_is_tall() {
-        let (rows, max) = render_leader_menu(120, 50, 0);
+        let (rows, max) = render_leader_menu(120, 52, 0);
         assert_eq!(max, 0);
         let text = rows.join("\n");
         assert!(text.contains("Stop session"));
@@ -2669,6 +2739,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2721,6 +2792,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2777,6 +2849,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2826,6 +2899,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2875,6 +2949,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };
@@ -2924,6 +2999,7 @@ mod tests {
             issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
+            notes_text: None,
             context_snapshot: None,
             context_hint_visible: false,
         };

@@ -58,6 +58,7 @@ fn store_with_agents(agents: &[AgentKind]) -> ProjectStore {
             created_at: now,
             preferred_agent: AgentKind::default(),
             is_git: false,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],

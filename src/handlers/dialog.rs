@@ -28,6 +28,14 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+        if let AppMode::CreatingProject(state) = &mut app.mode {
+            state.containerized = !state.containerized;
+        }
+        app.after_create_project_text_edit();
+        return Ok(());
+    }
+
     if super::text_field::is_clear_key(&key) {
         if let AppMode::CreatingProject(state) = &mut app.mode {
             match state.step {

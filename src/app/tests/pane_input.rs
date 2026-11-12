@@ -1318,6 +1318,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         created_at: now,
         preferred_agent: AgentKind::default(),
         is_git: false,
+        containerized: false,
     };
     let store = ProjectStore {
         version: 2,

@@ -15,6 +15,23 @@ use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::container::ContainerSettings;
+use crate::container::args as container_args;
+use crate::container::args::host_uid_gid;
+
+static CONTAINER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Run git inside a throwaway container instead of on the host.
+#[derive(Debug, Clone)]
+struct ContainerRun {
+    settings: ContainerSettings,
+    uid_gid: String,
+    /// The one host directory mounted (read-write, same path) into the
+    /// container; `None` for commands that touch no checkout (`ls-remote`).
+    mount: Option<PathBuf>,
+}
 
 /// What to do with one of the child's output streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +56,7 @@ const ASKPASS_VARS: &[&str] = &["SSH_ASKPASS", "GIT_ASKPASS", "ASKPASS"];
 pub struct GitEnv {
     git_binary: PathBuf,
     allow_file: bool,
+    container: Option<ContainerRun>,
 }
 
 impl Default for GitEnv {
@@ -53,7 +71,26 @@ impl GitEnv {
         Self {
             git_binary: PathBuf::from("git"),
             allow_file: false,
+            container: None,
         }
+    }
+
+    /// The same builder, but every git command runs in a container from
+    /// `settings` (host uid, no credentials, no capabilities) with only
+    /// `mount` visible. The host's git never touches the untrusted checkout.
+    pub fn in_container(&self, settings: &ContainerSettings, mount: Option<PathBuf>) -> Self {
+        Self {
+            container: Some(ContainerRun {
+                settings: settings.clone(),
+                uid_gid: host_uid_gid(),
+                mount,
+            }),
+            ..self.clone()
+        }
+    }
+
+    pub fn is_containerized(&self) -> bool {
+        self.container.is_some()
     }
 
     /// Use a different git executable (fake git scripts in tests).
@@ -117,9 +154,42 @@ impl GitEnv {
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
     {
-        let mut cmd = Command::new(&self.git_binary);
-        cmd.args(self.config_prefix());
-        cmd.args(args.into_iter().map(Into::into));
+        let mut cmd = match &self.container {
+            None => {
+                let mut cmd = Command::new(&self.git_binary);
+                cmd.args(self.config_prefix());
+                cmd.args(args.into_iter().map(Into::into));
+                cmd
+            }
+            Some(run) => {
+                let mut git_args = self.config_prefix();
+                git_args.extend(args.into_iter().map(Into::into));
+                let name = format!(
+                    "amf-git-{}-{}",
+                    std::process::id(),
+                    CONTAINER_SEQ.fetch_add(1, Ordering::Relaxed)
+                );
+                // A mount that cannot be expressed is a bug in path
+                // validation upstream; fail the spawn rather than run
+                // unmounted with a wrong view of the checkout.
+                let argv = container_args::git_run(
+                    &run.settings,
+                    &run.uid_gid,
+                    &name,
+                    run.mount.as_deref(),
+                    git_args,
+                )
+                .unwrap_or_else(|e| {
+                    vec![
+                        OsString::from("__amf_invalid_container_args__"),
+                        OsString::from(e.to_string()),
+                    ]
+                });
+                let mut cmd = Command::new("docker");
+                cmd.args(argv);
+                cmd
+            }
+        };
         self.harden(&mut cmd);
         cmd.stdin(Stdio::null())
             .stdout(stdout.stdio())
@@ -176,6 +246,38 @@ impl GitEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn containerized_command_runs_git_in_docker_with_only_the_mount() {
+        let dest = PathBuf::from("/home/u/code/repo");
+        let env = GitEnv::new().in_container(&ContainerSettings::default(), Some(dest.clone()));
+        assert!(env.is_containerized());
+        let cmd = env.command(
+            GitEnv::clone_args("https://h/o/r", &dest),
+            Output::Null,
+            Output::Piped,
+        );
+        assert_eq!(cmd.get_program(), "docker");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "run");
+        assert!(args.iter().any(|a| a == "--cap-drop"));
+        assert_eq!(args.iter().filter(|a| *a == "--mount").count(), 1);
+        let git_at = args.iter().position(|a| a == "git").unwrap();
+        // Hardening -c options still come first, then the clone itself.
+        assert_eq!(args[git_at + 1], "-c");
+        assert!(args.iter().any(|a| a == "protocol.allow=never"));
+        assert!(args.iter().any(|a| a == "--no-recurse-submodules"));
+    }
+
+    #[test]
+    fn host_env_is_not_containerized() {
+        assert!(!GitEnv::new().is_containerized());
+        let cmd = GitEnv::new().command(["--version"], Output::Piped, Output::Piped);
+        assert_eq!(cmd.get_program(), "git");
+    }
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};

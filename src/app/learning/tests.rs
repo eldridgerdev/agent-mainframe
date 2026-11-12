@@ -71,6 +71,7 @@ fn store_at(workdir: &Path, is_git: bool) -> ProjectStore {
             created_at: now,
             preferred_agent: AgentKind::default(),
             is_git,
+            containerized: false,
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],

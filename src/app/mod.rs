@@ -63,6 +63,7 @@ pub(crate) mod review;
 pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 pub(crate) mod review_questions;
+mod sandbox;
 pub(crate) mod screenshots;
 mod search;
 mod session_config;
@@ -77,6 +78,7 @@ pub(crate) mod supervised_edits;
 mod switcher;
 mod sync;
 mod syntax;
+pub(crate) mod terminal_notes;
 pub(crate) mod toast;
 mod todo_state;
 mod todos;
@@ -773,6 +775,13 @@ pub struct ProjectsConfig {
     /// the default, `~/code`; see [`AppConfig::projects_root`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projects_root: Option<String>,
+    /// Sandbox settings for projects created with "run in container".
+    #[serde(skip_serializing_if = "container_settings_is_default")]
+    pub container: crate::container::ContainerSettings,
+}
+
+fn container_settings_is_default(c: &crate::container::ContainerSettings) -> bool {
+    *c == crate::container::ContainerSettings::default()
 }
 
 /// Default projects root when none is configured.
@@ -1223,6 +1232,8 @@ pub struct App {
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
+    /// Which features run in a container; shared with the tmux decorator.
+    pub sandbox: std::sync::Arc<crate::container::tmux::SandboxRegistry>,
     pub worktree: std::sync::Arc<dyn WorktreeOps>,
     pub debug_log: DebugLog,
     pending_debug_log_entries: VecDeque<LogEntry>,
@@ -2507,6 +2518,7 @@ impl App {
     /// Any `(pi, fi, si)` the caller held from before the call may be stale
     /// after `Ok(false)`; re-resolve by stable id before indexing again.
     pub(crate) fn save_reporting_conflict(&mut self) -> Result<bool> {
+        self.sync_sandbox_registry();
         if let Some(db) = &self.db {
             let Some(expected) = self.store_version else {
                 // No known baseline -- either genuinely the first save this

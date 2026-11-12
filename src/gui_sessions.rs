@@ -112,6 +112,8 @@ pub enum AddCustomSessionResponse {
         target: SessionTarget,
         label: String,
         autolaunch: bool,
+        /// Seed for the desktop's own composer; never pasted into the harness.
+        draft_prompt: Option<String>,
         message: String,
     },
     /// Nothing was created: the configured `pre_check` failed.
@@ -451,6 +453,7 @@ impl GuiHandle {
             message: format!("Added '{label}'"),
             label,
             autolaunch: config.autolaunch.unwrap_or(false),
+            draft_prompt: config.initial_prompt.clone(),
         })
     }
 

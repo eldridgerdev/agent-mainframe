@@ -14,6 +14,9 @@ pub struct CustomSessionConfig {
     /// Harness hosted by this command, including commands hidden behind scripts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentKind>,
+    /// Editable, unsent text for AMF's composer when a new agent session is created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
     pub description: Option<String>,
     pub command: Option<String>,
     pub window_name: Option<String>,
@@ -26,6 +29,20 @@ pub struct CustomSessionConfig {
 }
 
 impl CustomSessionConfig {
+    pub(crate) fn validate_initial_prompt(&self) -> std::result::Result<(), String> {
+        if let Some(text) = &self.initial_prompt {
+            if self.agent.is_none() {
+                return Err(
+                    "initial_prompt requires a custom session with an agent harness".into(),
+                );
+            }
+            if text.trim().is_empty() || text.contains('\0') {
+                return Err("initial_prompt must be nonempty and contain no NUL bytes".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Run the `pre_check` command (if any) and return
     /// `Ok(())` on success or `Err(message)` with the
     /// command output when it fails / is not found.

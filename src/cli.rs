@@ -241,8 +241,8 @@ const CREATE_SESSION_SCHEMA: &str = "Request JSON:
     \"tmux_session\": string | null the feature's tmux session name
     \"kind\": string (required) claude, codex, opencode, pi, terminal or custom session name
     \"label\": string | null
-    \"initial_prompt\": string | null
-    \"submit_prompt\": bool default false
+    \"initial_prompt\": string | null  editable AMF composer draft for an agent
+    \"submit_prompt\": bool default false; true pastes into the ready harness and submits
     \"command\": string | null terminal only: text pasted into the new terminal
     \"run\": bool default false, press Enter after command
     \"reuse\": bool default false, terminal only: reuse a live terminal with this label
@@ -276,8 +276,8 @@ Request JSON (all fields optional unless marked required):
     \"existing_worktree\": string | null  path of an existing git worktree to attach
                        as the feature instead of creating one (no hook runs).
                        A \"Worktree path already exists\" error names this fix.
-    \"initial_prompt\": string | null  task to paste when the harness is ready
-    \"submit_prompt\": bool    default false
+    \"initial_prompt\": string | null  editable AMF composer draft
+    \"submit_prompt\": bool    default false; true pastes into the ready harness and submits
     \"dry_run\":         bool    default false; validate only
   }
 
@@ -298,8 +298,8 @@ Request JSON (all fields optional unless marked required):
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
     \"enable_chrome\":   bool    default false
-    \"initial_prompt\": string | null  task to paste when the harness is ready
-    \"submit_prompt\": bool    default false
+    \"initial_prompt\": string | null  editable AMF composer draft
+    \"submit_prompt\": bool    default false; true pastes into the ready harness and submits
     \"dry_run\":         bool    default false; validate only
   }
 

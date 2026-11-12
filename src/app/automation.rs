@@ -56,7 +56,6 @@ pub(crate) struct PendingAutomationPrompt {
     tmux_session: String,
     window: String,
     text: String,
-    submit: bool,
     queued_at: std::time::Instant,
 }
 
@@ -141,10 +140,23 @@ impl App {
         } else {
             None
         };
+        if let Some(config) = &custom {
+            config
+                .validate_initial_prompt()
+                .map_err(anyhow::Error::msg)?;
+        }
         Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
-        if request.initial_prompt.is_some() && agent.is_none() {
+        if request.initial_prompt.is_some()
+            && agent.is_none()
+            && !custom.as_ref().is_some_and(|c| c.agent.is_some())
+        {
             bail!("initial_prompt requires an agent harness session");
         }
+        let initial_prompt = request.initial_prompt.clone().or_else(|| {
+            custom
+                .as_ref()
+                .and_then(|config| config.initial_prompt.clone())
+        });
         let is_terminal = agent.is_none() && custom.is_none();
         if request.command.is_some() && !is_terminal {
             bail!("command requires a terminal session; agent sessions take initial_prompt");
@@ -280,7 +292,10 @@ impl App {
                 )
                 .map(|(_, id, _)| id)
             })?
-        } else if let Some(config) = custom {
+        } else if let Some(mut config) = custom {
+            // Deliver once below, allowing the request to override the configured
+            // draft (including explicit submission instead of a composer draft).
+            config.initial_prompt = None;
             self.add_custom_session_identified(pi, fi, &config, label)?
         } else {
             self.add_builtin_tmux_session_identified(pi, fi, SessionKind::Terminal, label)?
@@ -302,20 +317,16 @@ impl App {
         response.tmux_session = tmux_session.clone();
         response.tmux_window = Some(window.clone());
         response.session_id = Some(id.clone());
-        response.message = if request.initial_prompt.is_some() {
+        response.message = if initial_prompt.is_some() {
             if request.submit_prompt {
                 "Created session; initial prompt queued for submission".to_string()
             } else {
-                "Created session; initial prompt queued as an unsent draft".to_string()
+                "Created session; initial prompt loaded into the AMF composer, unsent".to_string()
             }
         } else {
             "Created session".to_string()
         };
-        self.queue_automation_prompt(
-            &id,
-            request.initial_prompt.as_deref(),
-            request.submit_prompt,
-        );
+        self.queue_automation_prompt(&id, initial_prompt.as_deref(), request.submit_prompt);
         if request.command.is_some() {
             if let Err(err) = self.deliver_terminal_command(&tmux_session, &window, request) {
                 // The terminal exists; report the failed delivery without
@@ -629,6 +640,10 @@ impl App {
         let Some(text) = prompt else {
             return;
         };
+        if !submit {
+            self.seed_session_compose_draft(session_id, text);
+            return;
+        }
         for project in &self.store.projects {
             for feature in &project.features {
                 if let Some(session) = feature.sessions.iter().find(|s| s.id == session_id) {
@@ -638,7 +653,6 @@ impl App {
                             tmux_session: feature.tmux_session.clone(),
                             window: session.tmux_window.clone(),
                             text: text.to_string(),
-                            submit,
                             queued_at: std::time::Instant::now(),
                         });
                     return;
@@ -692,12 +706,8 @@ impl App {
                 .tmux
                 .paste_text(&pending.tmux_session, &pending.window, &pending.text)
                 .and_then(|()| {
-                    if pending.submit {
-                        self.tmux
-                            .send_key_name(&pending.tmux_session, &pending.window, "Enter")
-                    } else {
-                        Ok(())
-                    }
+                    self.tmux
+                        .send_key_name(&pending.tmux_session, &pending.window, "Enter")
                 });
             if let Err(err) = result {
                 self.log_error(

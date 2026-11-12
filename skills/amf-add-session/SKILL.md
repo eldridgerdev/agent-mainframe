@@ -40,6 +40,7 @@ Add or update an entry in the `custom_sessions` array in
 | `agent` | no | `codex`, `claude`, `opencode`, or `pi` when the command hosts an agent, including wrapper scripts; enables its sidebar, tracking and agent actions |
 | `description` | no | Subtitle shown below the name |
 | `command` | no | Shell command to run when session starts |
+| `initial_prompt` | no | Nonempty text for AMF's editable, unsent composer when a new session is created; requires `agent`. Restarts do not seed it again. |
 | `window_name` | no | tmux window name (defaults to `name`) |
 | `working_dir` | no | Path relative to workdir; `null` = workdir root |
 | `icon` | no | Emoji icon |
@@ -56,8 +57,18 @@ For an agent launcher, always set `agent` to the harness it runs. For example:
 
 AMF supplies its agent environment and launch arguments to the harness through
 PATH, so wrappers should invoke `codex` (or the declared harness) by name and
-preserve the inherited environment. Keep custom model flags and editable prompt
-prefilling in the wrapper. Do not launch the harness by an absolute path or
+preserve the inherited environment. Keep custom model flags in the wrapper.
+Use `initial_prompt` to prefill AMF's composer; do not paste that prompt into
+the harness from the wrapper. For example:
+
+```json
+{ "name": "reviewer", "agent": "claude", "command": "python3 scripts/launch_reviewer.py", "initial_prompt": "Review the changes and suggest improvements." }
+```
+
+`amf automation create-session` also accepts `initial_prompt` for custom agent
+sessions. A request prompt overrides the configured default; `submit_prompt: false`
+(the default) seeds AMF's composer, and `true` pastes into the ready harness and
+submits it. Do not launch the harness by an absolute path or
 replace PATH. Existing generic sessions with an unambiguous matching saved
 command are recognized on config reload/startup without restarting the process;
 launch-time settings take effect on its next launch. Omit `agent` for ordinary

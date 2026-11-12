@@ -53,7 +53,7 @@ Test entries are existing suites or files; use the focused commands in
 | Diff layout, wrapping, navigation | `ui/dialogs/diff.rs`, `handlers/diff.rs`, `app/review/state.rs` | `ui::dialogs::diff`, `handlers::diff` |
 | Shared syntax and word differences | `highlight/`, `worddiff.rs`, `gui_syntax.rs` | `highlight`, `worddiff`, `gui/tests/SyntaxHighlighting.test.tsx` |
 | TODO editing and launching | `app/todo_state.rs`, `app/todos.rs`, `db/todos.rs`, `gui_todos.rs`, `gui_contract.rs` | `app::tests::todos`, `gui/tests/TodoNext.test.tsx` |
-| Compose editor and command state | `app/compose_state.rs`, `app/compose.rs` | `app::tests::compose`, `ui::dialogs::compose` |
+| Compose editor, command state and [initial prompts](features/session-prompts.md) | `app/compose_state.rs`, `app/compose.rs`, `app/automation.rs` | `app::tests::pane_input`, `app::tests::automation`, `ui::dialogs::compose` |
 | Prompt library and overrides | `app/prompt_library_state.rs`, `app/prompt_override_state.rs`, `prompt_library/`, `prompts/`, `gui_prompts/`, `gui_prompt_overrides.rs` | `app::tests::prompts_configuration`, `gui/tests/PromptLibraryPanel.test.tsx` |
 | Config Wizard | `app/config_wizard.rs` | No focused App suite is currently defined |
 | Harness command/protocol or headless process lifetime | `headless.rs`, `claude.rs`, `codex.rs`, `pi.rs`, `app/opencode.rs` | `headless`, corresponding harness module tests |

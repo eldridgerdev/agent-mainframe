@@ -310,7 +310,8 @@ fn create_feature_automation_creates_and_starts_feature() {
     assert!(app.store.projects[0].features[0].is_worktree);
     assert!(app.store.projects[0].features[0].review);
     assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
-    assert_eq!(app.pending_automation_prompts.len(), 1);
+    assert!(app.pending_automation_prompts.is_empty());
+    assert_eq!(app.compose_drafts.len(), 1);
 }
 
 #[test]
@@ -606,38 +607,66 @@ fn create_session_adds_tracked_terminal_to_non_git_feature() {
 #[test]
 fn automation_prompt_waits_for_input_and_only_submits_when_requested() {
     for submit in [false, true] {
-        let mut store = store_with_feature(ProjectStatus::Active);
-        let id = store.projects[0].features[0]
+        let dir = TempDir::new().unwrap();
+        let mut store = store_with_repo(dir.path().into(), ProjectStatus::Active);
+        let session = store.projects[0].features[0]
             .add_session_named(SessionKind::Codex, "Task".into())
-            .id
             .clone();
         let mut tmux = MockTmuxOps::new();
-        tmux.expect_window_exists().return_const(true);
-        let mut sequence = mockall::Sequence::new();
-        tmux.expect_capture_pane()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok("Starting Codex…".into()));
-        tmux.expect_capture_pane()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok("› Describe your task\n? for shortcuts".into()));
-        tmux.expect_paste_text()
-            .withf(|_, _, text| text == "First line\nSecond line")
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(()));
-        tmux.expect_send_key_name()
-            .withf(|_, _, key| key == "Enter")
-            .times(usize::from(submit))
-            .returning(|_, _, _| Ok(()));
+        if submit {
+            tmux.expect_window_exists().return_const(true);
+            let mut sequence = mockall::Sequence::new();
+            tmux.expect_capture_pane()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .returning(|_, _| Ok("Starting Codex…".into()));
+            tmux.expect_capture_pane()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .returning(|_, _| Ok("› Describe your task\n? for shortcuts".into()));
+            tmux.expect_paste_text()
+                .withf(|_, _, text| text == "First line\nSecond line")
+                .times(1)
+                .in_sequence(&mut sequence)
+                .returning(|_, _, _| Ok(()));
+            tmux.expect_send_key_name()
+                .withf(|_, _, key| key == "Enter")
+                .times(1)
+                .returning(|_, _, _| Ok(()));
+        }
         let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
-        app.queue_automation_prompt(&id, Some("First line\nSecond line"), submit);
+        app.queue_automation_prompt(&session.id, Some("First line\nSecond line"), submit);
         app.poll_automation_prompts();
-        assert_eq!(app.pending_automation_prompts.len(), 1);
+        assert_eq!(app.pending_automation_prompts.len(), usize::from(submit));
         app.poll_automation_prompts();
         assert!(app.pending_automation_prompts.is_empty());
         app.poll_automation_prompts();
+        if submit {
+            assert!(app.compose_drafts.is_empty());
+        } else {
+            // Opening the target restores the text in AMF's editable composer.
+            // With no tmux expectations this also proves that unsent prompts
+            // need no harness readiness check, paste, or Enter.
+            let project = &app.store.projects[0];
+            let feature = &project.features[0];
+            app.mode = AppMode::Viewing(ViewState::new(
+                project.name.clone(),
+                feature.name.clone(),
+                feature.tmux_session.clone(),
+                session.tmux_window,
+                session.label,
+                session.kind,
+                feature.mode.clone(),
+                false,
+            ));
+            app.open_compose_from_view(None).unwrap();
+            let AppMode::Compose(state) = &mut app.mode else {
+                panic!("expected composer")
+            };
+            assert_eq!(state.editor.text(), "First line\nSecond line");
+            state.editor.insert_str(" edited");
+            assert_eq!(state.editor.text(), "First line\nSecond line edited");
+        }
     }
 }
 
@@ -667,7 +696,7 @@ fn automation_prompt_is_cancelled_when_session_is_stopped_or_replaced() {
 }
 
 #[test]
-fn create_session_launches_agent_with_feature_permissions_and_queues_prompt() {
+fn create_session_launches_agent_with_feature_permissions_and_seeds_composer() {
     let dir = TempDir::new().unwrap();
     let mut store = store_with_feature(ProjectStatus::Active);
     store.projects[0].repo = dir.path().into();
@@ -706,7 +735,8 @@ fn create_session_launches_agent_with_feature_permissions_and_queues_prompt() {
         app.store.projects[0].features[0].sessions[0].kind,
         SessionKind::Claude
     );
-    assert_eq!(app.pending_automation_prompts.len(), 1);
+    assert!(app.pending_automation_prompts.is_empty());
+    assert_eq!(app.compose_drafts.len(), 1);
 }
 
 #[test]
@@ -726,7 +756,105 @@ fn create_session_failed_launch_removes_new_session_record() {
 }
 
 #[test]
-fn batch_creation_queues_the_task_for_every_started_primary_agent() {
+fn custom_agent_automation_seeds_configured_prompt_and_allows_request_overrides() {
+    for (prompt, submit) in [
+        (None, false),
+        (Some("Override"), false),
+        (Some("Override"), true),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_check_harness_available()
+            .times(1)
+            .returning(|_| Ok(()));
+        tmux.expect_create_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_run_shell_command()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut app = App::new_for_test(
+            store_with_repo(dir.path().into(), ProjectStatus::Active),
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let file = NamedTempFile::new().unwrap();
+        app.store_path = file.path().into();
+        app.config
+            .extension
+            .custom_sessions
+            .push(crate::extension::CustomSessionConfig {
+                name: "wrapper".into(),
+                agent: Some(AgentKind::Claude),
+                command: Some("claude".into()),
+                initial_prompt: Some("Configured".into()),
+                ..Default::default()
+            });
+        let mut request = crate::automation::CreateSessionRequest {
+            kind: "wrapper".into(),
+            initial_prompt: prompt.map(str::to_string),
+            submit_prompt: submit,
+            dry_run: true,
+            ..session_request()
+        };
+        assert!(app.create_session_from_request(&request).unwrap().dry_run);
+        assert!(app.compose_drafts.is_empty());
+        assert!(app.pending_automation_prompts.is_empty());
+        request.dry_run = false;
+        let response = app.create_session_from_request(&request).unwrap();
+        assert!(response.session_id.is_some());
+        assert_eq!(app.pending_automation_prompts.len(), usize::from(submit));
+        if submit {
+            assert!(
+                app.compose_drafts.is_empty(),
+                "no configured draft left behind on submission"
+            );
+            assert!(response.message.contains("queued for submission"));
+        } else {
+            assert_eq!(app.compose_drafts.len(), 1);
+            assert_eq!(
+                app.compose_drafts.values().next().unwrap().text,
+                prompt.unwrap_or("Configured")
+            );
+            assert!(response.message.contains("AMF composer, unsent"));
+        }
+    }
+}
+
+#[test]
+fn generic_custom_session_automation_rejects_initial_prompt_even_in_dry_run() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(dir.path().into(), ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config
+        .extension
+        .custom_sessions
+        .push(crate::extension::CustomSessionConfig {
+            name: "server".into(),
+            command: Some("npm run dev".into()),
+            ..Default::default()
+        });
+    let request = crate::automation::CreateSessionRequest {
+        kind: "server".into(),
+        initial_prompt: Some("Task".into()),
+        dry_run: true,
+        ..session_request()
+    };
+    assert!(
+        app.create_session_from_request(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("initial_prompt requires an agent harness")
+    );
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn batch_creation_seeds_the_composer_for_every_started_primary_agent() {
     let dir = TempDir::new().unwrap();
     let repo = dir.path().to_path_buf();
     let mut worktree = MockWorktreeOps::new();
@@ -773,7 +901,13 @@ fn batch_creation_queues_the_task_for_every_started_primary_agent() {
         })
         .unwrap();
     assert!(response.features.iter().all(|feature| feature.started));
-    assert_eq!(app.pending_automation_prompts.len(), 2);
+    assert!(app.pending_automation_prompts.is_empty());
+    assert_eq!(app.compose_drafts.len(), 2);
+    assert!(
+        app.compose_drafts
+            .values()
+            .all(|draft| draft.text == "Review the code")
+    );
 }
 
 #[test]

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::headless::ReasoningLevel;
 use crate::project::AgentKind;
 
 /// Scribe input cap (brief, summaries), in estimated tokens.
@@ -68,7 +69,7 @@ pub struct StaffModel {
     pub harness: AgentKind,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
 }
 
 impl StaffModel {
@@ -165,14 +166,14 @@ mod tests {
             scribe: Some(StaffModel {
                 harness: AgentKind::Codex,
                 model: "gpt-mini".into(),
-                reasoning: Some("low".into()),
+                reasoning: Some(ReasoningLevel::Low),
             }),
             ..Default::default()
         };
         let got = resolve(StaffRole::Scribe, &cfg, &AgentKind::Pi).unwrap();
         assert_eq!(got.harness, AgentKind::Codex);
         assert_eq!(got.model, "gpt-mini");
-        assert_eq!(got.reasoning.as_deref(), Some("low"));
+        assert_eq!(got.reasoning, Some(ReasoningLevel::Low));
         // Unconfigured roles on Claude still default.
         assert!(resolve(StaffRole::Presenter, &cfg, &AgentKind::Claude).is_some());
     }
@@ -198,6 +199,17 @@ mod tests {
         assert!(parsed.scribe.is_none());
         let back = serde_json::to_string(&parsed).unwrap();
         assert!(!back.contains("scribe"));
+        assert_eq!(
+            parsed.presenter.as_ref().unwrap().reasoning,
+            Some(ReasoningLevel::High)
+        );
+        let typo = serde_json::from_str::<DesignReviewConfig>(
+            r#"{"scribe":{"model":"haiku","reasoning":"hgih"}}"#,
+        );
+        assert!(
+            typo.is_err(),
+            "an unknown reasoning level is rejected at load"
+        );
         let empty: DesignReviewConfig = serde_json::from_str("{}").unwrap();
         assert!(empty.is_empty());
     }

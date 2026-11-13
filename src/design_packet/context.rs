@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use crate::diff::{DiffFile, DiffFileStatus};
 use crate::token_cost::ledger::estimate_tokens_from_bytes;
 
-use super::detectors::{DetectorHit, paths_intersect};
-use super::staff::StaffRole;
+use super::detectors::{DetectorHit, paths_intersect, uncovered};
+use super::staff::{StaffModel, StaffRole};
 
 /// A decision record reduced to what a prompt needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,8 @@ pub struct PacketInputs<'a> {
     pub plan_excerpt: Option<&'a str>,
     /// The generated brief, for the plan-drift comparison.
     pub brief: Option<&'a str>,
+    /// Every hit from `detectors::detect`, covered or not. `fit_context`
+    /// shows them all; `unexplained_context` keeps only the uncovered ones.
     pub detector_hits: &'a [DetectorHit],
 }
 
@@ -41,6 +43,11 @@ pub struct PacketInputs<'a> {
 const MAX_ITEM_BYTES: usize = 3_000;
 /// Bytes held back for the omission trailers.
 const TRAILER_RESERVE_BYTES: usize = 400;
+/// Tokens of each role's cap held back for the template prose (and, for the
+/// diagram prompts, the renderer limits) that wraps the context, so the
+/// prompt actually sent stays within `StaffRole::input_cap`. A test pins
+/// every design-review template under it.
+pub const PROMPT_RESERVE_TOKENS: u64 = 2_000;
 /// A file with at least this many changed lines is "large" for the
 /// unexplained-change section.
 pub const LARGE_CHANGE_LINES: usize = 80;
@@ -52,9 +59,12 @@ struct Budget {
 }
 
 impl Budget {
+    /// A budget for the context of a prompt capped at `cap_tokens`: the cap
+    /// less the template reserve and the trailer reserve.
     fn new(cap_tokens: u64) -> Self {
+        let context_tokens = cap_tokens.saturating_sub(PROMPT_RESERVE_TOKENS);
         Self {
-            limit_bytes: (cap_tokens as usize * 4).saturating_sub(TRAILER_RESERVE_BYTES),
+            limit_bytes: (context_tokens as usize * 4).saturating_sub(TRAILER_RESERVE_BYTES),
             body: String::new(),
             trailers: Vec::new(),
         }
@@ -248,7 +258,8 @@ pub fn key_flow_context(inputs: &PacketInputs) -> (String, u64) {
 }
 
 /// Cartographer seed: modules touched versus added, plus prior decisions on
-/// the same paths (the caller passes them as `decisions`).
+/// the same paths (the caller passes them as `decisions`) and every detector
+/// hit, covered or not.
 pub fn fit_context(inputs: &PacketInputs) -> (String, u64) {
     let mut b = Budget::new(StaffRole::Cartographer.input_cap());
     b.section("Modules touched", module_items(inputs), "modules");
@@ -285,10 +296,10 @@ fn covered_by_decision(path: &str, decisions: &[DecisionSummary]) -> bool {
 /// outside every decision's paths.
 pub fn unexplained_context(inputs: &PacketInputs) -> (String, u64) {
     let mut b = Budget::new(StaffRole::Scribe.input_cap());
-    let hits = inputs
-        .detector_hits
-        .iter()
-        .map(|h| h.summary.clone())
+    // Filtered here, so callers pass every hit (as `fit_context` expects).
+    let hits = uncovered(inputs.detector_hits, inputs.decisions)
+        .into_iter()
+        .map(|h| h.summary)
         .collect();
     b.section("Mechanical findings with no decision", hits, "findings");
     let mut large: Vec<&DiffFile> = inputs
@@ -332,11 +343,29 @@ pub fn plan_drift_context(inputs: &PacketInputs) -> (String, u64) {
 }
 
 /// Stable cache key for one staff output: SHA-256 over the section name, the
-/// built context and the template text actually used (so an edited override
-/// invalidates it), each length-framed. Lowercase hex.
-pub fn input_hash(section: &str, context: &str, template_text: &str) -> String {
+/// built context, the template text actually used (so an edited override
+/// invalidates it), the rendered renderer limits (empty for prompts without
+/// them) and the resolved staff harness, model and reasoning level (so
+/// switching the scribe from Haiku to Sonnet invalidates it), each
+/// length-framed. Lowercase hex.
+pub fn input_hash(
+    section: &str,
+    context: &str,
+    template_text: &str,
+    renderer_limits: &str,
+    staff: &StaffModel,
+) -> String {
     let mut hasher = Sha256::new();
-    for part in [section, context, template_text] {
+    let reasoning = staff.reasoning.map(|r| r.slug()).unwrap_or("");
+    for part in [
+        section,
+        context,
+        template_text,
+        renderer_limits,
+        staff.harness.slug(),
+        staff.model.as_str(),
+        reasoning,
+    ] {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part.as_bytes());
     }
@@ -352,6 +381,9 @@ mod tests {
     use super::*;
     use crate::design_packet::detectors::DetectorKind;
     use crate::design_packet::staff::{CARTOGRAPHER_SEED_CAP, SCRIBE_CAP};
+    use crate::headless::ReasoningLevel;
+    use crate::project::AgentKind;
+    use crate::prompts::PromptId;
 
     fn file(path: &str, status: DiffFileStatus, additions: usize, patch: &str) -> DiffFile {
         DiffFile {
@@ -591,19 +623,95 @@ mod tests {
         assert_eq!(clip("short  ", 51), "short");
     }
 
+    fn staff(model: &str, reasoning: Option<ReasoningLevel>) -> StaffModel {
+        StaffModel {
+            harness: AgentKind::Claude,
+            model: model.into(),
+            reasoning,
+        }
+    }
+
     #[test]
     fn hash_is_stable_distinct_and_length_framed() {
-        let h = input_hash("brief", "ctx", "tpl");
-        assert_eq!(h, input_hash("brief", "ctx", "tpl"));
+        let haiku = staff("haiku", None);
+        let h = input_hash("brief", "ctx", "tpl", "", &haiku);
+        assert_eq!(h, input_hash("brief", "ctx", "tpl", "", &haiku));
         assert_eq!(h.len(), 64);
         // Pinned: a changed algorithm would silently invalidate every cache.
         assert_eq!(
             h,
-            "9003b9ff5fc82436c4cfd3816c5c7b8ffaaa45807eed9bdb560e1a547edac989"
+            "00d8fc1411677e99f8920cb59ebf6dd05687a5def8e7ce4dcae9e9a31de81f3a"
         );
-        assert_ne!(h, input_hash("fit", "ctx", "tpl"));
-        assert_ne!(h, input_hash("brief", "ctx2", "tpl"));
-        assert_ne!(h, input_hash("brief", "ctx", "tpl2"));
-        assert_ne!(input_hash("a", "bc", ""), input_hash("ab", "c", ""));
+        assert_ne!(h, input_hash("fit", "ctx", "tpl", "", &haiku));
+        assert_ne!(h, input_hash("brief", "ctx2", "tpl", "", &haiku));
+        assert_ne!(h, input_hash("brief", "ctx", "tpl2", "", &haiku));
+        assert_ne!(h, input_hash("brief", "ctx", "tpl", "limits", &haiku));
+        let sonnet = staff("sonnet", None);
+        assert_ne!(h, input_hash("brief", "ctx", "tpl", "", &sonnet));
+        let low = staff("haiku", Some(ReasoningLevel::Low));
+        assert_ne!(h, input_hash("brief", "ctx", "tpl", "", &low));
+        let codex = StaffModel {
+            harness: AgentKind::Codex,
+            ..haiku.clone()
+        };
+        assert_ne!(h, input_hash("brief", "ctx", "tpl", "", &codex));
+        assert_ne!(
+            input_hash("a", "bc", "", "", &haiku),
+            input_hash("ab", "c", "", "", &haiku)
+        );
+    }
+
+    #[test]
+    fn prompt_reserve_covers_every_design_template() {
+        let limits = crate::design_packet::diagram::renderer_limits();
+        for id in [
+            PromptId::DesignBrief,
+            PromptId::DesignArchitecture,
+            PromptId::DesignKeyFlow,
+            PromptId::DesignFit,
+            PromptId::DesignUnexplained,
+            PromptId::DesignPlanDrift,
+        ] {
+            for harness in [
+                AgentKind::Claude,
+                AgentKind::Codex,
+                AgentKind::Opencode,
+                AgentKind::Pi,
+            ] {
+                let bytes = id.spec().default_template_for(&harness).len() + limits.len();
+                assert!(
+                    estimate_tokens_from_bytes(bytes) <= PROMPT_RESERVE_TOKENS,
+                    "{} ({bytes} bytes)",
+                    id.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unexplained_keeps_only_uncovered_hits_and_fit_keeps_all() {
+        let hits = [
+            DetectorHit {
+                kind: DetectorKind::Dependency,
+                paths: vec!["Cargo.toml".into()],
+                summary: "Cargo.toml gained 1 dependency line(s)".into(),
+            },
+            DetectorHit {
+                kind: DetectorKind::BuildConfig,
+                paths: vec!["build.rs".into()],
+                summary: "Build or CI configuration changed: build.rs".into(),
+            },
+        ];
+        let decisions = [decision(1, "dependency", "Add regex", &["Cargo.toml"])];
+        let inputs = PacketInputs {
+            decisions: &decisions,
+            detector_hits: &hits,
+            ..Default::default()
+        };
+        let (text, _) = unexplained_context(&inputs);
+        assert!(!text.contains("gained 1 dependency"));
+        assert!(text.contains("configuration changed: build.rs"));
+        let (fit, _) = fit_context(&inputs);
+        assert!(fit.contains("gained 1 dependency") && fit.contains("build.rs"));
     }
 }

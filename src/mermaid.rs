@@ -441,7 +441,10 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
 fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, String> {
     check_cancelled(control)?;
     if spec.source.len() > MAX_SOURCE_BYTES || spec.source.lines().count() > MAX_SOURCE_LINES {
-        return Err("Diagram exceeds the source limit (16 KiB / 256 lines)".into());
+        return Err(format!(
+            "Diagram exceeds the source limit ({} KiB / {MAX_SOURCE_LINES} lines)",
+            MAX_SOURCE_BYTES / 1024
+        ));
     }
     // Selkie measures labels in characters, not display cells. Do not show a
     // broken topology for wide characters, combining marks or terminal controls.
@@ -471,9 +474,10 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
                 || data.subgraphs.len() > MAX_GROUPS
                 || data.edges.iter().any(|edge| edge.length.unwrap_or(1) > 4)
             {
-                return Err(
-                    "Diagram exceeds the model limit (32 nodes / 64 edges / 8 groups)".into(),
-                );
+                return Err(format!(
+                    "Diagram exceeds the model limit ({MAX_NODES} nodes / {MAX_EDGES} edges / \
+                     {MAX_GROUPS} groups)"
+                ));
             }
             // The ASCII renderer always draws a normal line with one target
             // arrow. Other heads, directions and strokes would change meaning.
@@ -550,7 +554,10 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
         Diagram::Sequence(db) => {
             use selkie::diagrams::sequence::LineType;
             if db.get_actors().len() > MAX_PARTICIPANTS || db.get_messages().len() > MAX_EVENTS {
-                return Err("Sequence exceeds the model limit (8 participants / 64 events)".into());
+                return Err(format!(
+                    "Sequence exceeds the model limit ({MAX_PARTICIPANTS} participants / \
+                     {MAX_EVENTS} events)"
+                ));
             }
             // Lifetime events are stored separately from messages, but the
             // ASCII renderer draws every participant with a complete lifeline.

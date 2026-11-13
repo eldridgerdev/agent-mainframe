@@ -93,41 +93,138 @@ fn lines_of(file: &DiffFile, kind: DiffLineKind) -> impl Iterator<Item = &DiffLi
         .filter(move |l| l.kind == kind)
 }
 
-fn is_opener(text: &str) -> bool {
-    let t = text.trim();
-    (t.starts_with('[') && t.ends_with(']') && !t.starts_with("[["))
-        || t.ends_with('[')
-        || t.ends_with('{')
+/// Where a manifest line sits: the TOML table header above it (TOML files
+/// only) and the lines that opened each still-open `{`/`[` block, innermost
+/// last. A closing bracket pops, so a key after a closed block is not
+/// attributed to it.
+#[derive(Debug, Default)]
+struct Scope {
+    toml: bool,
+    header: Option<String>,
+    open: Vec<String>,
 }
 
-/// Lines of `file` matching `want` (given the nearest preceding opener line)
-/// among those of `kind`. The opener is seeded from `new_content` when the
-/// hunk starts mid-file.
-fn lines_under_opener(
+impl Scope {
+    fn new(path: &str) -> Self {
+        Self {
+            toml: basename(path).ends_with(".toml"),
+            ..Self::default()
+        }
+    }
+
+    /// The innermost open block's line, else the table header.
+    fn opener(&self) -> Option<&str> {
+        self.open
+            .last()
+            .or(self.header.as_ref())
+            .map(String::as_str)
+    }
+
+    fn header(&self) -> Option<&str> {
+        self.header.as_deref()
+    }
+
+    /// True when the line sits directly in its table, outside any bracket.
+    fn at_table_level(&self) -> bool {
+        self.open.is_empty()
+    }
+
+    fn feed(&mut self, line: &str) {
+        if self.toml && is_table_header(line) {
+            self.header = Some(line.trim().to_owned());
+            self.open.clear();
+            return;
+        }
+        for c in unquoted_brackets(line, self.toml) {
+            match c {
+                '{' | '[' => self.open.push(line.to_owned()),
+                _ => {
+                    self.open.pop();
+                }
+            }
+        }
+    }
+}
+
+/// `{`, `[`, `}` and `]` outside string literals, in order. In TOML a `#`
+/// outside a string starts a comment.
+fn unquoted_brackets(line: &str, toml: bool) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        match quote {
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' && q == '"' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '#' if toml => break,
+                '{' | '[' | '}' | ']' => out.push(c),
+                _ => {}
+            },
+        }
+    }
+    out
+}
+
+/// A TOML `[table]` or `[[array.of.tables]]` header line.
+fn is_table_header(text: &str) -> bool {
+    let t = text.split(" #").next().unwrap_or(text).trim();
+    let inner = t.trim_start_matches('[').trim_end_matches(']');
+    t.starts_with('[')
+        && t.ends_with(']')
+        && !t.contains(',')
+        && inner
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || "_-\"'".contains(c))
+}
+
+/// Trimmed lines of `kind` matching `want`, which sees the line's scope.
+/// Each side of the diff is tracked separately: added lines against the new
+/// file, removed lines against the old one, each seeded from that side's
+/// full content when the hunk starts mid-file.
+fn lines_in_scope(
     file: &DiffFile,
     kind: DiffLineKind,
-    want: impl Fn(Option<&str>, &str) -> bool,
+    want: &dyn Fn(&Scope, &str) -> bool,
 ) -> Vec<String> {
+    let old_side = kind == DiffLineKind::Removed;
+    let (content, own) = if old_side {
+        (file.old_content.as_deref(), DiffLineKind::Removed)
+    } else {
+        (file.new_content.as_deref(), DiffLineKind::Added)
+    };
     let mut out = Vec::new();
     for hunk in &file.hunks {
-        let mut opener: Option<String> = file.new_content.as_deref().and_then(|content| {
-            content
-                .lines()
-                .take(hunk.new_start.saturating_sub(1))
-                .filter(|l| is_opener(l))
-                .last()
-                .map(str::to_owned)
-        });
+        let mut scope = Scope::new(&file.path);
+        let start = if old_side {
+            hunk.old_start
+        } else {
+            hunk.new_start
+        };
+        for line in content
+            .into_iter()
+            .flat_map(str::lines)
+            .take(start.saturating_sub(1))
+        {
+            scope.feed(line);
+        }
         for line in &hunk.lines {
-            if line.kind == DiffLineKind::NoNewlineMarker {
+            if line.kind != DiffLineKind::Context && line.kind != own {
                 continue;
             }
-            if line.kind == kind && want(opener.as_deref(), &line.text) {
+            if line.kind == kind && want(&scope, &line.text) {
                 out.push(line.text.trim().to_owned());
             }
-            if line.kind != DiffLineKind::Removed && is_opener(&line.text) {
-                opener = Some(line.text.clone());
-            }
+            scope.feed(&line.text);
         }
     }
     out
@@ -145,41 +242,36 @@ fn is_toml_key(text: &str) -> bool {
         })
 }
 
-fn added_dependencies(file: &DiffFile) -> Vec<String> {
-    let name = basename(&file.path);
-    let added = |f: &DiffFile, want: &dyn Fn(Option<&str>, &str) -> bool| {
-        lines_under_opener(f, DiffLineKind::Added, want)
-    };
-    if name == "Cargo.toml" {
-        return added(file, &|opener, text| {
+type LineFilter = Box<dyn Fn(&Scope, &str) -> bool>;
+
+/// Which lines of the manifest named `name` declare a dependency.
+fn dependency_line_filter(name: &str) -> Option<LineFilter> {
+    let filter: LineFilter = match name {
+        "Cargo.toml" => Box::new(|scope, text| {
             let t = text.trim();
             // `[dependencies.foo]` added as its own table.
-            if t.starts_with('[') && t.contains("dependencies.") {
+            if is_table_header(t) && t.contains("dependencies.") {
                 return true;
             }
-            is_toml_key(text) && opener.is_some_and(|o| o.contains("dependencies"))
-        });
-    }
-    if name == "package.json" {
-        return added(file, &|opener, text| {
+            is_toml_key(text)
+                && scope.at_table_level()
+                && scope.header().is_some_and(|h| h.contains("dependencies"))
+        }),
+        "package.json" => Box::new(|scope, text| {
             let t = text.trim();
             t.starts_with('"')
                 && t.contains("\":")
-                && opener.is_some_and(|o| o.contains("ependencies"))
-        });
-    }
-    if name == "pyproject.toml" {
-        return added(file, &|opener, text| {
+                && scope.opener().is_some_and(|o| o.contains("ependencies\""))
+        }),
+        "pyproject.toml" => Box::new(|scope, text| {
             let t = text.trim();
-            let Some(o) = opener else { return false };
-            if !o.contains("dependencies") {
+            let Some(o) = scope.opener() else {
                 return false;
-            }
-            is_toml_key(text) || (t.starts_with('"') || t.starts_with('\''))
-        });
-    }
-    if name == "go.mod" {
-        return added(file, &|_, text| {
+            };
+            o.contains("dependencies")
+                && (is_toml_key(text) || t.starts_with('"') || t.starts_with('\''))
+        }),
+        "go.mod" => Box::new(|_, text| {
             let t = text.trim().trim_start_matches("require ").trim();
             !text.contains("// indirect")
                 && t.split_whitespace()
@@ -188,21 +280,56 @@ fn added_dependencies(file: &DiffFile) -> Vec<String> {
                 && t.split_whitespace()
                     .next()
                     .is_some_and(|m| m.contains('.') || m.contains('/'))
-        });
-    }
-    if name == "Gemfile" {
-        return added(file, &|_, text| {
+        }),
+        "Gemfile" => Box::new(|_, text| {
             let t = text.trim();
             t.starts_with("gem \"") || t.starts_with("gem '")
-        });
-    }
-    if name.starts_with("requirements") && name.ends_with(".txt") {
-        return added(file, &|_, text| {
+        }),
+        _ if name.starts_with("requirements") && name.ends_with(".txt") => Box::new(|_, text| {
             let t = text.trim();
             !t.is_empty() && !t.starts_with('#') && !t.starts_with('-')
-        });
+        }),
+        _ => return None,
+    };
+    Some(filter)
+}
+
+/// The package a dependency line names, lowercased: the key, quoted name,
+/// module path or requirement name before any version or extras.
+fn dependency_name(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.starts_with('[') {
+        let (_, name) = t.trim_matches(['[', ']']).rsplit_once("dependencies.")?;
+        return Some(name.trim_matches(['"', '\'']).to_ascii_lowercase());
     }
-    Vec::new()
+    let t = t
+        .strip_prefix("require ")
+        .or_else(|| t.strip_prefix("gem "))
+        .unwrap_or(t)
+        .trim_start()
+        .trim_start_matches(['"', '\'']);
+    let name: String = t
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !"=<>!~[;:,\"'(".contains(*c))
+        .collect();
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+/// Dependency lines added to `file`, less those whose package also appears
+/// on a removed dependency line: a version bump rewrites the line but adds
+/// no dependency.
+fn added_dependencies(file: &DiffFile) -> Vec<String> {
+    let Some(want) = dependency_line_filter(basename(&file.path)) else {
+        return Vec::new();
+    };
+    let removed: BTreeSet<String> = lines_in_scope(file, DiffLineKind::Removed, &want)
+        .iter()
+        .filter_map(|l| dependency_name(l))
+        .collect();
+    lines_in_scope(file, DiffLineKind::Added, &want)
+        .into_iter()
+        .filter(|l| dependency_name(l).is_none_or(|n| !removed.contains(&n)))
+        .collect()
 }
 
 fn dependency_hits(files: &[DiffFile]) -> Vec<DetectorHit> {
@@ -224,15 +351,24 @@ fn dependency_hits(files: &[DiffFile]) -> Vec<DetectorHit> {
         .collect()
 }
 
+/// A database or API schema file by name or extension, not any path that
+/// merely contains "schema".
+fn is_schema_file(path: &str) -> bool {
+    let name = basename(path).to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "schema.rb" | "schema.prisma" | "structure.sql"
+    ) || [".sql", ".prisma", ".graphql", ".gql"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
 fn migration_hits(files: &[DiffFile]) -> Vec<DetectorHit> {
     files
         .iter()
         .filter_map(|file| {
             let lower = file.path.to_ascii_lowercase();
-            let by_path = is_new(file)
-                && (lower.contains("migrations/")
-                    || lower.contains("schema")
-                    || lower.ends_with(".sql"));
+            let by_path = is_new(file) && (lower.contains("migrations/") || is_schema_file(&lower));
             let by_const = file.path == "src/db/migrations.rs"
                 && lines_of(file, DiffLineKind::Added).any(|l| l.text.contains("MIGRATION_"));
             (by_path || by_const).then(|| DetectorHit {
@@ -363,10 +499,9 @@ fn cargo_build_lines(file: &DiffFile) -> bool {
     [DiffLineKind::Added, DiffLineKind::Removed]
         .into_iter()
         .any(|kind| {
-            !lines_under_opener(file, kind, |opener, text| {
+            !lines_in_scope(file, kind, &|scope, text| {
                 let header = |t: &str| t.starts_with("[profile") || t == "[features]";
-                let t = text.trim();
-                header(t) || opener.is_some_and(|o| header(o.trim()))
+                header(text.trim()) || scope.header().is_some_and(header)
             })
             .is_empty()
         })
@@ -486,6 +621,103 @@ mod tests {
     }
 
     #[test]
+    fn version_bumps_are_not_new_dependencies() {
+        let bumps = [
+            modified(
+                "Cargo.toml",
+                &[" [dependencies]", "-regex = \"1.9\"", "+regex = \"1.10\""],
+            ),
+            modified("requirements.txt", &["-pytest==7", "+pytest==8"]),
+            modified(
+                "package.json",
+                &[
+                    " \"dependencies\": {",
+                    "-\"@types/node\": \"^20\",",
+                    "+\"@types/node\": \"^22\",",
+                ],
+            ),
+            modified(
+                "go.mod",
+                &[
+                    "-require github.com/a/b v1.2.3",
+                    "+require github.com/a/b v1.3.0",
+                ],
+            ),
+            modified(
+                "Gemfile",
+                &["-gem 'rails', '~> 7.0'", "+gem 'rails', '~> 7.1'"],
+            ),
+        ];
+        for f in &bumps {
+            assert!(
+                detect(std::slice::from_ref(f), &[]).is_empty(),
+                "{}",
+                f.path
+            );
+        }
+        // A bump next to a genuinely new dependency reports only the new one.
+        let mixed = modified(
+            "Cargo.toml",
+            &[
+                " [dependencies]",
+                "-regex = \"1.9\"",
+                "+regex = \"1.10\"",
+                "+serde = \"1\"",
+            ],
+        );
+        let hits = detect(&[mixed], &[]);
+        assert_eq!(kinds(&hits), [DetectorKind::Dependency]);
+        assert!(
+            hits[0]
+                .summary
+                .contains("gained 1 dependency line(s): serde")
+        );
+    }
+
+    #[test]
+    fn closing_brackets_end_a_dependency_block() {
+        // A top-level key after the dependencies object has closed.
+        let pkg = modified(
+            "package.json",
+            &[
+                " {",
+                "   \"dependencies\": {",
+                "     \"left-pad\": \"1.0.0\"",
+                "   },",
+                "+  \"version\": \"1.0.1\"",
+                " }",
+            ],
+        );
+        assert!(detect(&[pkg], &[]).is_empty());
+        // A multi-line inline table does not hide later keys in the table.
+        let cargo = modified(
+            "Cargo.toml",
+            &[
+                " [dependencies]",
+                " serde = { version = \"1\", features = [",
+                "     \"derive\",",
+                " ] }",
+                "+regex = \"1\"",
+            ],
+        );
+        let hits = detect(&[cargo], &[]);
+        assert_eq!(kinds(&hits), [DetectorKind::Dependency]);
+        assert!(hits[0].summary.ends_with("regex = \"1\""));
+        // Brackets inside strings and comments do not move the scope.
+        let quoted = modified(
+            "Cargo.toml",
+            &[" [dependencies]", " a = \"{[\" # [ {", "+b = \"1\""],
+        );
+        assert_eq!(kinds(&detect(&[quoted], &[])), [DetectorKind::Dependency]);
+        // A later table ends the dependencies table.
+        let later = modified(
+            "Cargo.toml",
+            &[" [dependencies]", " a = \"1\"", " [[bin]]", "+name = \"x\""],
+        );
+        assert!(detect(&[later], &[]).is_empty());
+    }
+
+    #[test]
     fn migrations_and_schema_files() {
         let sql = file("db/001.sql", DiffFileStatus::Added, &["+create table t();"]);
         let dir = file("app/migrations/0002_x.py", DiffFileStatus::Added, &["+x"]);
@@ -505,6 +737,24 @@ mod tests {
                 f.path
             );
         }
+        for path in [
+            "src/json_schema.rs",
+            "docs/schema.md",
+            "tests/schema_validation.py",
+        ] {
+            let f = file(path, DiffFileStatus::Added, &["+x"]);
+            let hits = detect(&[f], &["src".into(), "docs".into(), "tests".into()]);
+            assert!(!kinds(&hits).contains(&DetectorKind::Migration), "{path}");
+        }
+        let prisma = file(
+            "prisma/schema.prisma",
+            DiffFileStatus::Added,
+            &["+model T {}"],
+        );
+        assert_eq!(
+            kinds(&detect(&[prisma], &["prisma".into()])),
+            [DetectorKind::Migration]
+        );
         let edit = modified("db/001.sql", &["+select 1;"]);
         let other = modified("src/db/migrations.rs", &["+// comment"]);
         assert!(detect(&[edit, other], &[]).is_empty());

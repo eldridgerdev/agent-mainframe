@@ -35,7 +35,8 @@ registry that the user can view and override. See
 and `AMF_PLAN.md` for the design decisions.
 
 - **Registry (`src/prompts/`).** `PromptId::ALL` is the 31 stable ids
-  (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
+  (`model_analysis.recommend`,
+  `plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`/`.quick_round`/`.quick_synthesis`,
   `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
@@ -52,7 +53,7 @@ and `AMF_PLAN.md` for the design decisions.
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins the six
   full-mode ones to the `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 22 use granular tokens.
+  can't be `concat!`-ed); the other 23 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop

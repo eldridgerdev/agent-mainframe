@@ -394,7 +394,8 @@ it("says why the Files and AI tabs are locked before a PR is open", async () => 
     expect(tab.disabled).toBe(true);
     expect(tab.title).toBe("Open a pull request in Threads first.");
   }
-  expect((screen.getByRole("button", { name: "Threads" }) as HTMLButtonElement).title).toBe("");
+  // Threads stays locked while the picker's own load settles, so wait for it.
+  await waitFor(() => expect((screen.getByRole("button", { name: "Threads" }) as HTMLButtonElement).title).toBe(""));
 });
 
 it("keeps the embedded Threads view from closing the whole workspace and starts the PR description collapsed", async () => {

@@ -78,6 +78,34 @@ couple of columns here.
 >     E --> F[Archive the build logs]
 > ```
 
+## Edges that share a spot
+
+Several edges below run between the same two nodes, so their labels would be
+drawn on top of each other. Every label must be readable, stacked on its own
+row beside the edge, and there must be no `Not shown:` list under the diagram.
+"accept" and "request change" each appear twice; "developer replies done" and
+"developer pushes back" must both be whole.
+
+```mermaid
+flowchart TD
+    P[Pending] -->|accept| A[Accepted]
+    P -->|ask| Q[Question open]
+    Q -->|answered| P
+    P -->|request change| C[Change requested]
+    C -->|developer replies done| R[Re-review]
+    C -->|developer pushes back| R
+    R -->|accept| A
+    R -->|request change| C
+    P -->|note only| A
+```
+
+A label with quotes must be drawn as written, also with no `Not shown:` list.
+
+```mermaid
+flowchart LR
+    A["Say #quot;hi#quot; now"] --> B[Done]
+```
+
 ## Narrow control
 
 This one fits, so it must render exactly as before with no markers.

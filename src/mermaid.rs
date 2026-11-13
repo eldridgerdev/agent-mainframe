@@ -475,22 +475,43 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
                     "Interactive nodes, icons and images need source view in this MVP".into(),
                 );
             }
-            let labels: Vec<_> = data
-                .vertices
-                .values()
-                .map(|vertex| vertex.text.as_deref().unwrap_or(&vertex.id))
-                .chain(data.edges.iter().map(|edge| edge.text.as_str()))
-                .chain(data.subgraphs.iter().map(|group| group.title.as_str()))
-                .filter(|label| !label.is_empty())
-                .map(str::to_owned)
-                .collect();
+            let node_text = |id: &str| {
+                data.vertices
+                    .get(id)
+                    .and_then(|vertex| vertex.text.as_deref())
+                    .unwrap_or(id)
+                    .to_owned()
+            };
+            let labels: Vec<Label> =
+                data.vertices
+                    .values()
+                    .map(|vertex| {
+                        let text = vertex.text.as_deref().unwrap_or(&vertex.id);
+                        Label::new(text, format!("node \"{text}\""))
+                    })
+                    .chain(data.edges.iter().map(|edge| {
+                        Label::new(
+                            &edge.text,
+                            format!(
+                                "{} -> {}: \"{}\"",
+                                node_text(&edge.start),
+                                node_text(&edge.end),
+                                edge.text
+                            ),
+                        )
+                    }))
+                    .chain(data.subgraphs.iter().map(|group| {
+                        Label::new(&group.title, format!("group \"{}\"", group.title))
+                    }))
+                    .filter(|label| !label.text.is_empty())
+                    .collect();
             check_labels(&labels)?;
             let graph = db
                 .to_layout_graph(&TerminalSizeEstimator)
                 .map_err(|e| diagnostic(&e.to_string()))?;
             let graph = selkie::layout::layout(graph).map_err(|e| diagnostic(&e.to_string()))?;
             check_cancelled(control)?;
-            let scale = selkie::render::ascii::scale::CellScale::default();
+            let scale = cell_scale();
             let cols = scale.to_col(graph.width.unwrap_or(400.0)).saturating_add(8);
             let rows = scale
                 .to_row(graph.height.unwrap_or(300.0))
@@ -500,6 +521,7 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
             }
             // max_width would silently truncate. Render uncompressed and refuse
             // overflow ourselves so relationships and labels cannot be clipped.
+            let graph = spread_edge_labels(graph);
             let text = selkie::render::ascii::render_flowchart_ascii(db, &graph)
                 .map_err(|e| diagnostic(&e.to_string()))?;
             (text, labels)
@@ -551,24 +573,43 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
                         .into(),
                 );
             }
-            let labels: Vec<_> = db
+            let labels: Vec<Label> = db
                 .get_actors()
                 .values()
-                .map(|actor| actor.description.as_str())
-                .chain(
-                    db.get_messages()
-                        .iter()
-                        .map(|message| message.message.as_str()),
-                )
-                .filter(|label| !label.is_empty())
-                .map(str::to_owned)
+                .map(|actor| {
+                    Label::new(
+                        &actor.description,
+                        format!("participant \"{}\"", actor.description),
+                    )
+                })
+                .chain(db.get_messages().iter().map(|message| {
+                    let actor_text = |id: Option<&str>| {
+                        id.map(|id| {
+                            db.get_actors()
+                                .get(id)
+                                .map_or(id, |actor| actor.description.as_str())
+                        })
+                        .unwrap_or("?")
+                        .to_owned()
+                    };
+                    Label::new(
+                        &message.message,
+                        format!(
+                            "{} -> {}: \"{}\"",
+                            actor_text(message.from.as_deref()),
+                            actor_text(message.to.as_deref()),
+                            message.message
+                        ),
+                    )
+                }))
+                .filter(|label| !label.text.is_empty())
                 .collect();
             check_labels(&labels)?;
             // Conservative upper bound on the upstream actor/gap canvas: each
             // gap fits the longest label, and each event needs two rows.
             let max_label = labels
                 .iter()
-                .map(|label| label.chars().count())
+                .map(|label| label.text.chars().count())
                 .max()
                 .unwrap_or(0);
             let cols = db
@@ -590,10 +631,230 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
     if text.len() > 128 * 1024 {
         return Err("Diagram exceeds the output limit".into());
     }
-    if text.trim().is_empty() || labels.iter().any(|label| !text.contains(label.as_str())) {
-        return Err("This diagram cannot preserve every label; showing source".into());
+    if text.trim().is_empty() {
+        return Err("This diagram drew nothing; showing source".into());
     }
-    Ok(text)
+    Ok(append_legend(text, &labels))
+}
+
+/// A label the diagram must account for, with a description for the legend
+/// when the renderer could not draw it.
+struct Label {
+    text: String,
+    describe: String,
+}
+
+impl Label {
+    fn new(text: &str, describe: String) -> Self {
+        Self {
+            text: text.to_owned(),
+            describe,
+        }
+    }
+}
+
+/// Start columns of whole-word occurrences of `word` in `row`.
+fn word_starts(row: &[char], word: &[char]) -> Vec<usize> {
+    let boundary = |i: Option<usize>| {
+        i.and_then(|i| row.get(i))
+            .is_none_or(|c| !c.is_alphanumeric())
+    };
+    (0..row.len().saturating_sub(word.len().saturating_sub(1)))
+        .filter(|&i| {
+            row[i..].starts_with(word)
+                && boundary(i.checked_sub(1))
+                && boundary(Some(i + word.len()))
+        })
+        .collect()
+}
+
+/// True when the words of `label` read as text wrapped inside a box: each next
+/// word follows on the same row, or starts on the next row near where the
+/// previous word began. Words match whole, so `ask` is not found in `task`.
+fn label_drawn(rows: &[&str], label: &str) -> bool {
+    if rows.iter().any(|row| row.contains(label)) {
+        return true;
+    }
+    let words: Vec<Vec<char>> = label
+        .split_whitespace()
+        .map(|w| w.chars().collect())
+        .collect();
+    let grid: Vec<Vec<char>> = rows.iter().map(|r| r.chars().collect()).collect();
+    let Some(first) = words.first() else {
+        return false;
+    };
+    // How far a wrapped line may start from the previous one, in columns.
+    const DRIFT: usize = 12;
+    for (r0, row) in grid.iter().enumerate() {
+        for c0 in word_starts(row, first) {
+            let (mut r, mut start, mut end) = (r0, c0, c0 + first.len());
+            let mut ok = true;
+            for word in &words[1..] {
+                let same = grid[r]
+                    .get(end..)
+                    .and_then(|rest| word_starts(rest, word).first().map(|c| end + c));
+                let next = grid.get(r + 1).and_then(|below| {
+                    word_starts(below, word)
+                        .into_iter()
+                        .find(|c| c.abs_diff(start) <= DRIFT)
+                });
+                if let Some(c) = same {
+                    start = c;
+                } else if let Some(c) = next {
+                    r += 1;
+                    start = c;
+                } else {
+                    ok = false;
+                    break;
+                }
+                end = start + word.len();
+            }
+            if ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// selkie's text renderer converts layout pixels to cells with its default
+/// scale and offers no way to change it (we render without `max_width`).
+fn cell_scale() -> selkie::render::ascii::scale::CellScale {
+    selkie::render::ascii::scale::CellScale::default()
+}
+
+fn node_cells(
+    nodes: &[selkie::layout::LayoutNode],
+    scale: &selkie::render::ascii::scale::CellScale,
+    offset: (f64, f64),
+    out: &mut Vec<(i64, i64, i64, i64)>,
+) {
+    for node in nodes {
+        // Group frames wrap their children; labels may sit inside them.
+        if node.children.is_empty() {
+            if let (Some(x), Some(y)) = (node.x, node.y) {
+                let col = scale.to_col(x - offset.0) as i64;
+                let row = scale.to_row(y - offset.1) as i64;
+                let w = scale.to_cell_width(node.width) as i64;
+                let h = (scale.to_row(node.height) as i64).max(1);
+                out.push((row, col, row + h, col + w));
+            }
+        } else {
+            node_cells(&node.children, scale, offset, out);
+        }
+    }
+}
+
+/// Edges between the same nodes get the same label position, so their labels
+/// are drawn on top of each other. Move each label that would overlap an
+/// earlier label or a node onto a nearby free row, never off the canvas.
+/// The move is capped so a label stays next to its own edge.
+fn spread_edge_labels(mut graph: selkie::layout::LayoutGraph) -> selkie::layout::LayoutGraph {
+    const MAX_SHIFT: i64 = 3;
+    let scale = cell_scale();
+    let offset = (graph.bounds_x.unwrap_or(0.0), graph.bounds_y.unwrap_or(0.0));
+    let mut nodes = Vec::new();
+    node_cells(&graph.nodes, &scale, offset, &mut nodes);
+    // (row, first column, one past the last column) of labels already placed.
+    let mut placed: Vec<(i64, i64, i64)> = Vec::new();
+    for edge in &mut graph.edges {
+        let (Some(label), Some(pos)) = (edge.label.as_deref(), edge.label_position.as_mut()) else {
+            continue;
+        };
+        let len = label
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .count() as i64;
+        let col = ((pos.x - offset.0) / scale.cell_width).round() as i64 - len / 2;
+        let row = ((pos.y - offset.1) / scale.cell_height).round() as i64;
+        let clear = |r: i64| {
+            r >= 0
+                && col >= 0
+                && placed
+                    .iter()
+                    .all(|&(pr, pc, pe)| pr != r || col + len < pc || col > pe)
+                && nodes
+                    .iter()
+                    .all(|&(r0, c0, r1, c1)| r < r0 || r >= r1 || col + len <= c0 || col >= c1)
+        };
+        let shift = (0..=MAX_SHIFT)
+            .flat_map(|n| if n == 0 { vec![0] } else { vec![n, -n] })
+            .find(|&d| clear(row + d))
+            .unwrap_or(0);
+        placed.push((row + shift, col, col + len));
+        pos.y += shift as f64 * scale.cell_height;
+    }
+    graph
+}
+
+/// Indexes of the labels not drawn in `text`.
+fn undrawn(text: &str, labels: &[Label]) -> Vec<usize> {
+    let rows: Vec<&str> = text.lines().collect();
+    // Edges often share a label ("accept"); one copy on screen must not vouch
+    // for the others, so each drawn occurrence is spent on one label. Longest
+    // labels claim their text first and blank it out, so "change" cannot
+    // borrow a copy from inside "request change".
+    let mut grid: Vec<Vec<char>> = rows.iter().map(|r| r.chars().collect()).collect();
+    let mut texts: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
+    texts.sort_by_key(|t| std::cmp::Reverse(t.chars().count()));
+    texts.dedup();
+    let mut spare: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for text in texts {
+        let needle: Vec<char> = text.chars().collect();
+        let mut count = 0;
+        for row in &mut grid {
+            let mut i = 0;
+            while i + needle.len() <= row.len() {
+                if row[i..].starts_with(&needle) {
+                    row[i..i + needle.len()].fill('\u{0}');
+                    count += 1;
+                    i += needle.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        spare.insert(text, count);
+    }
+    let mut missing = Vec::new();
+    for (index, label) in labels.iter().enumerate() {
+        let count = spare.get_mut(label.text.as_str()).expect("counted above");
+        let drawn = if *count > 0 {
+            *count -= 1;
+            true
+        } else {
+            // Wrapped inside a box is only possible when no copy is drawn
+            // contiguously; otherwise the copies are already spent.
+            !rows.iter().any(|row| row.contains(label.text.as_str()))
+                && label_drawn(&rows, &label.text)
+        };
+        if !drawn {
+            missing.push(index);
+        }
+    }
+    missing
+}
+
+/// Never hide a missing label: draw the diagram and list what is absent.
+fn append_legend(text: String, labels: &[Label]) -> String {
+    let mut missing: Vec<&str> = Vec::new();
+    for index in undrawn(&text, labels) {
+        if !missing.contains(&labels[index].describe.as_str()) {
+            missing.push(&labels[index].describe);
+        }
+    }
+    if missing.is_empty() {
+        return text;
+    }
+    let mut out = text.trim_end().to_owned();
+    out.push_str("\n\nNot shown:");
+    for item in missing {
+        out.push_str("\n  ");
+        out.push_str(item);
+    }
+    out
 }
 
 fn check_cancelled(control: &RenderControl) -> Result<(), String> {
@@ -604,11 +865,11 @@ fn check_cancelled(control: &RenderControl) -> Result<(), String> {
     }
 }
 
-fn check_labels(labels: &[String]) -> Result<(), String> {
+fn check_labels(labels: &[Label]) -> Result<(), String> {
     if labels.iter().any(|label| {
-        label.chars().count() > 120
-            || label.chars().any(char::is_control)
-            || label.contains(['<', '>'])
+        label.text.chars().count() > 120
+            || label.text.chars().any(char::is_control)
+            || label.text.contains(['<', '>'])
     }) {
         Err("Long, multiline or HTML labels need source view in this MVP".into())
     } else {
@@ -1132,9 +1393,113 @@ mod tests {
             &mut doc,
             &mut DiagramWorker::default(),
         );
-        assert_eq!(output.matches("mermaid · diagram").count(), 5, "{output}");
+        assert_eq!(output.matches("mermaid · diagram").count(), 7, "{output}");
         assert!(!output.contains("Mermaid:"), "{output}");
         assert!(output.contains(CLIP_RIGHT));
         assert!(doc.max_pan() > 60);
+    }
+
+    const BACKLOG_STATES: &str = "flowchart TD\n    P[Pending] -->|accept| A[Accepted]\n    P -->|ask| Q[Question open]\n    Q -->|answered| P\n    P -->|request change| C[Change requested]\n    C -->|developer replies done| R[Re-review]\n    C -->|developer pushes back| R\n    R -->|accept| A\n    R -->|request change| C\n    P -->|note only| A\n";
+
+    fn rendered(source: &str) -> String {
+        match render_diagram(&spec(source), &RenderControl::default()) {
+            DiagramResult::Rendered(lines) => lines.join("\n"),
+            other => panic!("expected a diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dense_flowchart_draws_every_label_without_overdrawing() {
+        let output = rendered(BACKLOG_STATES);
+        assert!(!output.contains("Not shown"), "{output}");
+        for (label, copies) in [
+            ("accept", 2),
+            ("request change", 2),
+            ("developer replies done", 1),
+            ("developer pushes back", 1),
+        ] {
+            assert_eq!(output.matches(label).count(), copies, "{label}\n{output}");
+        }
+        assert!(
+            output.contains("Pending") && output.contains("Re-review"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn wrapped_label_counts_as_drawn() {
+        let rows = ["| Scribe: brief |", "|  and summaries |"];
+        assert!(label_drawn(&rows, "Scribe: brief and summaries"));
+        assert!(!label_drawn(&rows, "summaries and Scribe:"));
+        assert!(!label_drawn(&rows, "Scribe: brief and decisions"));
+    }
+
+    #[test]
+    fn missing_edge_label_is_listed_with_its_endpoints() {
+        let labels = [
+            Label::new("Yes", "A -> B: \"Yes\"".into()),
+            Label::new("No way", "A -> C: \"No way\"".into()),
+        ];
+        let out = append_legend("A -Yes-> B".into(), &labels);
+        assert!(out.ends_with("Not shown:\n  A -> C: \"No way\""), "{out}");
+        assert_eq!(append_legend("Yes No way".into(), &labels), "Yes No way");
+    }
+
+    #[test]
+    fn one_drawn_copy_does_not_vouch_for_a_duplicate_label() {
+        let labels = [
+            Label::new("accept", "A -> B: \"accept\"".into()),
+            Label::new("accept", "C -> D: \"accept\"".into()),
+        ];
+        let out = append_legend("A -accept-> B".into(), &labels);
+        assert!(out.ends_with("Not shown:\n  C -> D: \"accept\""), "{out}");
+    }
+
+    #[test]
+    fn clipped_subgraph_title_is_listed() {
+        let labels = [Label::new(
+            "Long group title",
+            "group \"Long group title\"".into(),
+        )];
+        let out = append_legend("┌─Long gr─┐".into(), &labels);
+        assert!(
+            out.contains("Not shown:\n  group \"Long group title\""),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn quoted_label_is_found_verbatim() {
+        let output = rendered("flowchart TD\n A[\"Say #quot;hi#quot; now\"] --> B[Done]\n");
+        assert!(!output.contains("Not shown"), "{output}");
+    }
+
+    #[test]
+    fn short_label_is_not_vouched_for_by_a_longer_one() {
+        let labels = [
+            Label::new("request change", "long".into()),
+            Label::new("change", "short".into()),
+        ];
+        assert_eq!(undrawn("| request change |", &labels), vec![1]);
+    }
+
+    #[test]
+    fn wrapped_words_must_be_adjacent_whole_words() {
+        let far = ["note", "", "", "a only"];
+        assert!(!label_drawn(&far, "note only"));
+        assert!(!label_drawn(&["task", "only"], "ask only"));
+    }
+
+    #[test]
+    fn spread_labels_keep_the_renderer_scale() {
+        let scale = cell_scale();
+        assert_eq!((scale.cell_width, scale.cell_height), (8.0, 16.0));
+    }
+
+    #[test]
+    fn sequence_legend_uses_participant_descriptions() {
+        let src = "sequenceDiagram\n participant A as Alice\n participant B as Bob\n A->>B: hi\n";
+        let out = rendered(src);
+        assert!(!out.contains("A -> B"), "{out}");
     }
 }

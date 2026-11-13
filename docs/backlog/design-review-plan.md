@@ -732,12 +732,12 @@ uses the same ledger to check this table against a real feature.
 
 ### Phase 0 — Measurement
 
-- [ ] Ledger row type and the bytes/4 fallback, pure and tested
-- [ ] Pricing core independent of the sidebar: per-model cost, cache-write
+- [x] Ledger row type and the bytes/4 fallback, pure and tested
+- [x] Pricing core independent of the sidebar: per-model cost, cache-write
       lifetimes, long-prompt tier, effective tokens
-- [ ] Windowed reader of Claude transcript usage entries with model and
+- [x] Windowed reader of Claude transcript usage entries with model and
       timestamp, subagents included
-- [ ] `model_pricing` table with built-in Claude rows, the long-prompt
+- [x] `model_pricing` table with built-in Claude rows, the long-prompt
       tier, and fallback to `TokenPricingConfig`
 - [ ] Instruction byte-cap test
 - [ ] Dogfood the capture instruction by hand on one feature and count records

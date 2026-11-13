@@ -100,6 +100,7 @@ mod tailscale;
 mod theme;
 mod tmux;
 mod tmux_observer;
+mod token_cost;
 mod token_tracking;
 mod traits;
 mod transcript;

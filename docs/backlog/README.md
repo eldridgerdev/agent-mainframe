@@ -136,6 +136,14 @@ doc always says exactly what remains.
   scopes, plan mode from a TODO, and quick-capture from any session view
   are all in place. Deleting a feature asks what happens to the
   unfinished work in its worktree list.
+- [Design Review](design-review-plan.md) — _Designing._ A new mode built
+  from scratch: the agent records design and architecture decisions as it
+  works through a write-only `amf decision add` call, and a review room
+  later presents them with staff-generated Mermaid diagrams as an agenda
+  the reviewer can accept, question or send back. Cheap headless models
+  prepare the packet and answer questions; the developer's premium session
+  pays only for the "why". Claude Code only for now, and the UI says so.
+  Includes the audit of Review Mode, a token cost model, and five phases.
 - [Learning Mode](learning-mode-plan.md) — _All epics shipped._ A read-only
   overlay (`K`) for studying a project you didn't write: browse the repo as a
   collapsible folder tree or just the branch's changes, anchor a question to a

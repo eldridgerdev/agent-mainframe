@@ -30,7 +30,6 @@ exclude = [
     "/.agents",
     "/.claude",
     "/.codex",
-    "/docker",
     "/examples",
     "/site",
     "/docs/automation",

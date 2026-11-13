@@ -5,14 +5,31 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::{MarkdownLoadingState, MarkdownViewerState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
+/// Whether the viewer fills the terminal instead of the 86% dialog. Kept for the
+/// life of the process so it carries across viewers.
+static MARKDOWN_FULL_WIDTH: AtomicBool = AtomicBool::new(false);
+
+pub fn toggle_markdown_full_width() {
+    MARKDOWN_FULL_WIDTH.fetch_xor(true, Ordering::Relaxed);
+}
+
+fn markdown_full_width() -> bool {
+    MARKDOWN_FULL_WIDTH.load(Ordering::Relaxed)
+}
+
 pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, theme: &Theme) {
-    let area = centered_rect(86, 86, frame.area());
+    let area = if markdown_full_width() {
+        frame.area()
+    } else {
+        centered_rect(86, 86, frame.area())
+    };
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Markdown - {} ", state.title);
@@ -72,7 +89,19 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
             Style::default().fg(theme.text_muted.to_color()),
         )),
         Line::from(Span::styled(
-            if state.diagrams.show_source { "d:show diagrams  r:refresh" } else { "d:show diagram source  r:refresh" },
+            {
+                let mut line = String::from(if state.diagrams.show_source {
+                    "d:show diagrams  r:refresh  f:full width"
+                } else {
+                    "d:show diagram source  r:refresh  f:full width"
+                });
+                if let Some((first, last, total)) = state.diagrams.pan_status() {
+                    line.push_str(&format!(
+                        "  h/l:pan diagram (cols {first}-{last} of {total})"
+                    ));
+                }
+                line
+            },
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -116,6 +145,8 @@ pub(crate) fn draw_markdown_document(
         };
         if let Some(diagrams) = diagrams {
             diagrams.set_requests(rendered.diagram_requests);
+            // A resize can shrink the range; keep the offset inside it.
+            diagrams.pan = diagrams.pan.min(diagrams.max_pan());
         }
         *rendered_lines = rendered.lines;
         *rendered_width = render_width;

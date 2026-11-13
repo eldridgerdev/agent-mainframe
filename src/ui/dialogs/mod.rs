@@ -62,7 +62,7 @@ pub use hooks::{
 };
 pub use issue_fixer::{draw_issue_browser, draw_issue_duplicate_warning, draw_issue_setup};
 pub use learning::draw_learning_view;
-pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
+pub use markdown::{draw_markdown_loading, draw_markdown_viewer, toggle_markdown_full_width};
 pub use model_analysis::draw_model_analysis;
 pub use model_defaults_prototype::draw_model_defaults_prototype;
 pub use plan_interview::draw_plan_interview_dialog;

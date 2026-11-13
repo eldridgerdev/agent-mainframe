@@ -450,6 +450,9 @@ fn render_markdown_inner(
     let parser = Parser::new_ext(markdown, options);
     let mut renderer = MarkdownRenderer::new(theme, width.max(24), source_path);
     renderer.diagram_document = diagrams;
+    if let Some(diagrams) = diagrams {
+        diagrams.begin_draw();
+    }
     renderer.diagram_width = width;
     for event in parser {
         renderer.handle(event);
@@ -950,15 +953,11 @@ impl<'a> MarkdownRenderer<'a> {
             } else {
                 let spec = DiagramSpec {
                     source: code.code.clone(),
-                    width,
                 };
                 if !self.diagram_requests.contains(&spec) {
                     self.diagram_requests.push(spec);
                 }
-                match self
-                    .diagram_document
-                    .and_then(|doc| doc.result(&code.code, width))
-                {
+                match self.diagram_document.and_then(|doc| doc.result(&code.code)) {
                     Some(DiagramResult::Rendered(lines)) => {
                         let style = Style::default().fg(self.theme.text.to_color());
                         let border = Style::default().fg(self.theme.border_focus.to_color());
@@ -977,14 +976,30 @@ impl<'a> MarkdownRenderer<'a> {
                                 border,
                             )],
                         ));
+                        let natural = lines
+                            .iter()
+                            .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
+                            .max()
+                            .unwrap_or(0);
+                        if let Some(doc) = self.diagram_document {
+                            doc.note_drawn(natural, width);
+                        }
+                        // Per-diagram clamp: a narrower diagram never scrolls past its end.
+                        let pan = self
+                            .diagram_document
+                            .map_or(0, |doc| doc.pan)
+                            .min(natural.saturating_sub(width));
                         for line in lines {
-                            // Connector rows are already laid out in display cells; never wrap them.
+                            // Connector rows are laid out in display cells; never wrap
+                            // them. Wide ones are clipped to the pane and panned.
+                            let row = if natural > width {
+                                crate::mermaid::clip_columns(line, pan, width)
+                            } else {
+                                line.clone()
+                            };
                             self.lines.push(prefix_line(
                                 &code.prefix,
-                                vec![
-                                    Span::styled("│ ", border),
-                                    Span::styled(line.clone(), style),
-                                ],
+                                vec![Span::styled("│ ", border), Span::styled(row, style)],
                             ));
                         }
                         self.lines.push(prefix_line(

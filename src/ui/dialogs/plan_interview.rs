@@ -1072,6 +1072,12 @@ fn draw_plan_review(
         hint("r", theme),
         Span::raw(" regenerate  "),
     ];
+    if let Some((first, last, total)) = state.review_diagrams.pan_status() {
+        hints.push(hint("h/l", theme));
+        hints.push(Span::raw(format!(
+            " pan diagram ({first}-{last}/{total})  "
+        )));
+    }
     if model_advice {
         hints.extend([hint("m", theme), Span::raw(" model advice  ")]);
     }

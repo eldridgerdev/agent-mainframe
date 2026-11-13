@@ -1101,4 +1101,19 @@ mod tests {
             assert!(output.lines().take(16).any(|line| line.contains("Review")));
         }
     }
+
+    #[test]
+    fn wide_example_document_renders_every_diagram_clipped_at_80_columns() {
+        let mut doc = DiagramDocument::default();
+        let output = prepare(
+            include_str!("../docs/mermaid-wide-example.md"),
+            65,
+            &mut doc,
+            &mut DiagramWorker::default(),
+        );
+        assert_eq!(output.matches("mermaid · diagram").count(), 3, "{output}");
+        assert!(!output.contains("Mermaid:"), "{output}");
+        assert!(output.contains(CLIP_RIGHT));
+        assert!(doc.max_pan() > 60);
+    }
 }

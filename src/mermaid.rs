@@ -3,13 +3,13 @@
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::JoinHandle;
 
 use selkie::diagrams::{Diagram, DiagramType};
 use selkie::layout::{NodeShape, NodeSizeConfig, SizeEstimator, ToLayoutGraph};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 pub(crate) const MAX_DIAGRAMS: usize = 16;
 pub(crate) const MAX_SOURCE_BYTES: usize = 16 * 1024;
@@ -32,9 +32,9 @@ impl RenderControl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiagramSpec {
+    /// Diagrams are laid out at their natural width and clipped when drawn, so
+    /// resizing the pane never invalidates a cached result.
     pub source: String,
-    /// Content width, excluding Markdown prefixes and the diagram frame.
-    pub width: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +62,12 @@ impl Drop for Pending {
 #[derive(Default)]
 pub(crate) struct DiagramDocument {
     pub show_source: bool,
+    /// Horizontal pan, in cells, applied to every diagram wider than the pane.
+    pub pan: usize,
+    /// Widest diagram content and the pane width it was drawn into; written by
+    /// the Markdown renderer and read by the footer and the pan handlers.
+    widest: AtomicUsize,
+    view: AtomicUsize,
     requests: Vec<DiagramSpec>,
     ready: Artifacts,
     pending: Option<Pending>,
@@ -73,15 +79,75 @@ impl DiagramDocument {
         self.requests = requests;
     }
 
-    pub fn result(&self, source: &str, width: usize) -> Option<&DiagramResult> {
+    pub fn result(&self, source: &str) -> Option<&DiagramResult> {
         self.ready
             .iter()
-            .find(|(spec, _)| spec.width == width && spec.source == source)
+            .find(|(spec, _)| spec.source == source)
             .map(|(_, result)| result)
+    }
+
+    /// Record a drawn diagram so the footer and pan limits know about it.
+    pub(crate) fn note_drawn(&self, content_width: usize, view_width: usize) {
+        self.widest.fetch_max(content_width, Ordering::Relaxed);
+        self.view.store(view_width, Ordering::Relaxed);
+    }
+
+    pub(crate) fn begin_draw(&self) {
+        self.widest.store(0, Ordering::Relaxed);
+    }
+
+    /// Largest useful pan, or 0 when every diagram fits.
+    pub fn max_pan(&self) -> usize {
+        self.widest
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.view.load(Ordering::Relaxed))
+    }
+
+    /// Visible column range `(first, last, total)`, 1-based, when clipped.
+    pub fn pan_status(&self) -> Option<(usize, usize, usize)> {
+        let max = self.max_pan();
+        if max == 0 || self.show_source {
+            return None;
+        }
+        let view = self.view.load(Ordering::Relaxed);
+        let start = self.pan.min(max);
+        Some((start + 1, start + view, max + view))
+    }
+
+    /// Pan by `delta` cells, clamped to the diagram. Returns whether it moved,
+    /// which is when the host must re-render.
+    pub fn pan_by(&mut self, delta: isize) -> bool {
+        let current = self.pan.min(self.max_pan());
+        let next = current.saturating_add_signed(delta).min(self.max_pan());
+        let changed = next != self.pan;
+        self.pan = next;
+        changed
+    }
+
+    /// Handle a horizontal pan key. Returns whether the document must be
+    /// re-rendered. `h`/`l`/Left/Right pan a few cells; Shift or Ctrl pan a
+    /// larger step.
+    pub fn handle_pan_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let fast = key
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL);
+        let sign = match key.code {
+            KeyCode::Left | KeyCode::Char('h' | 'H') => -1,
+            KeyCode::Right | KeyCode::Char('l' | 'L') => 1,
+            _ => return false,
+        };
+        let step = if fast || matches!(key.code, KeyCode::Char('H' | 'L')) {
+            PAN_FAST_STEP
+        } else {
+            PAN_STEP
+        };
+        self.pan_by(sign * step as isize)
     }
 
     pub fn toggle_source(&mut self) {
         self.show_source = !self.show_source;
+        self.pan = 0;
         self.requests.clear();
         self.pending = None;
     }
@@ -97,7 +163,7 @@ impl DiagramDocument {
             && self
                 .requests
                 .iter()
-                .any(|spec| self.result(&spec.source, spec.width).is_none())
+                .any(|spec| self.result(&spec.source).is_none())
     }
 
     /// App calls this outside drawing. A completed result invalidates the host's
@@ -107,7 +173,7 @@ impl DiagramDocument {
         let missing: Vec<_> = self
             .requests
             .iter()
-            .filter(|spec| self.result(&spec.source, spec.width).is_none())
+            .filter(|spec| self.result(&spec.source).is_none())
             .cloned()
             .collect();
         if self
@@ -157,6 +223,73 @@ impl DiagramDocument {
         }
         false
     }
+}
+
+pub(crate) const PAN_STEP: usize = 4;
+pub(crate) const PAN_FAST_STEP: usize = 16;
+pub(crate) const CLIP_LEFT: char = '◂';
+pub(crate) const CLIP_RIGHT: char = '▸';
+
+/// Cut display columns `start..start + width` out of `line`. A wide character
+/// cut by either edge becomes a space, and combining marks stay with the base
+/// character they follow. Edge markers replace the outermost cell of a row that
+/// has content beyond that edge.
+pub(crate) fn clip_columns(line: &str, start: usize, width: usize) -> String {
+    let mut cells = Vec::new();
+    let mut col = 0;
+    for ch in line.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        cells.push((col, w, ch));
+        col += w;
+    }
+    let end = start + width;
+    if start == 0 && col <= width {
+        return line.to_owned();
+    }
+    let beyond = |keep: &dyn Fn(usize) -> bool| {
+        cells
+            .iter()
+            .any(|&(begin, w, ch)| w > 0 && keep(begin) && !ch.is_whitespace())
+    };
+    let left_marker = width > 2 && beyond(&|begin| begin < start);
+    let right_marker = width > 2 && beyond(&|begin| begin >= end);
+    let inner_start = start + usize::from(left_marker);
+    let inner_end = end - usize::from(right_marker);
+
+    let mut out = String::new();
+    if left_marker {
+        out.push(CLIP_LEFT);
+    }
+    let mut written = inner_start;
+    let mut base_visible = false;
+    for &(begin, w, ch) in &cells {
+        if w == 0 {
+            if base_visible {
+                out.push(ch);
+            }
+            continue;
+        }
+        let finish = begin + w;
+        if finish <= inner_start || begin >= inner_end {
+            base_visible = false;
+        } else if begin < inner_start || finish > inner_end {
+            let (from, to) = (begin.max(inner_start), finish.min(inner_end));
+            out.extend(std::iter::repeat_n(' ', to - from));
+            written = to;
+            base_visible = false;
+        } else {
+            out.push(ch);
+            written = finish;
+            base_visible = true;
+        }
+    }
+    out.extend(std::iter::repeat_n(' ', inner_end.saturating_sub(written)));
+    if right_marker {
+        out.push(CLIP_RIGHT);
+    } else {
+        out.truncate(out.trim_end_matches(' ').len());
+    }
+    out
 }
 
 struct Task {
@@ -281,9 +414,6 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
     check_cancelled(control)?;
     if spec.source.len() > MAX_SOURCE_BYTES || spec.source.lines().count() > 256 {
         return Err("Diagram exceeds the source limit (16 KiB / 256 lines)".into());
-    }
-    if spec.width == 0 {
-        return Err("Widen the window to display this diagram".into());
     }
     // Selkie measures labels in characters, not display cells. Do not show a
     // broken topology for wide characters, combining marks or terminal controls.
@@ -453,10 +583,6 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
     if text.len() > 128 * 1024 {
         return Err("Diagram exceeds the output limit".into());
     }
-    let width = text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
-    if width > spec.width {
-        return Err(format!("Diagram needs {width} columns; widen the window"));
-    }
     if text.trim().is_empty() || labels.iter().any(|label| !text.contains(label.as_str())) {
         return Err("This diagram cannot preserve every label; showing source".into());
     }
@@ -496,14 +622,14 @@ mod tests {
     use crate::markdown::render_markdown_with_diagrams;
     use crate::theme::Theme;
     use std::time::{Duration, Instant};
+    use unicode_width::UnicodeWidthStr;
 
     const FLOW: &str = "flowchart TD\n A[Start] --> B{Ready?}\n B -->|Yes| C[Deploy]\n B -->|No| D[Fix]\n D --> B\n";
     const SEQUENCE: &str = "sequenceDiagram\n participant User\n participant AMF\n User->>AMF: Open plan\n alt Valid\n AMF-->>User: Diagram\n else Invalid\n AMF-->>User: Source\n end\n";
 
-    fn spec(source: &str, width: usize) -> DiagramSpec {
+    fn spec(source: &str) -> DiagramSpec {
         DiagramSpec {
             source: source.into(),
-            width,
         }
     }
 
@@ -546,8 +672,7 @@ mod tests {
 
     #[test]
     fn flowchart_preserves_branches_labels_and_direction() {
-        let DiagramResult::Rendered(lines) =
-            render_diagram(&spec(FLOW, 80), &RenderControl::default())
+        let DiagramResult::Rendered(lines) = render_diagram(&spec(FLOW), &RenderControl::default())
         else {
             panic!("expected flowchart")
         };
@@ -575,7 +700,7 @@ mod tests {
 
     fn assert_fallback_preserves_source(source: &str, reason: &str) {
         assert_eq!(
-            render_diagram(&spec(source, 120), &RenderControl::default()),
+            render_diagram(&spec(source), &RenderControl::default()),
             DiagramResult::Fallback(reason.into()),
             "{source}"
         );
@@ -598,7 +723,6 @@ mod tests {
         let DiagramResult::Rendered(lines) = render_diagram(
             &spec(
                 "flowchart TD\n Before[Before] --> Decision{Ready for final review?}\n Decision --> After[After]",
-                100,
             ),
             &RenderControl::default(),
         ) else {
@@ -648,7 +772,7 @@ mod tests {
     #[test]
     fn sequence_preserves_participants_messages_and_alternatives() {
         let DiagramResult::Rendered(lines) =
-            render_diagram(&spec(SEQUENCE, 80), &RenderControl::default())
+            render_diagram(&spec(SEQUENCE), &RenderControl::default())
         else {
             panic!("expected sequence")
         };
@@ -685,23 +809,104 @@ mod tests {
     }
 
     #[test]
-    fn narrow_diagrams_refuse_overflow_instead_of_clipping() {
-        for width in [0, 1, 10, 20] {
-            assert!(
-                matches!(render_diagram(&spec(SEQUENCE, width), &RenderControl::default()), DiagramResult::Fallback(reason) if reason.contains("widen") || reason.contains("Widen"))
-            );
-        }
-        for width in [60, 80, 120] {
-            let DiagramResult::Rendered(lines) =
-                render_diagram(&spec(SEQUENCE, width), &RenderControl::default())
-            else {
-                panic!("expected sequence at {width}")
-            };
-            assert!(
-                lines
-                    .iter()
-                    .all(|line| UnicodeWidthStr::width(line.as_str()) <= width)
-            );
+    fn wide_diagrams_are_clipped_and_panned_instead_of_refused() {
+        let markdown = format!("```mermaid\n{SEQUENCE}```");
+        let mut doc = DiagramDocument::default();
+        let mut worker = DiagramWorker::default();
+        let wide = prepare(&markdown, 200, &mut doc, &mut worker);
+        let natural = doc.widest.load(Ordering::Relaxed);
+        assert!(natural > 40 && !wide.contains('▸'), "{wide}");
+        assert_eq!(doc.max_pan(), 0);
+
+        let narrow = prepare(&markdown, 40, &mut doc, &mut worker);
+        assert!(narrow.contains("mermaid · diagram") && !narrow.contains("Mermaid:"));
+        assert!(
+            narrow.contains(CLIP_RIGHT) && !narrow.contains(CLIP_LEFT),
+            "{narrow}"
+        );
+        assert!(narrow.lines().all(|row| UnicodeWidthStr::width(row) <= 40));
+        let view = doc.view.load(Ordering::Relaxed);
+        assert_eq!(doc.max_pan(), natural - view);
+        assert_eq!(doc.pan_status(), Some((1, view, natural)));
+
+        // Panning to the far end shows the left marker and the last column.
+        assert!(doc.pan_by(isize::MAX));
+        assert_eq!(doc.pan, natural - view);
+        let end = text(render_markdown_with_diagrams(
+            &markdown,
+            &Theme::default(),
+            40,
+            None,
+            &doc,
+        ));
+        assert!(
+            end.contains(CLIP_LEFT) && !end.contains(CLIP_RIGHT),
+            "{end}"
+        );
+        assert!(!doc.pan_by(1), "already at the right end");
+        assert!(doc.pan_by(isize::MIN) && doc.pan == 0);
+        assert!(!doc.pan_by(-1), "already at the left end");
+    }
+
+    #[test]
+    fn pan_offset_is_clamped_after_resize() {
+        let markdown = format!("```mermaid\n{SEQUENCE}```");
+        let mut doc = DiagramDocument::default();
+        let mut worker = DiagramWorker::default();
+        prepare(&markdown, 40, &mut doc, &mut worker);
+        doc.pan_by(isize::MAX);
+        let far = doc.pan;
+        // The renderer clamps per diagram, so a stale offset never overshoots.
+        let wider = text(render_markdown_with_diagrams(
+            &markdown,
+            &Theme::default(),
+            60,
+            None,
+            &doc,
+        ));
+        assert!(wider.lines().all(|row| UnicodeWidthStr::width(row) <= 60));
+        assert!(doc.max_pan() < far);
+        assert!(doc.pan_by(0) || doc.pan == doc.max_pan());
+        let fits = prepare(&markdown, 200, &mut doc, &mut worker);
+        assert_eq!(doc.max_pan(), 0);
+        assert!(!fits.contains(CLIP_LEFT) && !fits.contains(CLIP_RIGHT));
+    }
+
+    #[test]
+    fn pan_keys_step_and_report_changes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut doc = DiagramDocument::default();
+        doc.note_drawn(100, 40);
+        let press = |code, modifiers| KeyEvent::new(code, modifiers);
+        assert!(doc.handle_pan_key(press(KeyCode::Right, KeyModifiers::NONE)));
+        assert_eq!(doc.pan, PAN_STEP);
+        assert!(doc.handle_pan_key(press(KeyCode::Char('L'), KeyModifiers::SHIFT)));
+        assert_eq!(doc.pan, PAN_STEP + PAN_FAST_STEP);
+        assert!(doc.handle_pan_key(press(KeyCode::Char('h'), KeyModifiers::NONE)));
+        assert!(!doc.handle_pan_key(press(KeyCode::Char('x'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn clipping_handles_edges_wide_and_combining_characters() {
+        assert_eq!(clip_columns("abcdef", 0, 10), "abcdef");
+        assert_eq!(clip_columns("abcdefghij", 0, 6), "abcde▸");
+        assert_eq!(clip_columns("abcdefghij", 4, 6), "◂fghij");
+        assert_eq!(clip_columns("abcdefghij", 2, 6), "◂defg▸");
+        // Rows with only blank space beyond the edge carry no marker.
+        assert_eq!(clip_columns("abc        ", 0, 6), "abc");
+        // A wide character cut by the left or right edge is blanked.
+        assert_eq!(clip_columns("a开b开cdefgh", 1, 6), "◂ b开▸");
+        assert_eq!(clip_columns("abcd开efghi", 0, 6), "abcd ▸");
+        // Combining marks stay with their base and vanish with it.
+        assert_eq!(clip_columns("ae\u{301}cdefghi", 0, 6), "ae\u{301}cde▸");
+        assert_eq!(clip_columns("abcde\u{301}fghij", 5, 6), "◂ghij");
+        for line in ["a开b开cdefgh", "abcd开efghi", "ae\u{301}cdefghi"] {
+            for start in 0..8 {
+                assert!(
+                    UnicodeWidthStr::width(clip_columns(line, start, 5).as_str()) <= 5,
+                    "{line:?} at {start}"
+                );
+            }
         }
     }
 
@@ -739,13 +944,13 @@ mod tests {
         );
         for source in [oversized, many_nodes] {
             assert!(
-                matches!(render_diagram(&spec(&source, 80), &RenderControl::default()), DiagramResult::Fallback(reason) if reason.contains("limit"))
+                matches!(render_diagram(&spec(&source), &RenderControl::default()), DiagramResult::Fallback(reason) if reason.contains("limit"))
             );
         }
         let control = RenderControl::default();
         control.cancel();
         assert_eq!(
-            render_diagram(&spec(FLOW, 80), &control),
+            render_diagram(&spec(FLOW), &control),
             DiagramResult::Fallback("Diagram rendering cancelled".into())
         );
     }
@@ -784,8 +989,7 @@ mod tests {
                 "{output}"
             );
             let source = &doc.requests[0];
-            let Some(DiagramResult::Rendered(lines)) = doc.result(&source.source, source.width)
-            else {
+            let Some(DiagramResult::Rendered(lines)) = doc.result(&source.source) else {
                 panic!("expected prepared diagram")
             };
             for line in lines {
@@ -808,14 +1012,17 @@ mod tests {
         assert!(source.contains("sequenceDiagram") && !source.contains("mermaid · diagram"));
         doc.toggle_source();
         let narrow = prepare(&markdown, 20, &mut doc, &mut worker);
-        assert!(narrow.contains("widen") && narrow.contains("sequenceDiagram"));
+        assert!(narrow.contains("mermaid · diagram") && !narrow.contains("sequenceDiagram"));
         assert!(prepare(&markdown, 80, &mut doc, &mut worker).contains("mermaid · diagram"));
     }
 
     #[test]
     fn stale_replies_are_discarded_after_source_or_width_change() {
-        for new in [spec("flowchart TD\n A --> Changed", 80), spec(FLOW, 40)] {
-            let old = spec(FLOW, 80);
+        for new in [
+            spec("flowchart TD\n A --> Changed"),
+            spec("flowchart TD\n B --> Other"),
+        ] {
+            let old = spec(FLOW);
             let control = RenderControl::default();
             let (reply, receiver) = mpsc::sync_channel(1);
             let mut doc = DiagramDocument {

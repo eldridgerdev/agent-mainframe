@@ -393,6 +393,19 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => {
             app.refresh_markdown_viewer()?;
         }
+        KeyCode::Char('f') if key.modifiers.is_empty() => {
+            crate::ui::toggle_markdown_full_width();
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.rendered_lines.clear();
+            }
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l' | 'H' | 'L') => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode
+                && state.diagrams.handle_pan_key(key)
+            {
+                state.rendered_lines.clear();
+            }
+        }
         KeyCode::Char('d') if key.modifiers.is_empty() => {
             if let AppMode::MarkdownViewer(state) = &mut app.mode {
                 state.diagrams.toggle_source();

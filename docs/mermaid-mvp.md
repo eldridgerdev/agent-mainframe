@@ -56,15 +56,21 @@ Only `flowchart` / `graph` and `sequenceDiagram` are enabled. Ordinary code
 blocks keep their existing behavior. Learning, review explanations, desktop
 panes and live agent output are outside this MVP.
 
-Invalid syntax, unsupported constructs, missing labels and charts wider than
-the content pane display an explanation followed by the source. Widening the
-terminal retries for the new width. In particular, sequence notes, activation
+A chart wider than the content pane is drawn clipped to the pane. Press `h`/`l`
+or Left/Right to pan it by 4 columns (16 with Shift or Ctrl). Clipped rows end in
+`◂` or `▸`, and the footer shows the visible range, such as `cols 1-60 of 140`.
+Press `f` in the Markdown viewer to use the whole terminal instead of the 86%
+dialog; the choice lasts until AMF exits. Plan review pans the same way.
+
+Invalid syntax, unsupported constructs, missing labels and charts that exceed
+the canvas or output limits display an explanation followed by the source. In
+particular, sequence notes, activation
 bars, participant boxes, autonumbering, advanced arrow types, configuration
 directives, HTML/multiline labels and wide or combining characters use source
 fallback. Flowchart links, callbacks, icons and images also use source fallback.
 
 Work runs on one background thread, with at most one queued document. Results
-are cached for the current source and width; closing, refreshing, resizing or
+are cached per source, independent of pane width; closing, refreshing or
 changing the source cancels obsolete work. Cancellation is checked between
 rendering stages, rather than interrupting a layout already in progress.
 

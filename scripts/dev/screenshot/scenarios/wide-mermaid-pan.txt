@@ -1,0 +1,40 @@
+# wide-mermaid-pan: a Mermaid diagram wider than the Markdown viewer is drawn
+# clipped and can be panned (h/l) instead of falling back to source, and `f`
+# gives the viewer the whole terminal. The diagram lives in a terminal note so
+# the viewer opens with leader u; offline fixtures make no model calls.
+shim:codex:../automation-codex-fixture.py
+run:python3 "$REPO_ROOT/scripts/dev/screenshot/seed-wide-diagram.py" "$AMF_BIN" "$SHOT_ROOT"
+wait:5000
+key:/|wait:500
+text:Codex 1|wait:500
+key:Enter|wait:750
+key:Enter|wait:1500
+key:C-Space
+wait:500
+key:u
+wait:1500
+note:A diagram wider than the viewer is drawn instead of falling back to source. It is clipped at the right edge with a marker, and the footer reports the visible columns.
+expect:mermaid · diagram
+expect:Receive request
+expect:▸
+expect:cols 1-
+expect_not:Mermaid:
+shot:clipped-left
+key:l|key:l|key:l|key:l|key:l|key:l|key:l|key:l
+wait:300
+note:Panning right with l moves the window; both edge markers show there is more on each side.
+expect:◂
+expect:▸
+expect:pan diagram
+shot:panned-middle
+key:L|key:L|key:L|key:L|key:L|key:L
+wait:300
+note:Panned to the far end the diagram ends at the right edge, with only the left marker remaining.
+expect:Return the final response
+expect:◂
+shot:panned-end
+key:f
+wait:400
+note:The f key switches the viewer to the whole terminal, which uses the extra width.
+expect:f:full width
+shot:full-width

@@ -30,8 +30,8 @@ rendering, and overflow uses source fallback without truncation.
 
 One App-owned worker runs layout outside drawing, with a bounded queue and
 per-document reply channels. Small source/model/canvas limits contain work;
-cancellation applies between stages, not within Selkie's layout. Source and
-available width identify results, including cached failures. Refresh discards
+cancellation applies between stages, not within Selkie's layout. Source alone
+identifies results, including cached failures; width only affects clipping. Refresh discards
 artifacts. No database or authored Markdown format changes are needed.
 
 The [MVP usage guide and examples](../mermaid-mvp.md) describe the actual
@@ -154,9 +154,10 @@ Ratatui upgrade, rather than taking the latest dependency automatically.
    Sequence (`sequenceDiagram`). State (`stateDiagram-v2`) is the next candidate
    if the evaluation demonstrates acceptable support.
 3. Existing vertical scroll and navigation continue to work. Diagram connector
-   rows are never passed through prose word wrapping. Narrow windows use a
-   verified compact layout where possible; if the result cannot fit, show a
-   width message and the source rather than clipping away relationships.
+   rows are never passed through prose word wrapping. A diagram wider than the
+   pane is drawn clipped and panned horizontally (`h`/`l`, edge markers, footer
+   range) rather than hidden; `f` gives the Markdown viewer the whole terminal.
+   Trying the other layout direction before panning remains a follow-up.
 4. A document-level diagram/source toggle makes the authored text available.
    Use a key that is unused in the particular TUI view; keep existing shortcuts.
    In the desktop, each diagram gets a Show source control and an enlarged view

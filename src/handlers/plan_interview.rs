@@ -448,6 +448,13 @@ fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.message = None;
         }
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l' | 'H' | 'L') => {
+            if let AppMode::PlanInterview(state) = &mut app.mode
+                && state.review_diagrams.handle_pan_key(key)
+            {
+                state.review_rendered_lines.clear();
+            }
+        }
         _ => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 apply_scroll_key(key, &mut state.review_scroll_offset);

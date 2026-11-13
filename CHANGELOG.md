@@ -10,7 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Wide Mermaid diagrams can be panned.** A flowchart or sequence diagram wider
+  than the Markdown viewer is now drawn clipped to the pane instead of being
+  replaced by "Diagram needs N columns; widen the window". Pan with `h`/`l` or
+  Left/Right (Shift or Ctrl for a larger step); clipped rows end in `◂`/`▸` and
+  the footer shows the visible range. Plan review pans the same way.
+- **Full-width Markdown viewer.** `f` switches the viewer between the 86%
+  dialog and the whole terminal, remembered until AMF exits.
 
 ## [v0.52.0] - 2026-11-12
 

@@ -67,25 +67,38 @@ fn counts_from_usage(usage: &Value) -> TokenCounts {
     }
 }
 
+/// Model name Claude Code writes on locally generated lines (API errors,
+/// interrupts); they carry a zeroed usage block and were never billed.
+const SYNTHETIC_MODEL: &str = "<synthetic>";
+
+/// Skips lines that bill nothing: `<synthetic>` lines and lines whose counts
+/// are all zero. Dropping an all-zero line of a real response is harmless,
+/// since merging by max would not change its other lines.
 fn parse_line(line: &[u8], from_subagent: bool) -> Option<(String, UsageEntry)> {
     let value: Value = serde_json::from_slice(line).ok()?;
     let message = value.get("message")?;
     let usage = message.get("usage")?;
+    let model = message
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if model == SYNTHETIC_MODEL {
+        return None;
+    }
+    let counts = counts_from_usage(usage);
+    if counts.is_zero() {
+        return None;
+    }
     let key = dedupe_key(&value)?;
     let timestamp = DateTime::parse_from_rfc3339(value.get("timestamp")?.as_str()?)
         .ok()?
         .with_timezone(&Utc);
-    let model = message
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
     Some((
         key,
         UsageEntry {
-            model,
+            model: model.to_string(),
             timestamp,
-            counts: counts_from_usage(usage),
+            counts,
             from_subagent,
         },
     ))
@@ -121,6 +134,10 @@ fn merge(into: &mut UsageEntry, other: UsageEntry) {
 /// share a dedupe key (across all files) are merged into one entry before
 /// the window is applied. Malformed lines and lines without usage, a dedupe
 /// key or a timestamp are skipped.
+///
+/// Cost is O(total transcript size) per call: every line of every file is
+/// parsed before the window applies. Fine for one-off reads; a caller that
+/// polls on each refresh needs a cache or per-file byte offsets first.
 pub fn read_window(paths: &[PathBuf], start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<UsageEntry> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut entries: Vec<UsageEntry> = Vec::new();
@@ -349,6 +366,38 @@ mod tests {
         assert_eq!(totals.len(), 3);
         assert_eq!(totals["claude-haiku-5-5"].entries, 1);
         assert!(!totals["claude-opus-5-5"].price_assumed);
+    }
+
+    #[test]
+    fn synthetic_and_all_zero_lines_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let lines = [
+            line(
+                "r1",
+                "<synthetic>",
+                "2026-11-13T10:00:00Z",
+                r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            line(
+                "r2",
+                "claude-opus-5-5",
+                "2026-11-13T10:00:01Z",
+                r#"{"input_tokens":0,"output_tokens":0}"#,
+            ),
+            line(
+                "r3",
+                "claude-opus-5-5",
+                "2026-11-13T10:00:02Z",
+                r#"{"input_tokens":3,"output_tokens":4}"#,
+            ),
+        ];
+        fs::write(&path, lines.join("\n")).unwrap();
+        let entries = read_window(&[path], ts(0, 0), ts(23, 0));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "claude-opus-5-5");
+        let totals = aggregate_by_model(&entries, &TokenPricingConfig::default());
+        assert!(!totals.contains_key("<synthetic>"));
     }
 
     #[test]

@@ -44,6 +44,11 @@ impl TokenCounts {
         self.all().iter().all(Option::is_none)
     }
 
+    /// True when no field reports a nonzero count (unavailable counts as zero).
+    pub fn is_zero(&self) -> bool {
+        self.all().iter().all(|c| c.unwrap_or(0) == 0)
+    }
+
     /// Input + cache read + cache writes, the size that selects a
     /// long-prompt tier.
     pub fn prompt_tokens(&self) -> u64 {

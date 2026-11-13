@@ -10,6 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.52.1] - 2026-11-13
+
+Fixes the crates.io package for v0.52.0, which left out the container sandbox
+Dockerfile that AMF embeds and so could not be published. It also adds panning
+for wide Mermaid diagrams and a full-width Markdown viewer.
+
+### Fixed
+
+- **`cargo install agent-mainframe` works again.** The sandbox Dockerfile used
+  for container projects is now included in the published package.
+
 ### Changed
 
 - **Wide Mermaid diagrams can be panned.** A flowchart or sequence diagram wider

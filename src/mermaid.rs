@@ -1111,7 +1111,7 @@ mod tests {
             &mut doc,
             &mut DiagramWorker::default(),
         );
-        assert_eq!(output.matches("mermaid · diagram").count(), 3, "{output}");
+        assert_eq!(output.matches("mermaid · diagram").count(), 5, "{output}");
         assert!(!output.contains("Mermaid:"), "{output}");
         assert!(output.contains(CLIP_RIGHT));
         assert!(doc.max_pan() > 60);

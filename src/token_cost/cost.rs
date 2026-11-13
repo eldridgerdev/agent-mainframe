@@ -74,8 +74,9 @@ impl TokenCounts {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Priced {
     pub cost_usd: f64,
-    /// `cost / input rate`; None when every count is unavailable or the
-    /// input rate is zero.
+    /// `cost / base input rate`, where the base rate is before any
+    /// long-prompt multiplier, so a tiered call shows its multiplier here.
+    /// None when every count is unavailable or the base input rate is zero.
     pub effective_tokens: Option<u64>,
     /// The rates used, after any long-prompt multiplier.
     pub rates_applied: ModelRates,
@@ -112,8 +113,8 @@ pub fn price(counts: &TokenCounts, rates: &ModelRates) -> Priced {
         + n(counts.cache_write_1h) * applied.cache_write_1h)
         / 1_000_000.0;
 
-    let effective_tokens = (!counts.is_all_unavailable() && applied.input > 0.0)
-        .then(|| (cost_usd * 1_000_000.0 / applied.input).round() as u64);
+    let effective_tokens = (!counts.is_all_unavailable() && rates.input > 0.0)
+        .then(|| (cost_usd * 1_000_000.0 / rates.input).round() as u64);
 
     Priced {
         cost_usd,
@@ -185,6 +186,16 @@ mod tests {
         assert_eq!(p.effective_tokens, Some(5_000));
         let p = price(&counts(1_000, 0), &lookup("opus").rates);
         assert_eq!(p.effective_tokens, Some(1_000));
+    }
+
+    #[test]
+    fn effective_tokens_show_the_long_prompt_multiplier() {
+        let rates = lookup("haiku").rates;
+        let short = price(&counts(1_000, 1_000), &rates);
+        let long = price(&counts(100_001, 0), &rates);
+        // Base input rate 0.10: 100_001 input at 5x is 500_005 effective.
+        assert_eq!(long.effective_tokens, Some(500_005));
+        assert_eq!(short.effective_tokens, Some(6_000));
     }
 
     #[test]

@@ -13,6 +13,13 @@ use unicode_width::UnicodeWidthChar;
 
 pub(crate) const MAX_DIAGRAMS: usize = 16;
 pub(crate) const MAX_SOURCE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_SOURCE_LINES: usize = 256;
+pub(crate) const MAX_NODES: usize = 32;
+pub(crate) const MAX_EDGES: usize = 64;
+pub(crate) const MAX_GROUPS: usize = 8;
+pub(crate) const MAX_PARTICIPANTS: usize = 8;
+pub(crate) const MAX_EVENTS: usize = 64;
+pub(crate) const MAX_LABEL_CHARS: usize = 120;
 
 #[derive(Clone, Default)]
 struct RenderControl {
@@ -417,10 +424,27 @@ fn render_diagram(spec: &DiagramSpec, control: &RenderControl) -> DiagramResult 
     }
 }
 
+/// Parse and lay out `source` exactly as the viewer would, returning the
+/// renderer's reason when it would fall back to source view. Used to vet
+/// model-written diagrams before they are accepted.
+pub(crate) fn validate_source(source: &str) -> Result<(), String> {
+    let spec = DiagramSpec {
+        source: source.to_owned(),
+    };
+    let control = RenderControl::default();
+    match std::panic::catch_unwind(|| render_text(&spec, &control)) {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err("Diagram renderer failed".into()),
+    }
+}
+
 fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, String> {
     check_cancelled(control)?;
-    if spec.source.len() > MAX_SOURCE_BYTES || spec.source.lines().count() > 256 {
-        return Err("Diagram exceeds the source limit (16 KiB / 256 lines)".into());
+    if spec.source.len() > MAX_SOURCE_BYTES || spec.source.lines().count() > MAX_SOURCE_LINES {
+        return Err(format!(
+            "Diagram exceeds the source limit ({} KiB / {MAX_SOURCE_LINES} lines)",
+            MAX_SOURCE_BYTES / 1024
+        ));
     }
     // Selkie measures labels in characters, not display cells. Do not show a
     // broken topology for wide characters, combining marks or terminal controls.
@@ -445,14 +469,15 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
         Diagram::Flowchart(db) => {
             use selkie::diagrams::flowchart::EdgeStroke;
             let data = db.get_data();
-            if data.vertices.len() > 32
-                || data.edges.len() > 64
-                || data.subgraphs.len() > 8
+            if data.vertices.len() > MAX_NODES
+                || data.edges.len() > MAX_EDGES
+                || data.subgraphs.len() > MAX_GROUPS
                 || data.edges.iter().any(|edge| edge.length.unwrap_or(1) > 4)
             {
-                return Err(
-                    "Diagram exceeds the model limit (32 nodes / 64 edges / 8 groups)".into(),
-                );
+                return Err(format!(
+                    "Diagram exceeds the model limit ({MAX_NODES} nodes / {MAX_EDGES} edges / \
+                     {MAX_GROUPS} groups)"
+                ));
             }
             // The ASCII renderer always draws a normal line with one target
             // arrow. Other heads, directions and strokes would change meaning.
@@ -528,8 +553,11 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
         }
         Diagram::Sequence(db) => {
             use selkie::diagrams::sequence::LineType;
-            if db.get_actors().len() > 8 || db.get_messages().len() > 64 {
-                return Err("Sequence exceeds the model limit (8 participants / 64 events)".into());
+            if db.get_actors().len() > MAX_PARTICIPANTS || db.get_messages().len() > MAX_EVENTS {
+                return Err(format!(
+                    "Sequence exceeds the model limit ({MAX_PARTICIPANTS} participants / \
+                     {MAX_EVENTS} events)"
+                ));
             }
             // Lifetime events are stored separately from messages, but the
             // ASCII renderer draws every participant with a complete lifeline.
@@ -867,7 +895,7 @@ fn check_cancelled(control: &RenderControl) -> Result<(), String> {
 
 fn check_labels(labels: &[Label]) -> Result<(), String> {
     if labels.iter().any(|label| {
-        label.text.chars().count() > 120
+        label.text.chars().count() > MAX_LABEL_CHARS
             || label.text.chars().any(char::is_control)
             || label.text.contains(['<', '>'])
     }) {

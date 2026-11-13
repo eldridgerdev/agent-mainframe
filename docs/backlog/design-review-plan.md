@@ -761,14 +761,14 @@ uses the same ledger to check this table against a real feature.
 
 ### Phase 2 — Packet
 
-- [ ] Role config and model resolution (Claude defaults only for now)
-- [ ] `PromptId`s: brief, architecture, flow, fit, unexplained, plan drift
-- [ ] Budgeted prompt context builders, pure and tested
-- [ ] Mermaid validation, one retry, list fallback
-- [ ] Renderer limits passed to the cartographer from `src/mermaid.rs`, not
+- [x] Role config and model resolution (Claude defaults only for now)
+- [x] `PromptId`s: brief, architecture, flow, fit, unexplained, plan drift
+- [x] Budgeted prompt context builders, pure and tested
+- [x] Mermaid validation, one retry, list fallback
+- [x] Renderer limits passed to the cartographer from `src/mermaid.rs`, not
       copied into the prompt
 - [ ] Any renderer gap found here goes out as its own PR, not in this work
-- [ ] Mechanical unexplained-change detectors
+- [x] Mechanical unexplained-change detectors
 - [ ] Artifact cache keyed by input hash
 - [ ] A ledger row for every staff run, including cache hits and savings
 

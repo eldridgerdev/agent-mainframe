@@ -575,6 +575,14 @@ pub struct AppConfig {
     /// Per-action overrides of `review_reasoning`, keyed like `review_models`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_reasonings: std::collections::BTreeMap<String, crate::headless::ReasoningLevel>,
+    /// Optional `design_review` block: the harness/model/reasoning of each
+    /// Design Review staff role (scribe, cartographer, presenter). Absent
+    /// roles use the defaults of `design_packet::staff::resolve`.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::design_packet::staff::DesignReviewConfig::is_empty"
+    )]
+    pub design_review: crate::design_packet::staff::DesignReviewConfig,
     /// Soft cap on how many agent-harness sessions may run at once across
     /// **all** projects (the store is machine-global, so the limit is too).
     /// Only agent harnesses count — terminals, editors, and TODOs sessions
@@ -822,6 +830,7 @@ impl Default for AppConfig {
             review_models: std::collections::BTreeMap::new(),
             review_reasoning: None,
             review_reasonings: std::collections::BTreeMap::new(),
+            design_review: Default::default(),
             max_concurrent_agents: default_max_concurrent_agents(),
             low_memory_warn_mb: default_low_memory_warn_mb(),
             kill_editor_on_stop: true,

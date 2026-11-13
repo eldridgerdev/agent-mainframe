@@ -64,6 +64,7 @@ mod custom_agent;
 mod custom_session_icons;
 mod db;
 mod debug;
+mod design_packet;
 mod diff;
 mod diff_split;
 mod editor;

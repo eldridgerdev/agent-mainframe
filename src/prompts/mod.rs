@@ -100,11 +100,23 @@ pub enum PromptId {
     ReviewSynthesis,
     /// Batched review: shrink one slice's findings when synthesis overflows.
     ReviewFindingsSummary,
+    /// Design Review packet: scribe's brief (`design_packet`, no tools).
+    DesignBrief,
+    /// Design Review packet: cartographer's architecture diagram.
+    DesignArchitecture,
+    /// Design Review packet: cartographer's key-flow sequence diagram.
+    DesignKeyFlow,
+    /// Design Review packet: cartographer's fit-with-the-project note.
+    DesignFit,
+    /// Design Review packet: scribe names large changes no decision covers.
+    DesignUnexplained,
+    /// Design Review packet: scribe compares `AMF_PLAN.md` with the brief.
+    DesignPlanDrift,
 }
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 25] = [
+    pub const ALL: [PromptId; 31] = [
         PromptId::ModelAnalysis,
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
@@ -130,6 +142,12 @@ impl PromptId {
         PromptId::ReviewHunkSplit,
         PromptId::ReviewSynthesis,
         PromptId::ReviewFindingsSummary,
+        PromptId::DesignBrief,
+        PromptId::DesignArchitecture,
+        PromptId::DesignKeyFlow,
+        PromptId::DesignFit,
+        PromptId::DesignUnexplained,
+        PromptId::DesignPlanDrift,
     ];
 
     /// The stable string key. Used verbatim as the SQLite `prompt_id` and the
@@ -161,6 +179,12 @@ impl PromptId {
             PromptId::ReviewHunkSplit => "review.hunk_split",
             PromptId::ReviewSynthesis => "review.synthesis",
             PromptId::ReviewFindingsSummary => "review.findings_summary",
+            PromptId::DesignBrief => "design_review.brief",
+            PromptId::DesignArchitecture => "design_review.architecture",
+            PromptId::DesignKeyFlow => "design_review.key_flow",
+            PromptId::DesignFit => "design_review.fit",
+            PromptId::DesignUnexplained => "design_review.unexplained",
+            PromptId::DesignPlanDrift => "design_review.plan_drift",
         }
     }
 
@@ -225,7 +249,7 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 25] = [
+static SPECS: [PromptSpec; 31] = [
     PromptSpec {
         id: PromptId::ModelAnalysis,
         title: "Implementation model advice",
@@ -473,6 +497,54 @@ static SPECS: [PromptSpec; 25] = [
         default_template: defaults::REVIEW_FINDINGS_SUMMARY,
         harness_variants: NO_HARNESS_VARIANTS,
     },
+    PromptSpec {
+        id: PromptId::DesignBrief,
+        title: "Design Review: brief",
+        summary: "Scribe's short brief of what the feature changed and why.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_BRIEF,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignArchitecture,
+        title: "Design Review: architecture diagram",
+        summary: "Cartographer's architecture diagram as one Mermaid block.",
+        placeholders: &["renderer_limits", "context"],
+        default_template: defaults::DESIGN_ARCHITECTURE,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignKeyFlow,
+        title: "Design Review: key flow diagram",
+        summary: "Cartographer's sequence diagram of the main new path.",
+        placeholders: &["renderer_limits", "context"],
+        default_template: defaults::DESIGN_KEY_FLOW,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignFit,
+        title: "Design Review: fit with the project",
+        summary: "Cartographer's note on how the change fits existing modules.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_FIT,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignUnexplained,
+        title: "Design Review: unexplained changes",
+        summary: "Names large changes that no recorded decision covers.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_UNEXPLAINED,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignPlanDrift,
+        title: "Design Review: plan drift",
+        summary: "Compares the AMF_PLAN.md excerpt with the brief.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_PLAN_DRIFT,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
 ];
 
 #[cfg(test)]
@@ -527,6 +599,37 @@ mod tests {
             assert_eq!(id.as_str(), key);
             assert_eq!(PromptId::from_key(key), Some(id));
             assert!(!spec(id).default_template.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn design_review_prompt_keys_and_templates_are_stable() {
+        for (id, key) in [
+            (PromptId::DesignBrief, "design_review.brief"),
+            (PromptId::DesignArchitecture, "design_review.architecture"),
+            (PromptId::DesignKeyFlow, "design_review.key_flow"),
+            (PromptId::DesignFit, "design_review.fit"),
+            (PromptId::DesignUnexplained, "design_review.unexplained"),
+            (PromptId::DesignPlanDrift, "design_review.plan_drift"),
+        ] {
+            assert_eq!(id.as_str(), key);
+            assert_eq!(PromptId::from_key(key), Some(id));
+            let template = spec(id).default_template;
+            assert!(template.contains("{{context}}"), "{key}");
+            assert!(template.contains("not recorded"), "{key}");
+        }
+    }
+
+    #[test]
+    fn diagram_prompts_take_renderer_limits_and_one_mermaid_block() {
+        for id in [PromptId::DesignArchitecture, PromptId::DesignKeyFlow] {
+            let template = spec(id).default_template;
+            assert!(template.contains("{{renderer_limits}}"));
+            assert!(template.contains("exactly one fenced ```mermaid block"));
+            // No hard-coded limits: the numbers come from the renderer.
+            for hard_coded in ["32 nodes", "64 edges", "120"] {
+                assert!(!template.contains(hard_coded), "{hard_coded}");
+            }
         }
     }
 

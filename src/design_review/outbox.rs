@@ -107,6 +107,7 @@ mod tests {
             ask: None,
             supersedes: None,
             paths: vec![],
+            dirty: Default::default(),
             head: None,
             session_id: None,
             harness: "claude".into(),

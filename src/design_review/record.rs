@@ -4,6 +4,8 @@
 //! boundary with a trailing `…`, never rejected: a retry costs the agent more
 //! than the truncation loses.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const TITLE_CAP: usize = 80;
@@ -14,6 +16,8 @@ pub const ASK_CAP: usize = 200;
 /// `--supersedes` names an earlier record (`d4`); anything longer is noise.
 pub const SUPERSEDES_CAP: usize = 32;
 pub const PATHS_CAP: usize = 40;
+/// Best-effort cap on the per-record dirty snapshot.
+pub const DIRTY_CAP: usize = 200;
 
 /// What kind of choice a record explains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -127,6 +131,12 @@ pub struct DecisionRecord {
     pub supersedes: Option<String>,
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Uncommitted files at record time (path to `git hash-object` blob id,
+    /// or `"deleted"`), capped at [`DIRTY_CAP`]. Capture-only: the next record
+    /// diffs against it so a file is attributed to the decision that
+    /// introduced or changed it, not to every later one. Not stored in the DB.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dirty: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -223,6 +233,7 @@ mod tests {
             ask: None,
             supersedes: None,
             paths: vec!["src/a.rs".into()],
+            dirty: BTreeMap::new(),
             head: Some("abc".into()),
             session_id: None,
             harness: "claude".into(),
@@ -231,6 +242,7 @@ mod tests {
         let json = serde_json::to_string(&line).unwrap();
         assert!(json.starts_with(r#"{"type":"decision","#), "{json}");
         assert!(json.contains(r#""kind":"tradeoff""#));
+        assert!(!json.contains("dirty"), "{json}");
         assert_eq!(serde_json::from_str::<OutboxLine>(&json).unwrap(), line);
     }
 }

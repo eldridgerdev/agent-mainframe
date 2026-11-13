@@ -6,7 +6,7 @@
 //! uid, timestamp, session, `HEAD`, changed paths) is filled in here so the
 //! agent spends no tokens on it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 
 use super::outbox;
 use super::record::{
-    DecisionKind, DecisionRecord, DecisionText, OutboxLine, PATHS_CAP, apply_caps,
+    DIRTY_CAP, DecisionKind, DecisionRecord, DecisionText, OutboxLine, PATHS_CAP, apply_caps,
 };
 
 /// The only harness Design Review supports today
@@ -43,8 +43,7 @@ pub fn decision_add(
         &root,
         &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
     );
-    let previous_head = existing.last().and_then(|record| record.head.clone());
-    let paths = changed_paths(&root, previous_head.as_deref());
+    let (paths, dirty) = changed_paths(&root, existing.last());
 
     let (text, truncated) = apply_caps(text);
     if text.title.is_empty() || text.why.is_empty() {
@@ -60,6 +59,7 @@ pub fn decision_add(
         ask: text.ask,
         supersedes: text.supersedes,
         paths,
+        dirty,
         head,
         session_id: session_id.filter(|id| !id.trim().is_empty()),
         harness: HARNESS.to_string(),
@@ -78,33 +78,90 @@ pub fn ack(seq: u32, truncated: bool) -> String {
     }
 }
 
-/// Files changed since `since` (the previous record's `HEAD`), or, for the
-/// first record or when that commit is gone, since the merge-base with the
-/// default branch; plus untracked files. AMF-managed paths are dropped and the
-/// list is capped at [`PATHS_CAP`]. Best-effort: a git failure yields fewer
-/// paths, never an error, since the record itself is what matters.
-fn changed_paths(root: &Path, since: Option<&str>) -> Vec<String> {
-    let base = since
-        .filter(|commit| git(root, &["cat-file", "-e", &format!("{commit}^{{commit}}")]).is_some())
-        .map(str::to_string)
-        .or_else(|| {
-            crate::diff::resolve_base_ref(root, None)
-                .ok()
-                .map(|resolved| resolved.base_commit)
-        });
+/// Marker for a tracked file that no longer exists in the working tree.
+const DELETED: &str = "deleted";
+
+/// The paths a new record should list, and the dirty snapshot to store on it.
+///
+/// First record (or the previous `HEAD` is gone): everything changed since the
+/// merge-base with the default branch, plus untracked files. Later records
+/// list only what is new since the previous one: files changed by commits in
+/// `prev_head..HEAD` (unless they were dirty then with the very content now
+/// committed) and dirty files whose content differs from the previous
+/// record's snapshot. AMF-managed paths are dropped and the list is capped at
+/// [`PATHS_CAP`]. Best-effort: a git failure yields fewer paths, never an
+/// error, since the record itself is what matters.
+fn changed_paths(
+    root: &Path,
+    previous: Option<&DecisionRecord>,
+) -> (Vec<String>, BTreeMap<String, String>) {
+    let dirty = dirty_snapshot(root);
+    let since = previous
+        .and_then(|record| record.head.as_deref())
+        .filter(|commit| git(root, &["cat-file", "-e", &format!("{commit}^{{commit}}")]).is_some());
     let mut paths = BTreeSet::new();
-    if let Some(base) = base
-        && let Some(out) = git(root, &["diff", "--name-only", &base, "--"])
-    {
-        paths.extend(out.lines().map(str::to_string));
+    match (previous, since) {
+        (Some(previous), Some(since)) => {
+            if let Some(out) = git(root, &["diff", "--name-only", since, "HEAD", "--"]) {
+                for path in out.lines() {
+                    let committed = git(root, &["rev-parse", &format!("HEAD:{path}")])
+                        .unwrap_or_else(|| DELETED.to_string());
+                    if previous.dirty.get(path) != Some(&committed) {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+            for (path, blob) in &dirty {
+                if previous.dirty.get(path) != Some(blob) {
+                    paths.insert(path.clone());
+                }
+            }
+        }
+        _ => {
+            let base = crate::diff::resolve_base_ref(root, None)
+                .ok()
+                .map(|resolved| resolved.base_commit);
+            if let Some(base) = base
+                && let Some(out) = git(root, &["diff", "--name-only", &base, "--"])
+            {
+                paths.extend(out.lines().map(str::to_string));
+            }
+            paths.extend(dirty.keys().cloned());
+        }
     }
-    if let Some(out) = git(root, &["ls-files", "--others", "--exclude-standard"]) {
-        paths.extend(out.lines().map(str::to_string));
-    }
-    paths
+    let paths = paths
         .into_iter()
         .filter(|path| !path.is_empty() && !crate::amf_managed::is_amf_managed_path(path))
         .take(PATHS_CAP)
+        .collect();
+    (paths, dirty)
+}
+
+/// Uncommitted files (tracked changes against `HEAD` plus untracked), each
+/// with its `git hash-object` blob id or [`DELETED`]. AMF-managed paths are
+/// excluded and the map is capped at [`DIRTY_CAP`].
+fn dirty_snapshot(root: &Path) -> BTreeMap<String, String> {
+    let mut names = BTreeSet::new();
+    for args in [
+        &["diff", "--name-only", "HEAD", "--"][..],
+        &["ls-files", "--others", "--exclude-standard"][..],
+    ] {
+        if let Some(out) = git(root, args) {
+            names.extend(out.lines().map(str::to_string));
+        }
+    }
+    names
+        .into_iter()
+        .filter(|path| !path.is_empty() && !crate::amf_managed::is_amf_managed_path(path))
+        .take(DIRTY_CAP)
+        .map(|path| {
+            let blob = if root.join(&path).is_file() {
+                git(root, &["hash-object", "--", &path]).unwrap_or_else(|| DELETED.to_string())
+            } else {
+                DELETED.to_string()
+            };
+            (path, blob)
+        })
         .collect()
 }
 
@@ -206,13 +263,79 @@ mod tests {
         assert_eq!(records[0].harness, "claude");
         assert!(records[0].head.is_some());
         assert_eq!(records[1].seq, 2);
-        // Since d1's HEAD: the commit of a.rs is newer than d1's head, and
-        // b.rs is untracked.
-        assert_eq!(
-            records[1].paths,
-            vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
-        );
+        // a.rs was already attributed to d1 and was committed unchanged;
+        // only the untracked b.rs is new.
+        assert_eq!(records[1].paths, vec!["src/b.rs".to_string()]);
         assert_ne!(records[0].uid, records[1].uid);
+    }
+
+    fn paths_of(root: &Path) -> Vec<Vec<String>> {
+        outbox::decisions(&outbox::outbox_path(root))
+            .unwrap()
+            .into_iter()
+            .map(|record| record.paths)
+            .collect()
+    }
+
+    fn add(root: &Path) {
+        decision_add(root, DecisionKind::Data, text("d"), None).unwrap();
+    }
+
+    #[test]
+    fn an_unchanged_untracked_file_is_attributed_only_once() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::write(root.join("new.rs"), "one").unwrap();
+        add(root);
+        add(root);
+        std::fs::write(root.join("new.rs"), "two").unwrap();
+        add(root);
+        let paths = paths_of(root);
+        assert_eq!(paths[0], vec!["new.rs".to_string()]);
+        assert!(paths[1].is_empty(), "{:?}", paths[1]);
+        assert_eq!(paths[2], vec!["new.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_dirty_file_committed_unchanged_is_not_reattributed() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "a").unwrap();
+        add(root);
+        run(root, &["add", "a.rs"]);
+        run(root, &["commit", "-q", "-m", "a"]);
+        add(root);
+        assert!(paths_of(root)[1].is_empty());
+    }
+
+    #[test]
+    fn a_newly_committed_or_edited_file_is_attributed() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "a").unwrap();
+        add(root);
+        // a.rs is edited before its commit, so the committed content differs.
+        std::fs::write(root.join("a.rs"), "a2").unwrap();
+        std::fs::write(root.join("b.rs"), "b").unwrap();
+        run(root, &["add", "b.rs"]);
+        run(root, &["commit", "-q", "-m", "b"]);
+        add(root);
+        let paths = paths_of(root);
+        assert_eq!(paths[1], vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    #[test]
+    fn dirty_snapshot_is_stored_capped_and_old_lines_still_parse() {
+        let dir = repo();
+        let root = dir.path();
+        for i in 0..(DIRTY_CAP + 5) {
+            std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap();
+        }
+        add(root);
+        let records = outbox::decisions(&outbox::outbox_path(root)).unwrap();
+        assert_eq!(records[0].dirty.len(), DIRTY_CAP);
+        let old = r#"{"type":"decision","uid":"u","seq":1,"kind":"data","title":"t","why":"w","harness":"claude","ts":"x"}"#;
+        assert!(serde_json::from_str::<OutboxLine>(old).is_ok());
     }
 
     #[test]

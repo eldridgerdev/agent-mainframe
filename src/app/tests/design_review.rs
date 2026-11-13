@@ -159,6 +159,7 @@ fn record(uid: &str, seq: u32) -> OutboxLine {
         ask: Some("fresh enough?".into()),
         supersedes: None,
         paths: vec!["src/a.rs".into()],
+        dirty: Default::default(),
         head: Some("abc123".into()),
         session_id: Some("sess-1".into()),
         harness: "claude".into(),

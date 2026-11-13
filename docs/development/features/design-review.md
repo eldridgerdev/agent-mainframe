@@ -33,6 +33,11 @@ src/app/setup.rs            # ensure_design_review_instructions()
 - **Truncate, never reject.** Caps live in `record.rs`: title 80 chars, why
   400, rejected 3 × 160 (extras dropped), ask 200, paths 40. Text is cut on a
   char boundary and ends in `…`.
+- **Paths are per decision.** Each record carries a capture-only `dirty` map
+  (path to `git hash-object` blob id or `deleted`, 200 entries, not stored in
+  the DB). A later record lists files committed in `prev_head..HEAD` unless
+  they were dirty with that same blob, plus dirty files whose blob differs
+  from the previous snapshot. The first record uses the merge-base.
 - **Idempotent ingest by uid.** `App::ingest_design_review_outbox` reads
   complete lines from the stored byte offset and inserts with
   `INSERT OR IGNORE` on `uid`. A trailing partial line waits for the next

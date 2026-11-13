@@ -252,3 +252,276 @@ fn turn_end_skips_features_without_design_review() {
     assert_eq!(app.ingest_design_review_outbox(0, 0), 1);
     assert_eq!(decisions(&app).len(), 1);
 }
+
+// ── Creation surfaces ─────────────────────────────────────
+
+mod creation {
+    use super::super::feature_sessions::startup_prompt_overlay_launch;
+    use super::*;
+    use crate::automation::CreateFeatureRequest;
+    use crate::extension::FeaturePreset;
+    use crate::project::VibeMode;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn press(app: &mut App, code: KeyCode) {
+        crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 40).unwrap();
+    }
+
+    fn form() -> App {
+        let mut app = App::new_for_test(
+            store_with_feature(ProjectStatus::Stopped),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/test-repo"),
+            Vec::new(),
+            false,
+        );
+        state.branch = "feat".into();
+        state.step = CreateFeatureStep::Mode;
+        app.mode = AppMode::CreatingFeature(state);
+        app
+    }
+
+    fn state(app: &App) -> &CreateFeatureState {
+        match &app.mode {
+            AppMode::CreatingFeature(state) => state,
+            _ => panic!("expected the New Feature form"),
+        }
+    }
+
+    fn state_mut(app: &mut App) -> &mut CreateFeatureState {
+        match &mut app.mode {
+            AppMode::CreatingFeature(state) => state,
+            _ => panic!("expected the New Feature form"),
+        }
+    }
+
+    fn focus_design_row(app: &mut App) {
+        let state = state_mut(app);
+        state.step = CreateFeatureStep::Mode;
+        state.mode_focus = state.mode_max_focus();
+    }
+
+    #[test]
+    fn dialog_row_toggles_and_is_exclusive_with_review() {
+        let mut app = form();
+        assert_eq!(state(&app).mode_max_focus(), 7, "Claude: last row");
+        focus_design_row(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(state(&app).design_review);
+
+        // Review Mode takes over: it clears Design Review.
+        state_mut(&mut app).mode_focus = 2;
+        press(&mut app, KeyCode::Char(' '));
+        assert!(state(&app).review && !state(&app).design_review);
+
+        // And Design Review clears Review Mode.
+        focus_design_row(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(state(&app).design_review && !state(&app).review);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!state(&app).design_review);
+    }
+
+    #[test]
+    fn dialog_row_is_disabled_for_other_harnesses_and_unchecks_on_change() {
+        let mut app = form();
+        focus_design_row(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(state(&app).design_review);
+
+        let codex = state(&app)
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+        state_mut(&mut app).select_agent(codex);
+        assert!(!state(&app).design_review, "unchecked on harness change");
+        assert_eq!(
+            state(&app).design_review_unavailable_reason(),
+            Some("Claude only for now")
+        );
+
+        focus_design_row(&mut app);
+        assert_eq!(state(&app).mode_max_focus(), 5, "non-Claude: last row");
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!state(&app).design_review, "cannot be toggled");
+
+        let mut containerized = form();
+        state_mut(&mut containerized).containerized = true;
+        focus_design_row(&mut containerized);
+        press(&mut containerized, KeyCode::Char(' '));
+        assert!(!state(&containerized).design_review);
+        assert_eq!(
+            state(&containerized).design_review_unavailable_reason(),
+            Some("not available in container projects yet")
+        );
+    }
+
+    #[test]
+    fn dialog_renders_the_row_label_and_the_disabled_reason() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let render = |app: &mut App| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 60)).unwrap();
+            terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut app = form();
+        assert!(render(&mut app).contains("[ ] design review (Claude only for now)"));
+        let codex = state(&app)
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+        state_mut(&mut app).select_agent(codex);
+        assert!(render(&mut app).contains("Design Review: Claude only for now"));
+    }
+
+    fn preset_form(agent: AgentKind) -> App {
+        let mut app = form();
+        let state = state_mut(&mut app);
+        state.step = CreateFeatureStep::SelectPreset;
+        state.feature_presets = vec![FeaturePreset {
+            name: "designed".into(),
+            agent,
+            mode: VibeMode::Vibe,
+            design_review: true,
+            ..FeaturePreset::default()
+        }];
+        app
+    }
+
+    #[test]
+    fn preset_design_review_applies_on_claude() {
+        let mut app = preset_form(AgentKind::Claude);
+        press(&mut app, KeyCode::Enter);
+        assert!(state(&app).design_review);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn preset_design_review_is_ignored_on_codex_with_a_message() {
+        let mut app = preset_form(AgentKind::Codex);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(state(&app).agent, AgentKind::Codex);
+        assert!(!state(&app).design_review);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Design Review ignored")
+                    && toast.message.contains("Claude only for now")),
+            "{:?}",
+            app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn preset_round_trips_design_review_and_old_presets_default_off() {
+        let preset: FeaturePreset =
+            serde_json::from_str(r#"{"name":"p","design_review":true}"#).unwrap();
+        assert!(preset.design_review);
+        let json = serde_json::to_string(&preset).unwrap();
+        assert!(json.contains("\"design_review\":true"));
+        let old: FeaturePreset = serde_json::from_str(r#"{"name":"p"}"#).unwrap();
+        assert!(!old.design_review);
+        assert!(
+            !serde_json::to_string(&old)
+                .unwrap()
+                .contains("design_review")
+        );
+    }
+
+    #[test]
+    fn automation_request_round_trips_design_review() {
+        let request: CreateFeatureRequest = serde_json::from_value(serde_json::json!({
+            "project_name": "p", "branch": "b", "design_review": true
+        }))
+        .unwrap();
+        assert!(request.design_review);
+        assert_eq!(request.ipc_payload()["design_review"], true);
+        let default: CreateFeatureRequest =
+            serde_json::from_value(serde_json::json!({"project_name": "p"})).unwrap();
+        assert!(!default.design_review);
+    }
+
+    fn automation_app(repo: &std::path::Path) -> App {
+        App::new_for_test(
+            store_with_empty_project(repo.to_path_buf(), true),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        )
+    }
+
+    #[test]
+    fn automation_refuses_design_review_on_other_harnesses_and_with_review() {
+        let dir = TempDir::new().unwrap();
+        let mut app = automation_app(dir.path());
+        let base = CreateFeatureRequest {
+            project_name: "automation-project".into(),
+            branch: "feature-1".into(),
+            design_review: true,
+            use_worktree: Some(false),
+            no_start: true,
+            ..CreateFeatureRequest::default()
+        };
+        let err = app
+            .create_feature_from_request(&CreateFeatureRequest {
+                agent: AgentKind::Codex,
+                mode: VibeMode::Vibe,
+                ..base.clone()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("Claude only for now"), "{err}");
+        let err = app
+            .create_feature_from_request(&CreateFeatureRequest {
+                review: true,
+                ..base.clone()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot both be on"), "{err}");
+        assert!(app.store.projects[0].features.is_empty());
+
+        app.create_feature_from_request(&base).unwrap();
+        assert!(app.store.projects[0].features[0].design_review);
+    }
+
+    fn block_written(workdir: &std::path::Path) -> bool {
+        std::fs::read_to_string(workdir.join("CLAUDE.local.md"))
+            .is_ok_and(|text| text.contains(BEGIN))
+    }
+
+    #[test]
+    fn creation_stores_the_flag_and_writes_the_block_only_for_claude() {
+        let (app, workdir, _guards) =
+            startup_prompt_overlay_launch(AgentKind::Claude, "claude", true);
+        assert!(app.store.projects[0].features[0].design_review);
+        assert!(block_written(&workdir));
+    }
+
+    #[test]
+    fn creation_stores_no_flag_and_writes_no_block_for_an_unsupported_harness() {
+        for (agent, window) in [
+            (AgentKind::Codex, "codex"),
+            (AgentKind::Opencode, "opencode"),
+        ] {
+            let (app, workdir, _guards) = startup_prompt_overlay_launch(agent, window, true);
+            let feature = &app.store.projects[0].features[0];
+            assert!(!feature.design_review, "no flag stored for {window}");
+            assert!(!block_written(&workdir), "no block written for {window}");
+            let persisted = ProjectStore::load(&app.store_path).unwrap();
+            assert!(!persisted.projects[0].features[0].design_review);
+        }
+    }
+}

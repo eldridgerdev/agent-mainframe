@@ -1037,6 +1037,21 @@ impl App {
         if feature_name.trim().is_empty() {
             bail!("Feature name cannot be empty");
         }
+        if request.design_review {
+            if request.review {
+                bail!("review and design_review cannot both be on");
+            }
+            let containerized = self
+                .store
+                .find_project(&request.project_name)
+                .is_some_and(|project| project.containerized);
+            if let Some(reason) = crate::design_review::design_review_unavailable_reason(
+                &request.agent,
+                containerized,
+            ) {
+                bail!("Design Review: {reason}");
+            }
+        }
 
         let (
             project_repo,
@@ -1227,6 +1242,7 @@ impl App {
             false, // remote_control not supported via automation API yet
         );
         let mut feature = feature;
+        feature.set_design_review(request.design_review);
         feature.issue_source = options.issue_source.clone();
         Self::initialize_feature_sessions(&mut feature, request.create_terminal, None);
 

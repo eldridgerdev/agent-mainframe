@@ -560,6 +560,7 @@ impl App {
         };
         let project_name = project.name.clone();
         let project_repo = project.repo.clone();
+        let containerized = project.containerized;
         let preferred_agent = project.preferred_agent.clone();
         let agents = self.allowed_agents_for_repo(&project_repo);
         if agents.is_empty() {
@@ -577,6 +578,8 @@ impl App {
             agent_index,
             mode: VibeMode::Vibeless,
             review: false,
+            design_review: false,
+            containerized,
             enable_chrome: false,
             branch,
             row: 0,
@@ -761,6 +764,7 @@ impl App {
         create.agent_index = state.settings.agent_index;
         create.mode = state.mode();
         create.review = state.settings.review;
+        create.design_review = state.settings.design_review;
         create.enable_chrome = state.settings.enable_chrome;
         create.remote_control = state.remote_control;
         create.steering_enabled = state.steering_enabled;
@@ -1659,6 +1663,7 @@ mod tests {
             is_worktree: false,
             mode: VibeMode::Vibeless,
             review: false,
+            design_review: false,
             plan_mode: false,
             quick_plan: false,
             agent: AgentKind::Claude,
@@ -1776,6 +1781,7 @@ mod tests {
             is_worktree: true,
             mode: VibeMode::Vibeless,
             review: false,
+            design_review: false,
             plan_mode: false,
             quick_plan: false,
             agent: AgentKind::Claude,

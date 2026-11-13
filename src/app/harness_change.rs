@@ -81,6 +81,13 @@ impl App {
         let feature = &mut self.store.projects[pi].features[fi];
         sync_feature_agent_sessions(feature, &next);
         feature.agent = next.clone();
+        // `change_harness_setup` already stripped the instruction block for an
+        // unsupported harness; clear the flag to match.
+        let design_review_cleared = feature.design_review
+            && !crate::design_review::design_review_supported(&next, containerized);
+        if design_review_cleared {
+            feature.set_design_review(false);
+        }
         feature.status = ProjectStatus::Stopped;
         let version = self.store_version;
         if let Err(error) = self.save() {
@@ -160,6 +167,12 @@ impl App {
             original.name,
             next.display_name()
         ));
+        if design_review_cleared {
+            self.push_toast_warning(format!(
+                "Design Review turned off: {}",
+                crate::design_review::DESIGN_REVIEW_CLAUDE_ONLY
+            ));
+        }
         Ok(())
     }
 }

@@ -11,6 +11,25 @@ use crate::design_review::record::OutboxLine;
 use super::App;
 
 impl App {
+    /// `requested` Design Review, kept only when the harness and the named
+    /// project's container setting support it. The single place a creation
+    /// path turns a request into a stored flag, so an unsupported feature is
+    /// never persisted with the flag on.
+    pub(crate) fn effective_design_review(
+        &self,
+        project_name: &str,
+        agent: &crate::project::AgentKind,
+        requested: bool,
+    ) -> bool {
+        requested
+            && crate::design_review::design_review_supported(
+                agent,
+                self.store
+                    .find_project(project_name)
+                    .is_some_and(|project| project.containerized),
+            )
+    }
+
     /// Ingest new Decision Log lines from the feature's outbox into `amf.db`,
     /// resuming at the stored byte offset. Idempotent by uid, so re-reading a
     /// line (a truncated outbox, a lost offset write) never duplicates it.

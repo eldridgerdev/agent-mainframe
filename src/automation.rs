@@ -338,6 +338,9 @@ pub struct CreateFeatureRequest {
     pub agent: AgentKind,
     pub mode: VibeMode,
     pub review: bool,
+    /// Design Review (Decision Log). Claude only for now, and exclusive with
+    /// `review`; an unsupported request is refused, not silently ignored.
+    pub design_review: bool,
     pub plan_mode: bool,
     pub create_terminal: bool,
     pub use_worktree: Option<bool>,
@@ -363,6 +366,7 @@ impl CreateFeatureRequest {
             "agent": self.agent,
             "mode": self.mode,
             "review": self.review,
+            "design_review": self.design_review,
             "plan_mode": self.plan_mode,
             "create_terminal": self.create_terminal,
             "use_worktree": self.use_worktree,

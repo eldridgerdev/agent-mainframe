@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CreateFeatureRequest, HarnessInfo, ModeInfo, ModeSlug, asGuiError, featurePresetsChoices } from "./api";
 import { useCreationHarness } from "./useCreationHarness";
 import { CreationHarnessNotices, CreationHarnessSelect } from "./CreationHarnessField";
-import { CHROME_HINT, PLAN_HINTS, REVIEW_HINT } from "./creationCopy";
+import { CHROME_HINT, DESIGN_REVIEW_CLAUDE_ONLY, DESIGN_REVIEW_HINT, PLAN_HINTS, REVIEW_HINT, designReviewUnavailableReason } from "./creationCopy";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import { ExperimentalBadge, Field, Modal, Segmented, Spinner, Switch } from "./ui";
 
@@ -46,6 +46,7 @@ export default function CreateFeatureForm({
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
   const [review, setReview] = useState(false);
+  const [designReview, setDesignReview] = useState(false);
   const [chrome, setChrome] = useState(false);
   const [remoteControl, setRemoteControl] = useState(false);
   const [presetIndex, setPresetIndex] = useState("");
@@ -53,6 +54,10 @@ export default function CreateFeatureForm({
   const [appliedPrefix, setAppliedPrefix] = useState<string | null>(null);
   const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  // Design Review is Claude only for now: the switch is disabled with the
+  // reason for any other harness, and a stale "on" is not sent.
+  const designReviewReason = designReviewUnavailableReason(agent);
+  const designReviewOn = designReview && !designReviewReason;
   const unsupportedMode = agent === "codex" && mode === "vibeless";
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
   const selectedAgent = agent;
@@ -70,6 +75,7 @@ export default function CreateFeatureForm({
       agent: selectedAgent,
       mode,
       review,
+      design_review: designReviewOn,
       plan_mode: planKind !== "none",
       create_terminal: false,
       use_worktree: useWorktree,
@@ -109,8 +115,11 @@ export default function CreateFeatureForm({
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
             setAgent(preset.agent);
+            const presetDesignReview = !!preset.design_review && !preset.review;
+            const ignoredDesignReview = presetDesignReview && designReviewUnavailableReason(preset.agent) !== null;
             if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available agent.`);
-            setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
+            else if (ignoredDesignReview) setPresetNotice(`${preset.name}: Design Review ignored (${DESIGN_REVIEW_CLAUDE_ONLY}).`);
+            setMode(preset.mode); setReview(preset.review); setDesignReview(presetDesignReview && !ignoredDesignReview); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full"); if (preset.plan_mode) setSteering(false);
             // Keep the name the user typed; only the preset's prefix changes.
             const prefix = preset.branch_prefix?.trim() || null;
@@ -192,9 +201,16 @@ export default function CreateFeatureForm({
           />
         )}
         <div className="form-row">
-          <Switch checked={review} onChange={setReview} label="Review" hint={REVIEW_HINT} />
+          <Switch checked={review} onChange={(value) => { setReview(value); if (value) setDesignReview(false); }} label="Review" hint={REVIEW_HINT} />
           <Switch checked={chrome} onChange={setChrome} label="Chrome" hint={CHROME_HINT} />
         </div>
+        <Switch
+          checked={designReviewOn}
+          onChange={(value) => { setDesignReview(value); if (value) setReview(false); }}
+          disabled={designReviewReason !== null}
+          label={`Design review (${DESIGN_REVIEW_CLAUDE_ONLY})`}
+          hint={designReviewReason ? `Design Review: ${designReviewReason}` : DESIGN_REVIEW_HINT}
+        />
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
         <WorktreeHookField hook={hook} disabled={pending} />
       </div>

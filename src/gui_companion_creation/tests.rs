@@ -120,6 +120,7 @@ fn settings(branch: &str) -> CompanionSettings {
         agent: AgentKind::Claude,
         mode: VibeMode::Vibe,
         review: false,
+        design_review: false,
         enable_chrome: false,
     }
 }

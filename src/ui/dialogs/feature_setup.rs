@@ -26,6 +26,14 @@ pub(super) fn draw_rows(frame: &mut Frame, area: Rect, setup: &FeatureSetupState
                 )
             }
             FeatureSetupRow::Review => if setup.review { "on" } else { "off" }.to_string(),
+            FeatureSetupRow::DesignReview => match setup.design_review_unavailable_reason() {
+                Some(reason) => format!("unavailable: {reason}"),
+                None => format!(
+                    "{} ({})",
+                    if setup.design_review { "on" } else { "off" },
+                    crate::design_review::DESIGN_REVIEW_CLAUDE_ONLY
+                ),
+            },
             FeatureSetupRow::Chrome => if setup.enable_chrome { "on" } else { "off" }.to_string(),
             FeatureSetupRow::Branch => setup.branch.clone(),
         }

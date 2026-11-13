@@ -751,9 +751,9 @@ uses the same ledger to check this table against a real feature.
 - [x] `design_review_supported(agent, containerized)` and the shared "Claude
       only for now" and container wording
 - [x] `features.design_review` flag, persisted, with mutual-exclusion helpers
-- [ ] Creation dialog, presets, GUI creation: the flag, labelled and disabled
+- [x] Creation dialog, presets, GUI creation: the flag, labelled and disabled
       where unsupported
-- [ ] Clear the flag and say why when a feature's harness leaves Claude (the
+- [x] Clear the flag and say why when a feature's harness leaves Claude (the
       instruction block is already stripped)
 - [x] `MIGRATION_049` and `src/db/design_review.rs`
 - [x] `amf decision add`: caps, truncation, one-line acks, git-derived paths

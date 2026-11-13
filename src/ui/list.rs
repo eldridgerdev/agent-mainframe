@@ -1411,6 +1411,7 @@ mod tests {
                     is_worktree: true,
                     mode: VibeMode::default(),
                     review: false,
+                    design_review: false,
                     plan_mode: true,
                     quick_plan: false,
                     agent: AgentKind::Claude,

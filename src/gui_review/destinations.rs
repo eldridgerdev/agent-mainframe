@@ -337,6 +337,9 @@ pub struct CompanionSettings {
     pub agent: AgentKind,
     pub mode: VibeMode,
     pub review: bool,
+    /// Design Review (Claude only for now; ignored elsewhere at creation).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub design_review: bool,
     pub enable_chrome: bool,
 }
 impl CompanionSettings {
@@ -346,6 +349,7 @@ impl CompanionSettings {
             agent: self.agent.clone(),
             mode: self.mode.clone(),
             review: self.review,
+            design_review: self.design_review,
             enable_chrome: self.enable_chrome,
         }
     }
@@ -1260,6 +1264,7 @@ mod tests {
                 agent: AgentKind::Claude,
                 mode: VibeMode::SuperVibe,
                 review: false,
+                design_review: false,
                 enable_chrome: false,
             },
             hook_choice: None,

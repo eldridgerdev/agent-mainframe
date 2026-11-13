@@ -304,6 +304,8 @@ Request JSON (all fields optional unless marked required):
     \"agent\":           \"claude\" | \"codex\" | \"opencode\" | \"pi\"   default \"claude\"
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
+    \"design_review\":   bool    default false; Claude only for now, not with
+                       review, not in container projects (refused otherwise)
     \"plan_mode\":       bool    default false
     \"no_start\":        bool    default false
     \"create_terminal\": bool    default false

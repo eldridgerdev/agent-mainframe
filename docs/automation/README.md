@@ -205,6 +205,7 @@ Fields:
 - `agent`: `claude`, `codex`, `opencode`, or `pi`
 - `mode`: `vibeless`, `vibe`, or `supervibe`
 - `review`: separate toggle for diff-review / final-review flows
+- `design_review`: turn on Design Review (the Decision Log) for the feature (default false). Claude only for now, and not in container projects: any other harness, or `review: true` together with it, is refused with an error and nothing is created.
 - `use_worktree`: whether to create a git worktree or reuse the project repo
 - `hook_choice`: optional answer for prompted `on_worktree_created` hooks
 - `existing_worktree`: optional path of an existing git worktree to attach as the feature instead of creating one (the same as choosing "existing worktree" in the New Feature wizard). It must be a registered worktree of the project's repo (not the repo root) and not already used by another feature, and have a branch checked out (a detached HEAD is rejected); relative paths resolve against the repo. The `on_worktree_created` hook is not run, `branch` is the feature name (the worktree's checked-out branch is recorded when known), and `use_worktree: false` is rejected alongside it.

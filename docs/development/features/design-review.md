@@ -64,6 +64,31 @@ src/app/setup.rs            # ensure_design_review_instructions()
   Mode's notes block only when `Feature::review_notes_enabled()`, so Design
   Review wins if both are set. Every call site goes through
   `ensure_feature_review_instructions`.
+- **Where the mode is offered.** Every surface shows the Claude-only limit
+  instead of a toggle that does nothing:
+  - The TUI New Feature form has a last row, `[ ] design review (Claude only
+    for now)` (`mode_max_focus()`: 7 on Claude, 5 elsewhere). For another
+    harness or a container project the row reads `Design Review: <reason>`
+    and cannot be toggled; changing to an unsupported harness unchecks it.
+    `CreateFeatureState::toggle_review` / `toggle_design_review` keep the two
+    modes exclusive. The compact companion setup (`FeatureSetupState`, PR
+    Triage, Final Review, issue fixer) has the same row.
+  - A preset's `design_review: true` on an unsupported harness is ignored and
+    a warning toast says so (`apply_preset_review`).
+  - The GUI New Feature form has a disabled "Design review" switch for any
+    harness but Claude (`creationCopy.ts` mirrors the wording). Container
+    projects are refused by the server, not pre-checked in the form.
+  - Automation `design_review` is refused with an error (nothing created) on
+    an unsupported harness, in a container project, or together with
+    `review`.
+  - `App::effective_design_review` is the one place a creation path turns a
+    request into a stored flag (`finish_feature_launch`, hook-pending upsert,
+    fork, companion registration), so an unsupported feature is never stored
+    with the flag on and never gets the instruction block.
+  - `change_feature_harness` (TUI and GUI) clears the flag when the new
+    harness is unsupported and toasts "Design Review turned off: Claude only
+    for now".
+  - Batch creation and the GUI's TODO/issue forms do not offer it yet.
 - **Decisions are project memory.** The tables have no FK to `projects` or
   `features`, since the store's full-replace save would cascade them away.
   Deleting a feature keeps its decisions. Deleting a project removes every

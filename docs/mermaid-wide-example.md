@@ -1,7 +1,9 @@
 # Wide Mermaid diagrams
 
 Open this file in the Markdown viewer on a narrow terminal (80 columns is a good
-test). Each diagram below is wider than the viewer pane.
+test). Each diagram below is wider than the viewer pane, from 164 to 222 columns
+wide. On a wide terminal some of them can still fit; make the window narrower, or
+press `f` off, to clip them all.
 
 ## What to try
 
@@ -35,6 +37,8 @@ sequenceDiagram
     participant Orders
     participant Billing
     participant Notifier
+    participant Warehouse
+    participant Shipping
     Client->>Gateway: Submit the order request
     Gateway->>Auth: Verify the session token
     Auth-->>Gateway: Token accepted
@@ -42,6 +46,8 @@ sequenceDiagram
     Orders->>Billing: Authorize the payment
     Billing-->>Orders: Payment authorized
     Orders->>Notifier: Send the confirmation email
+    Orders->>Warehouse: Reserve the stock
+    Warehouse->>Shipping: Schedule the pickup
     Orders-->>Client: Order confirmed
 ```
 
@@ -55,6 +61,8 @@ last columns while the others keep moving.
 flowchart LR
     A[Parse the manifest file] --> B[Resolve every dependency]
     B --> C[Build the release bundle]
+    C --> D[Sign the release artifacts]
+    D --> E[Upload to the registry]
 ```
 
 This one is inside a blockquote, so its pane is two columns narrower. The
@@ -66,6 +74,8 @@ couple of columns here.
 >     A[Fetch the latest changes] --> B[Rebase onto the main branch]
 >     B --> C[Run the full test suite]
 >     C --> D[Publish the build output]
+>     D --> E[Notify the release channel]
+>     E --> F[Archive the build logs]
 > ```
 
 ## Narrow control

@@ -447,7 +447,11 @@ impl SessionTokenTracker {
         metadata_signature_for_paths(paths)
     }
 
-    fn claude_usage_paths(&self, workdir: &Path, session_id: &str) -> Option<Vec<PathBuf>> {
+    pub(crate) fn claude_usage_paths(
+        &self,
+        workdir: &Path,
+        session_id: &str,
+    ) -> Option<Vec<PathBuf>> {
         let projects_dir = self.claude_projects_dir(workdir)?;
         let root = projects_dir.join(format!("{session_id}.jsonl"));
         if !root.exists() {

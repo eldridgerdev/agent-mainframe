@@ -103,7 +103,7 @@ A label with quotes must be drawn as written, also with no `Not shown:` list.
 
 ```mermaid
 flowchart LR
-    A["Say \"hi\" now"] --> B[Done]
+    A["Say #quot;hi#quot; now"] --> B[Done]
 ```
 
 ## Narrow control

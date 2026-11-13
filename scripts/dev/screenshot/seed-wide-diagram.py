@@ -1,4 +1,4 @@
-"""Seed a feature whose agent left notes on two Terminal Sessions.
+"""Seed a feature with a wide Mermaid diagram on one Terminal Session.
 
 The agent's calls carry no project or feature name: like a real agent they
 rely on AMF_FEATURE_SESSION_ID, which `create-session` resolves to the

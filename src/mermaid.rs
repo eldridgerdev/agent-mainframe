@@ -64,9 +64,11 @@ pub(crate) struct DiagramDocument {
     pub show_source: bool,
     /// Horizontal pan, in cells, applied to every diagram wider than the pane.
     pub pan: usize,
-    /// Widest diagram content and the pane width it was drawn into; written by
-    /// the Markdown renderer and read by the footer and the pan handlers.
+    /// Widest diagram content, the largest per-diagram pan range and the pane
+    /// width of the diagram that sets it; written by the Markdown renderer and
+    /// read by the footer and the pan handlers.
     widest: AtomicUsize,
+    range: AtomicUsize,
     view: AtomicUsize,
     requests: Vec<DiagramSpec>,
     ready: Artifacts,
@@ -89,18 +91,23 @@ impl DiagramDocument {
     /// Record a drawn diagram so the footer and pan limits know about it.
     pub(crate) fn note_drawn(&self, content_width: usize, view_width: usize) {
         self.widest.fetch_max(content_width, Ordering::Relaxed);
-        self.view.store(view_width, Ordering::Relaxed);
+        // Diagrams can sit in panes of different widths (blockquotes), so the
+        // limit is the largest per-diagram range, not widest minus last view.
+        let range = content_width.saturating_sub(view_width);
+        if range >= self.range.fetch_max(range, Ordering::Relaxed) {
+            self.view.store(view_width, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn begin_draw(&self) {
         self.widest.store(0, Ordering::Relaxed);
+        self.range.store(0, Ordering::Relaxed);
+        self.view.store(0, Ordering::Relaxed);
     }
 
     /// Largest useful pan, or 0 when every diagram fits.
     pub fn max_pan(&self) -> usize {
-        self.widest
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.view.load(Ordering::Relaxed))
+        self.range.load(Ordering::Relaxed)
     }
 
     /// Visible column range `(first, last, total)`, 1-based, when clipped.
@@ -866,10 +873,23 @@ mod tests {
         ));
         assert!(wider.lines().all(|row| UnicodeWidthStr::width(row) <= 60));
         assert!(doc.max_pan() < far);
-        assert!(doc.pan_by(0) || doc.pan == doc.max_pan());
+        // The draw path clamps the stored offset to the new range.
+        doc.pan = doc.pan.min(doc.max_pan());
+        assert_eq!(doc.pan, doc.max_pan());
+        assert!(!doc.pan_by(0));
         let fits = prepare(&markdown, 200, &mut doc, &mut worker);
         assert_eq!(doc.max_pan(), 0);
         assert!(!fits.contains(CLIP_LEFT) && !fits.contains(CLIP_RIGHT));
+    }
+
+    #[test]
+    fn pan_limit_uses_each_diagrams_own_pane_width() {
+        let doc = DiagramDocument::default();
+        doc.begin_draw();
+        doc.note_drawn(100, 38); // blockquoted: range 62
+        doc.note_drawn(90, 40); // top level: range 50
+        assert_eq!(doc.max_pan(), 62);
+        assert_eq!(doc.pan_status(), Some((1, 38, 100)));
     }
 
     #[test]
@@ -1103,7 +1123,8 @@ mod tests {
     }
 
     #[test]
-    fn wide_example_document_renders_every_diagram_clipped_at_80_columns() {
+    fn wide_example_document_renders_every_diagram_clipped_at_65_columns() {
+        // 65 is the content width of an 80-column terminal.
         let mut doc = DiagramDocument::default();
         let output = prepare(
             include_str!("../docs/mermaid-wide-example.md"),

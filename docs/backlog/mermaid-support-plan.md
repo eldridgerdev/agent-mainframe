@@ -31,8 +31,8 @@ rendering, and overflow uses source fallback without truncation.
 One App-owned worker runs layout outside drawing, with a bounded queue and
 per-document reply channels. Small source/model/canvas limits contain work;
 cancellation applies between stages, not within Selkie's layout. Source alone
-identifies results, including cached failures; width only affects clipping. Refresh discards
-artifacts. No database or authored Markdown format changes are needed.
+identifies results, including cached failures; width only affects clipping.
+Refresh discards artifacts. No database or authored Markdown format changes are needed.
 
 The [MVP usage guide and examples](../mermaid-mvp.md) describe the actual
 supported subset. The original investigation and later-stage proposal follow.

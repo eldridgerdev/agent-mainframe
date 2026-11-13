@@ -33,6 +33,7 @@ use tempfile::TempDir;
 fn store_at(workdir: &Path, is_git: bool) -> ProjectStore {
     let now = chrono::Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

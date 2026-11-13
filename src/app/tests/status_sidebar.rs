@@ -1232,6 +1232,7 @@ fn store_with_single_agent_session(
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -1389,6 +1390,7 @@ fn sync_session_status_shows_agent_token_usage() {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -1746,6 +1748,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -1883,6 +1886,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -2000,6 +2004,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         ..first.clone()
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -2100,6 +2105,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

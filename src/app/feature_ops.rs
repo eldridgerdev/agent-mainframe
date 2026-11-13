@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::setup::{
-    ensure_notification_hooks, ensure_plan_mode_instructions, ensure_review_claude_md,
+    ensure_feature_review_instructions, ensure_notification_hooks, ensure_plan_mode_instructions,
 };
 use super::*;
 use crate::app::util::read_latest_prompt;
@@ -1279,6 +1279,7 @@ impl App {
         }
 
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
@@ -1316,7 +1317,7 @@ impl App {
                 feature.is_worktree,
             );
         }
-        ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_feature_review_instructions(&feature.workdir, feature, containerized);
         ensure_plan_mode_instructions(&feature.workdir, &feature.agent, feature.plan_mode);
 
         Self::initialize_feature_sessions(feature, false, None);

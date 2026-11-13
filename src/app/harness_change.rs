@@ -40,6 +40,7 @@ impl App {
         );
         ensure_workdir_present(feature)?;
         let repo = project.repo.clone();
+        let containerized = project.containerized;
         anyhow::ensure!(
             self.extension_for_repo(&repo)
                 .allowed_agents()
@@ -72,7 +73,9 @@ impl App {
         }
         // Stop only changes feature process state; each row's explicit stopped
         // flag remains the user's choice for the subsequent restart.
-        if let Err(error) = setup::change_harness_setup(&original, &repo, &old_harnesses, &next) {
+        if let Err(error) =
+            setup::change_harness_setup(&original, &repo, containerized, &old_harnesses, &next)
+        {
             return Err(error.context("Harness change could not finish hook setup. Original bindings remain; the feature was not restarted and generated files may have changed"));
         }
         let feature = &mut self.store.projects[pi].features[fi];

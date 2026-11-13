@@ -1280,6 +1280,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "restore-me".to_string(),
         branch: "restore-me".to_string(),
@@ -1409,6 +1410,7 @@ fn restore_claude_session_only_affects_the_targeted_session() {
 
     let now = Utc::now();
     let mut feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "restore-me".to_string(),
         branch: "restore-me".to_string(),
@@ -2011,6 +2013,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -2539,6 +2542,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -3613,6 +3617,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

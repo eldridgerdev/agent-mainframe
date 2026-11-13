@@ -559,14 +559,16 @@ pub fn prepare(
         .store
         .locate_feature_by_id(Some(&opened.project_id), &opened.feature_id)
         .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
-    let (repo, workdir, mode, is_worktree, review) = {
-        let feature = &app.store.projects[pi].features[fi];
+    let (repo, workdir, mode, is_worktree, review_feature, containerized) = {
+        let project = &app.store.projects[pi];
+        let feature = &project.features[fi];
         (
-            app.store.projects[pi].repo.clone(),
+            project.repo.clone(),
             feature.workdir.clone(),
             feature.mode.clone(),
             feature.is_worktree,
-            feature.review,
+            feature.clone(),
+            project.containerized,
         )
     };
     let session_kind: SessionKind = crate::app::session_kind_for_agent(&plan.agent);
@@ -621,7 +623,7 @@ pub fn prepare(
     // Only now touch the checkout. The session is stopped, so nothing is
     // reading these files, and a failed or conflicting save leaves no trace.
     crate::app::setup::ensure_notification_hooks(&workdir, &repo, &mode, &plan.agent, is_worktree);
-    crate::app::setup::ensure_review_claude_md(&workdir, review);
+    crate::app::setup::ensure_feature_review_instructions(&workdir, &review_feature, containerized);
     let Some((pi, fi)) = app
         .store
         .locate_feature_by_id(Some(&project_id), &feature_id)

@@ -934,6 +934,7 @@ pub(super) mod tests {
     fn one_feature_store() -> ProjectStore {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".to_string(),
             name: "my-feature".to_string(),
             branch: "my-feature".to_string(),

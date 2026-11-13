@@ -87,6 +87,8 @@ fn handle_move(app: &mut App, row: u16, visible_rows: u16) {
         22 if state.agent == AgentKind::Claude => 5,
         21 => 4,
         23 if state.agent == AgentKind::Claude => 6,
+        24 if state.agent == AgentKind::Claude => 7,
+        22 => 5,
         _ => state.mode_focus,
     };
 }

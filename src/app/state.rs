@@ -50,6 +50,7 @@ pub struct ForkFeatureState {
     pub agent_index: usize,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub enable_chrome: bool,
     pub remote_control: bool,
     pub include_context: bool,
@@ -1276,6 +1277,7 @@ pub enum HookNext {
         branch: String,
         mode: VibeMode,
         review: bool,
+        design_review: bool,
         plan_mode: bool,
         quick_plan: bool,
         agent: AgentKind,
@@ -1324,6 +1326,7 @@ pub struct RunningHookState {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub plan_mode: bool,
     pub quick_plan: bool,
     pub agent: AgentKind,
@@ -1421,6 +1424,7 @@ pub struct BackgroundHook {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub plan_mode: bool,
     pub quick_plan: bool,
     pub agent: AgentKind,
@@ -1449,6 +1453,7 @@ impl BackgroundHook {
             branch: state.branch,
             mode: state.mode,
             review: state.review,
+            design_review: state.design_review,
             plan_mode: state.plan_mode,
             quick_plan: state.quick_plan,
             agent: state.agent,
@@ -1621,6 +1626,11 @@ pub struct CreateFeatureState {
     pub mode_index: usize,
     pub mode_focus: usize,
     pub review: bool,
+    /// Design Review (the Decision Log). Never true while `review` is, and
+    /// never true for a harness or project that cannot run it.
+    pub design_review: bool,
+    /// The project is containerized, which gates Design Review off.
+    pub containerized: bool,
     pub plan_mode: bool,
     /// Set alongside `plan_mode` when the Plan field's 3-way cycle
     /// (`cycle_plan_choice`) lands on Quick Plan rather than full Plan mode.
@@ -1716,6 +1726,8 @@ impl CreateFeatureState {
             mode_index: 0,
             mode_focus: 0,
             review: false,
+            design_review: false,
+            containerized: false,
             plan_mode: false,
             quick_plan: false,
             create_terminal: false,
@@ -1743,14 +1755,66 @@ impl CreateFeatureState {
     }
 
     /// The last `mode_focus` index on the options step. Claude has two more
-    /// rows (Chrome, Remote Control) than the other harnesses:
-    /// Claude: 0=harness 1=mode 2=review 3=plan 4=chrome 5=remote 6=steering;
-    /// others: 0=harness 1=mode 2=review 3=plan 4=steering.
+    /// rows (Chrome, Remote Control) than the other harnesses, and every
+    /// harness ends with the Design Review row (shown disabled when it cannot
+    /// run):
+    /// Claude: 0=harness 1=mode 2=review 3=plan 4=chrome 5=remote 6=steering
+    /// 7=design review;
+    /// others: 0=harness 1=mode 2=review 3=plan 4=steering 5=design review.
     pub fn mode_max_focus(&self) -> usize {
         if self.agent == AgentKind::Claude {
-            6
+            7
         } else {
-            4
+            5
+        }
+    }
+
+    /// Why Design Review cannot be turned on for the chosen harness and
+    /// project, or `None` when it can.
+    pub fn design_review_unavailable_reason(&self) -> Option<&'static str> {
+        crate::design_review::design_review_unavailable_reason(&self.agent, self.containerized)
+    }
+
+    /// Flip Review Mode. Turning it on clears Design Review.
+    pub fn toggle_review(&mut self) {
+        self.review = !self.review;
+        if self.review {
+            self.design_review = false;
+        }
+    }
+
+    /// Flip Design Review. Does nothing while it is unavailable. Turning it
+    /// on clears Review Mode.
+    pub fn toggle_design_review(&mut self) {
+        if self.design_review_unavailable_reason().is_some() {
+            self.design_review = false;
+            return;
+        }
+        self.design_review = !self.design_review;
+        if self.design_review {
+            self.review = false;
+        }
+    }
+
+    /// Apply a preset's Review Mode / Design Review choice. A Design Review
+    /// preset on an unsupported harness keeps the flag off and returns the
+    /// message to show.
+    pub fn apply_preset_review(&mut self, preset: &FeaturePreset) -> Option<String> {
+        self.review = preset.review;
+        self.design_review = false;
+        if !preset.design_review {
+            return None;
+        }
+        match self.design_review_unavailable_reason() {
+            None => {
+                self.design_review = true;
+                self.review = false;
+                None
+            }
+            Some(reason) => Some(format!(
+                "Preset '{}': Design Review ignored ({reason})",
+                preset.name
+            )),
         }
     }
 
@@ -1827,12 +1891,22 @@ impl CreateFeatureState {
             self.session_name = default_session_name(&agent);
         }
         self.agent = agent;
+        if self.design_review_unavailable_reason().is_some() {
+            self.design_review = false;
+        }
         if self.step == CreateFeatureStep::Mode && self.mode_focus > self.mode_max_focus() {
             self.mode_focus = self.mode_max_focus();
         }
     }
 
     pub fn focused_mode_description(&self) -> Option<&'static str> {
+        if self.mode_focus == self.mode_max_focus() {
+            return Some(if self.design_review_unavailable_reason().is_some() {
+                "Design Review records the agent's design decisions for a later review. It is unavailable for this harness or project."
+            } else {
+                "The agent records each design decision as it works, for a later review of why the code is built this way. Not with Review Mode."
+            });
+        }
         match self.mode_focus {
             0 | 1 => None,
             2 => Some(
@@ -1918,6 +1992,7 @@ pub struct PreparedFeatureLaunch {
     pub is_worktree: bool,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub plan_mode: bool,
     /// Route `plan_mode`'s deferred launch through Quick Plan rather than the
     /// full Plan-mode interview. Meaningless when `plan_mode` is false;
@@ -2697,6 +2772,7 @@ mod tests {
             is_worktree: false,
             mode: VibeMode::default(),
             review: false,
+            design_review: false,
             plan_mode: true,
             quick_plan: false,
             agent: AgentKind::Claude,

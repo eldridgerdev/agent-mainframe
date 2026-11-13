@@ -319,6 +319,14 @@ impl App {
                         return false;
                     }
 
+                    // Design Review is not editable here; keep a hand-written
+                    // `design_review: true` unless Review Mode now claims it.
+                    let review = *state.field_toggles.first().unwrap_or(&false);
+                    let design_review = !review
+                        && state
+                            .editing_index
+                            .and_then(|i| state.presets.get(i))
+                            .is_some_and(|existing| existing.design_review);
                     let preset = FeaturePreset {
                         name,
                         branch_prefix: option_string(state.field_values.get(1)),
@@ -336,7 +344,8 @@ impl App {
                                 .and_then(|value| value.parse::<usize>().ok())
                                 .unwrap_or(0),
                         ),
-                        review: *state.field_toggles.first().unwrap_or(&false),
+                        review,
+                        design_review,
                         plan_mode: *state.field_toggles.get(1).unwrap_or(&false),
                         // Not editable from this wizard in v1; a preset saved
                         // here always defers to full Plan mode, never Quick Plan.

@@ -274,7 +274,7 @@ fn triage_setup_branch_row_takes_typed_input() {
     // Not on the branch row: typing is not routed here at all.
     assert!(!app.pr_review_triage_setup_on_branch_row());
 
-    app.pr_review_triage_setup_move(5);
+    app.pr_review_triage_setup_move(6);
     assert!(app.pr_review_triage_setup_on_branch_row());
     app.pr_review_triage_setup_branch_backspace();
     app.pr_review_triage_setup_branch_push('X');
@@ -296,6 +296,7 @@ fn triage_setup_preset_fills_in_the_rows_below_it() {
         mode: VibeMode::Vibeless,
         agent: AgentKind::Codex,
         review: true,
+        design_review: false,
         plan_mode: true,
         quick_plan: false,
         enable_chrome: true,

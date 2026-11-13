@@ -656,10 +656,10 @@ Where the limit is shown:
 | A preset with `design_review: true` on a non-Claude harness | — | Flag is ignored and creation says so |
 | Changing a feature's harness away from Claude | — | Flag is cleared, the instruction block removed, and a toast says why |
 
-One function, `design_review_supported(harness)`, answers the question for
-every surface, and one constant holds the wording, so lifting the limit is a
-single change. A test pins that no instruction block is written and no flag
-is stored for an unsupported harness.
+One function, `design_review_supported(agent, containerized)`, answers the
+question for every surface, and one constant holds the wording, so lifting
+the limit is a single change. A test pins that no instruction block is
+written and no flag is stored for an unsupported harness.
 
 Staff roles also run on Claude for now: `haiku`, `haiku` and `sonnet`.
 
@@ -746,18 +746,20 @@ uses the same ledger to check this table against a real feature.
 
 ### Phase 1 — Capture
 
-- [ ] Check whether `amf` is in the container sandbox image; if not, stop
-      and bring back options
-- [ ] `design_review_supported(harness)` and the shared "Claude only for
-      now" wording
-- [ ] `features.design_review` flag: creation dialog, presets, GUI creation,
-      each labelled and disabled for non-Claude harnesses
-- [ ] Clear the flag and say why when a feature's harness leaves Claude
-- [ ] `MIGRATION_049` and `src/db/design_review.rs`
-- [ ] `amf decision add`: caps, truncation, one-line acks, git-derived paths
-- [ ] Outbox append and offset-based, idempotent ingest
-- [ ] Harness-aware instruction injection and removal
-- [ ] Mutual exclusion with Review Mode's notes block on one feature
+- [x] Container projects: `amf` is not in the sandbox image, so the mode is
+      gated off there. Installing `amf` in the image is a follow-up
+- [x] `design_review_supported(agent, containerized)` and the shared "Claude
+      only for now" and container wording
+- [x] `features.design_review` flag, persisted, with mutual-exclusion helpers
+- [x] Creation dialog, presets, GUI creation: the flag, labelled and disabled
+      where unsupported
+- [x] Clear the flag and say why when a feature's harness leaves Claude (the
+      instruction block is already stripped)
+- [x] `MIGRATION_049` and `src/db/design_review.rs`
+- [x] `amf decision add`: caps, truncation, one-line acks, git-derived paths
+- [x] Outbox append and offset-based, idempotent ingest
+- [x] Harness-aware instruction injection and removal
+- [x] Mutual exclusion with Review Mode's notes block on one feature
 
 ### Phase 2 — Packet
 
@@ -803,7 +805,7 @@ uses the same ledger to check this table against a real feature.
 - [ ] Scribe fallback that mines the transcript when few records exist
 - [ ] GUI adapter (`src/gui_design_review.rs`)
 - [ ] Mermaid rendering in the GUI, as its own PR
-- [ ] Feature note in `docs/development/features/` and its `AGENTS.md` row
+- [x] Feature note in `docs/development/features/` and its `AGENTS.md` row
 
 ## Decisions
 
@@ -818,7 +820,7 @@ Settled with the owner on 2026-11-13.
 | Mermaid renderer gaps | Implement what is needed as we go, each piece as its own separate PR |
 | Harness scope | Claude Code only for now, stated in the UI wherever the mode is offered or opened |
 | Staff models off Claude | When other harnesses are added: ask once for explicit staff models. Better defaults are a later improvement |
-| Containerized projects | Check whether `amf` is in the sandbox image at the start of Phase 1, then decide |
+| Containerized projects | Gated off: `amf` is not in the sandbox image. Installing it there is a follow-up |
 | Under-recording | Phase 0 dogfooding decides whether the transcript-mining scribe moves earlier |
 | Stale records | Keep on the agenda, marked "possibly stale", when their paths have left the diff |
 | Token tracking | A ledger row per call with input, output, effective tokens and dollars, attributed to task, agent and model; a Usage tab in the review room |
@@ -828,9 +830,6 @@ Settled with the owner on 2026-11-13.
 
 ## Open questions
 
-1. **Containerized projects.** Hooks cannot reach the host from a sandbox.
-   The outbox is a worktree file, so capture works if `amf` is in the image.
-   Whether it is has not been checked.
 1. **Entry key.** To be picked from the free keys in the session view.
 1. **Ledger scope.** The ledger is Design Review's own. Whether other
    headless features (Learning, plan interview, AI review) should write to

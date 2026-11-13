@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use super::setup::{ensure_feature_review_instructions, ensure_notification_hooks};
 use super::util::slugify;
 use super::*;
 use crate::project::LaunchOpts;
@@ -1549,6 +1549,7 @@ impl App {
         label: Option<String>,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         let project_name = self.store.projects[pi].name.clone();
         let Some(agent) = agent_for_session_kind(&kind) else {
             anyhow::bail!("unsupported agent session type");
@@ -1583,7 +1584,7 @@ impl App {
             },
         });
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
-        ensure_review_claude_md(&workdir, feature.review);
+        ensure_feature_review_instructions(&workdir, feature, containerized);
         let session = match label {
             Some(label) => feature.add_session_named(kind.clone(), label),
             None => feature.add_session(kind.clone()),
@@ -1722,6 +1723,7 @@ impl App {
         self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
 
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         // The caller may pin a harness (e.g. the final review prompts for one);
         // otherwise fall back to the project's preferred agent.
         let agent = harness.unwrap_or_else(|| self.store.projects[pi].preferred_agent.clone());
@@ -1754,7 +1756,7 @@ impl App {
             },
         });
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
-        ensure_review_claude_md(&workdir, feature.review);
+        ensure_feature_review_instructions(&workdir, feature, containerized);
 
         let feature_id = feature.id.clone();
         let session = feature.add_session_named(kind.clone(), label.to_string());

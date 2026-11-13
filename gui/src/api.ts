@@ -357,6 +357,8 @@ export interface CreateFeatureRequest {
   agent: AgentSlug;
   mode: ModeSlug;
   review: boolean;
+  /** Claude only for now; the desktop refuses it on another harness. */
+  design_review?: boolean;
   plan_mode: boolean;
   create_terminal: boolean;
   use_worktree: boolean | null;
@@ -1238,6 +1240,8 @@ export interface FeaturePreset {
   agent: AgentSlug;
   mode: ModeSlug;
   review: boolean;
+  /** Absent when off. Ignored (with a notice) on a harness other than Claude. */
+  design_review?: boolean;
   plan_mode: boolean;
   quick_plan: boolean;
   enable_chrome: boolean;

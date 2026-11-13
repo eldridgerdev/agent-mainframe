@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::session_titles::clean_title_from_text;
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use super::setup::{ensure_feature_review_instructions, ensure_notification_hooks};
 use super::*;
 use crate::project::LaunchOpts;
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
@@ -288,6 +288,7 @@ impl App {
         }
 
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         let viewport = self.view_pane_viewport();
         // Resolve before the mutable borrow of `feature` below.
         let rc_allowed = self.remote_control_allowed();
@@ -308,7 +309,7 @@ impl App {
             &feature.agent,
             feature.is_worktree,
         );
-        ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_feature_review_instructions(&feature.workdir, feature, containerized);
 
         App::initialize_feature_sessions(feature, false, None);
 

@@ -272,6 +272,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist whether a project runs its sessions in a container",
             MIGRATION_048,
         ),
+        (
+            "Design Review: per-feature flag, decision log, review state and token ledger",
+            MIGRATION_049,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1222,6 +1226,167 @@ const MIGRATION_047: &str = "CREATE TABLE screenshot_scopes (scope_id TEXT PRIMA
 const MIGRATION_048: &str =
     "ALTER TABLE projects ADD COLUMN containerized INTEGER NOT NULL DEFAULT 0;";
 
+/// Design Review (`docs/development/features/design-review.md`): the
+/// per-feature flag plus every table the mode needs across its phases, so
+/// later phases add behaviour without another migration.
+///
+/// Like Learning Mode, every table is keyed by plain-TEXT `project_id` /
+/// `feature_id` with no FK: the store's full-replace save deletes and
+/// re-inserts `projects`/`features`, which would cascade away accepted
+/// decisions that are meant to outlive their worktree. Project deletion
+/// removes them explicitly (`db::design_review::delete_for_project`).
+///
+/// JSON-array columns (`rejected`, `paths`, `rates`) hold serde_json text.
+/// Token counts in the ledger are nullable: absent means unavailable, not 0.
+const MIGRATION_049: &str = "
+ALTER TABLE features ADD COLUMN design_review INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE design_decisions (
+    uid         TEXT NOT NULL UNIQUE,
+    feature_id  TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    why         TEXT NOT NULL,
+    rejected    TEXT NOT NULL DEFAULT '[]',
+    ask         TEXT,
+    supersedes  TEXT,
+    paths       TEXT NOT NULL DEFAULT '[]',
+    head        TEXT,
+    session_id  TEXT,
+    harness     TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'agent',
+    status      TEXT NOT NULL DEFAULT 'open',
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_design_decisions_feature ON design_decisions(feature_id, seq);
+CREATE INDEX idx_design_decisions_project ON design_decisions(project_id);
+
+CREATE TABLE design_review_rounds (
+    id               TEXT PRIMARY KEY,
+    feature_id       TEXT NOT NULL,
+    project_id       TEXT NOT NULL,
+    round            INTEGER NOT NULL,
+    base_commit      TEXT,
+    head_commit      TEXT,
+    diff_fingerprint TEXT,
+    verdict          TEXT,
+    brief            TEXT,
+    destination      TEXT,
+    created_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    UNIQUE (feature_id, round)
+);
+CREATE INDEX idx_design_review_rounds_project ON design_review_rounds(project_id);
+
+CREATE TABLE design_review_items (
+    id          TEXT PRIMARY KEY,
+    round_id    TEXT NOT NULL,
+    feature_id  TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    ref_key     TEXT,
+    label       TEXT,
+    title       TEXT NOT NULL,
+    paths       TEXT NOT NULL DEFAULT '[]',
+    state       TEXT NOT NULL DEFAULT 'pending',
+    stale       INTEGER NOT NULL DEFAULT 0,
+    reply_kind  TEXT,
+    reply       TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX idx_design_review_items_round ON design_review_items(round_id, position);
+CREATE INDEX idx_design_review_items_project ON design_review_items(project_id);
+
+CREATE TABLE design_review_turns (
+    id          TEXT PRIMARY KEY,
+    item_id     TEXT NOT NULL,
+    round_id    TEXT,
+    feature_id  TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    level       TEXT,
+    body        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'done',
+    usage_id    INTEGER,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_design_review_turns_item ON design_review_turns(item_id, seq);
+CREATE INDEX idx_design_review_turns_project ON design_review_turns(project_id);
+
+CREATE TABLE design_review_artifacts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    feature_id  TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    section     TEXT NOT NULL,
+    input_hash  TEXT NOT NULL,
+    format      TEXT NOT NULL DEFAULT 'markdown',
+    body        TEXT NOT NULL,
+    usage_id    INTEGER,
+    created_at  TEXT NOT NULL,
+    UNIQUE (feature_id, section, input_hash)
+);
+CREATE INDEX idx_design_review_artifacts_project ON design_review_artifacts(project_id);
+
+CREATE TABLE design_review_usage (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    feature_id       TEXT NOT NULL,
+    project_id       TEXT NOT NULL,
+    phase            TEXT NOT NULL,
+    task             TEXT NOT NULL,
+    agent            TEXT NOT NULL,
+    harness          TEXT,
+    model            TEXT,
+    reasoning        TEXT,
+    round            INTEGER,
+    item             TEXT,
+    input            INTEGER,
+    output           INTEGER,
+    cache_read       INTEGER,
+    cache_write_5m   INTEGER,
+    cache_write_1h   INTEGER,
+    reasoning_tokens INTEGER,
+    effective_tokens INTEGER,
+    cost_usd         REAL,
+    rates            TEXT,
+    provenance       TEXT NOT NULL,
+    price_assumed    INTEGER NOT NULL DEFAULT 0,
+    cache_hit        INTEGER NOT NULL DEFAULT 0,
+    saved_usd        REAL,
+    duration_ms      INTEGER,
+    started_at       TEXT NOT NULL
+);
+CREATE INDEX idx_design_review_usage_feature ON design_review_usage(feature_id, started_at);
+CREATE INDEX idx_design_review_usage_project ON design_review_usage(project_id);
+
+CREATE TABLE design_review_outbox_offsets (
+    feature_id  TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    byte_offset INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX idx_design_review_outbox_offsets_project
+    ON design_review_outbox_offsets(project_id);
+";
+
+/// Reverses `MIGRATION_049`, for tests that rebuild an older schema by peeling
+/// later migrations off a fully migrated database.
+#[cfg(test)]
+pub(super) const UNDO_MIGRATION_049: &str = "
+DROP TABLE design_decisions;
+DROP TABLE design_review_rounds;
+DROP TABLE design_review_items;
+DROP TABLE design_review_turns;
+DROP TABLE design_review_artifacts;
+DROP TABLE design_review_usage;
+DROP TABLE design_review_outbox_offsets;
+ALTER TABLE features DROP COLUMN design_review;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1268,7 +1433,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 48);
+        assert_eq!(version, 49);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1307,7 +1472,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 48);
+        assert_eq!(version, 49);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1402,7 +1567,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 48);
+        assert_eq!(version, 49);
     }
 
     #[test]
@@ -1740,6 +1905,7 @@ mod tests {
     fn migration_045_defaults_existing_sessions_to_not_stopped() {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
+        conn.execute_batch(super::UNDO_MIGRATION_049).unwrap();
         conn.execute_batch(
             "DROP TABLE screenshot_scopes;
              ALTER TABLE feature_sessions DROP COLUMN stopped;
@@ -1777,6 +1943,7 @@ mod tests {
     fn migration_041_adds_pr_review_drafts_to_an_existing_v40_db() {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
+        conn.execute_batch(super::UNDO_MIGRATION_049).unwrap();
         conn.execute_batch(
             "DROP TABLE screenshot_scopes;
              DROP TABLE pr_review_drafts;
@@ -1827,7 +1994,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 48);
+        assert_eq!(version, 49);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1840,7 +2007,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 48);
+        assert_eq!(rows, 49);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -2009,7 +2176,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 48);
+        assert_eq!(version, 49);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
@@ -2108,6 +2275,7 @@ mod tests {
     fn migration_046_repairs_triage_table_that_missed_the_rekey() {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
+        conn.execute_batch(super::UNDO_MIGRATION_049).unwrap();
         // Recreate the drifted state: the pre-010 key plus 032's columns, the
         // dev build's index, and 046 not yet applied.
         conn.execute_batch(
@@ -2170,5 +2338,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "a second head SHA updates the row in place");
+    }
+
+    /// An existing v48 database keeps its features, each defaulting to
+    /// Design Review off, and gains every Design Review table.
+    #[test]
+    fn migration_049_adds_design_review_flag_and_tables_to_a_v48_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch(super::UNDO_MIGRATION_049).unwrap();
+        conn.execute_batch(
+            "DELETE FROM schema_version WHERE version >= 49;
+             INSERT INTO projects (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features (
+                id, project_id, name, branch, workdir, status,
+                created_at, last_accessed
+             ) VALUES (
+                'feat-1', 'proj-1', 'existing', 'existing', '/tmp/project',
+                'idle', datetime('now'), datetime('now')
+             );",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let flag: i64 = conn
+            .query_row(
+                "SELECT design_review FROM features WHERE id = 'feat-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(flag, 0);
+        for table in [
+            "design_decisions",
+            "design_review_rounds",
+            "design_review_items",
+            "design_review_turns",
+            "design_review_artifacts",
+            "design_review_usage",
+            "design_review_outbox_offsets",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should exist and be empty");
+        }
+        // Ledger token counts are nullable: absent means unavailable.
+        conn.execute(
+            "INSERT INTO design_review_usage
+                (feature_id, project_id, phase, task, agent, provenance, started_at)
+             VALUES ('feat-1', 'proj-1', 'capture', 'decision-record', 'developer',
+                     'estimated', datetime('now'))",
+            params![],
+        )
+        .unwrap();
     }
 }

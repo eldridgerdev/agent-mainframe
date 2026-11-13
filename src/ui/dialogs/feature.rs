@@ -428,9 +428,10 @@ fn draw_create_feature_branch_mode(
         + if has_chrome_row { 1 } else { 0 } // [12] chrome checkbox
         + if has_rc_row { 1 } else { 0 } // [14] remote_control checkbox
         + 1 // [16] steering coach checkbox
-        + 1 // [17] session name
-        + 1 // [18] spacer before focused help
-        + 2; // [20] hints
+        + 1 // [17] design review checkbox
+        + 1 // [18] session name
+        + 1 // [19] spacer before focused help
+        + 2; // [21] hints
     let min_agent_block_height = 1 + allowed_agents.len() as u16;
     // Not even the squeezed form plus its hints fits (80x24 with Claude): lay
     // it out at full height off-screen and show a window that follows focus,
@@ -486,10 +487,11 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(if has_rc_row { 1 } else { 0 }),     // [14] remote_control
             Constraint::Length(0),                                  // [15] spacer
             Constraint::Length(1),                                  // [16] steering coach checkbox
-            Constraint::Length(1),                                  // [17] session name
-            Constraint::Length(1), // [18] spacer before focused help
-            Constraint::Min(0),    // [19] focused option help
-            Constraint::Length(2), // [20] hints
+            Constraint::Length(1),                                  // [17] design review checkbox
+            Constraint::Length(1),                                  // [18] session name
+            Constraint::Length(1), // [19] spacer before focused help
+            Constraint::Min(0),    // [20] focused option help
+            Constraint::Length(2), // [21] hints
         ])
         .split(layout_area);
 
@@ -841,7 +843,41 @@ fn draw_create_feature_branch_mode(
     let steering_widget = Paragraph::new(steering_lines);
     put(buf, steering_widget, chunks[16]);
 
-    // Session name (chunks[17]): the agent session's label, defaulting to
+    // Design Review checkbox (chunks[17]): last option row. Disabled, with
+    // the reason in place of the label, for a harness or project that cannot
+    // run it.
+    let design_focus = state.mode_max_focus();
+    let design_active = state.step == CreateFeatureStep::Mode && state.mode_focus == design_focus;
+    let design_unavailable = state.design_review_unavailable_reason();
+    let design_label_style = if design_active {
+        Style::default().fg(theme.primary.to_color())
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let design_value_style = if design_unavailable.is_some() || !design_active {
+        Style::default().fg(theme.text_muted.to_color())
+    } else {
+        Style::default().fg(theme.text.to_color())
+    };
+    let design_value = match design_unavailable {
+        Some(reason) => format!("Design Review: {reason}"),
+        None => format!(
+            "{} design review ({})",
+            if state.design_review { "[x]" } else { "[ ]" },
+            crate::design_review::DESIGN_REVIEW_CLAUDE_ONLY
+        ),
+    };
+    let design_lines = vec![Line::from(vec![
+        if design_active {
+            form_label("Design: ", true, theme)
+        } else {
+            Span::styled(" Design: ", design_label_style)
+        },
+        Span::styled(design_value, design_value_style),
+    ])];
+    put(buf, Paragraph::new(design_lines), chunks[17]);
+
+    // Session name (chunks[18]): the agent session's label, defaulting to
     // "<Harness> 1". It used to be a separate prompt after the form.
     let session_active = state.step == CreateFeatureStep::SessionName;
     let mut session_spans = vec![
@@ -861,20 +897,20 @@ fn draw_create_feature_branch_mode(
             Style::default().fg(theme.primary.to_color()),
         ));
     }
-    put(buf, Paragraph::new(Line::from(session_spans)), chunks[17]);
+    put(buf, Paragraph::new(Line::from(session_spans)), chunks[18]);
 
     if let Some(help_lines) = focused_help_lines(state, theme) {
         let help = focused_help_paragraph(help_lines, theme);
         // As tall as the wrapped text (at least three rows), never taller
         // than the space left.
-        let wanted = (help.line_count(chunks[19].width) as u16).max(3);
-        let help_area = if chunks[19].height > wanted {
+        let wanted = (help.line_count(chunks[20].width) as u16).max(3);
+        let help_area = if chunks[20].height > wanted {
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(wanted), Constraint::Min(0)])
-                .split(chunks[19])[0]
+                .split(chunks[20])[0]
         } else {
-            chunks[19]
+            chunks[20]
         };
         put(buf, help, help_area);
     }
@@ -891,7 +927,7 @@ fn draw_create_feature_branch_mode(
         let focus_chunk = match state.step {
             CreateFeatureStep::Branch => 0,
             CreateFeatureStep::Worktree => 2,
-            CreateFeatureStep::SessionName => 17,
+            CreateFeatureStep::SessionName => 18,
             _ => match (state.mode_focus, state.agent == AgentKind::Claude) {
                 (0, _) => 4,
                 (1, _) => 6,
@@ -899,7 +935,9 @@ fn draw_create_feature_branch_mode(
                 (3, _) => 10,
                 (4, true) => 12,
                 (5, true) => 14,
-                _ => 16,
+                (6, true) => 16,
+                (4, false) => 16,
+                _ => 17,
             },
         };
         let focus_bottom = chunks[focus_chunk].bottom();
@@ -930,7 +968,7 @@ fn draw_create_feature_branch_mode(
         }
         frame.render_widget(form_hints(state, theme, inner.width), hints_area);
     } else {
-        put(buf, form_hints(state, theme, inner.width), chunks[20]);
+        put(buf, form_hints(state, theme, inner.width), chunks[21]);
     }
 }
 

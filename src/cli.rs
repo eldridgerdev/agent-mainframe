@@ -140,6 +140,43 @@ enum Commands {
         session_id: String,
         status_text: String,
     },
+    /// Design Review's Decision Log: record the design choices a reviewer
+    /// will ask about. Writes the checkout's outbox; needs no running AMF.
+    Decision {
+        #[command(subcommand)]
+        command: DecisionCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DecisionCommands {
+    /// Record one decision a teammate would question. Prints `d<N> recorded`.
+    ///
+    /// Oversized text is truncated, never rejected; the reply then ends in
+    /// `(truncated)`. The commit, changed files and session are filled in
+    /// automatically.
+    Add {
+        /// What kind of choice this is.
+        #[arg(long, value_enum)]
+        kind: crate::design_review::record::DecisionKind,
+        /// What was decided (up to 80 characters).
+        #[arg(long)]
+        title: String,
+        /// Why (up to 400 characters).
+        #[arg(long)]
+        why: String,
+        /// An alternative and why it lost, as `option: reason` (up to 160
+        /// characters). Repeatable, up to 3.
+        #[arg(long)]
+        rejected: Vec<String>,
+        /// A question for the reviewer about this choice (up to 200
+        /// characters).
+        #[arg(long)]
+        ask: Option<String>,
+        /// The earlier record this one replaces, e.g. `d4`.
+        #[arg(long)]
+        supersedes: Option<String>,
+    },
 }
 
 /// Flags that shape the IPC payload, shared by `notify` and `notify-wait`.
@@ -267,6 +304,8 @@ Request JSON (all fields optional unless marked required):
     \"agent\":           \"claude\" | \"codex\" | \"opencode\" | \"pi\"   default \"claude\"
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
+    \"design_review\":   bool    default false; Claude only for now, not with
+                       review, not in container projects (refused otherwise)
     \"plan_mode\":       bool    default false
     \"no_start\":        bool    default false
     \"create_terminal\": bool    default false
@@ -502,6 +541,47 @@ fn install_terminate_handlers() {
     }
 }
 
+/// `amf decision …`. Runs in an agent's shell, not the TUI, so it prints: one
+/// line on stdout on success, one line on stderr and a non-zero exit on error.
+fn run_decision_command(command: DecisionCommands) -> ! {
+    use crate::design_review::{capture, record::DecisionText};
+    let DecisionCommands::Add {
+        kind,
+        title,
+        why,
+        rejected,
+        ask,
+        supersedes,
+    } = command;
+    let result = std::env::current_dir()
+        .context("cannot read the current directory")
+        .and_then(|cwd| {
+            capture::decision_add(
+                &cwd,
+                kind,
+                DecisionText {
+                    title,
+                    why,
+                    rejected,
+                    ask,
+                    supersedes,
+                },
+                std::env::var(capture::SESSION_ENV).ok(),
+            )
+        });
+    match result {
+        Ok(ack) => {
+            println!("{ack}");
+            std::process::exit(0);
+        }
+        Err(err) => {
+            let message = format!("{err:#}").replace('\n', " ");
+            eprintln!("amf decision: {message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -672,6 +752,10 @@ pub fn run() -> Result<()> {
             serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())
         );
         return Ok(());
+    }
+
+    if let Some(Commands::Decision { command }) = cli.command {
+        run_decision_command(command);
     }
 
     if let Some(Commands::SetStatus {
@@ -2453,7 +2537,8 @@ fn run_loop<B: Backend + io::Write>(
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Commands, cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm,
+        Cli, Commands, DecisionCommands, cleanup_hooks_at, startup_loading_pending,
+        startup_sidebar_can_warm,
     };
     use clap::Parser;
     use std::collections::BTreeSet;
@@ -2544,6 +2629,51 @@ mod tests {
         assert_eq!(
             db.load_pr_comment_reply_draft(7, 101).unwrap().as_deref(),
             Some("Fixed through standalone GUI")
+        );
+    }
+
+    #[test]
+    fn decision_add_cli_parses_repeatable_rejected_and_kind() {
+        let cli = Cli::try_parse_from([
+            "amf",
+            "decision",
+            "add",
+            "--kind",
+            "tradeoff",
+            "--title",
+            "Outbox",
+            "--why",
+            "No DB writes",
+            "--rejected",
+            "a: x",
+            "--rejected",
+            "b: y",
+            "--ask",
+            "fresh enough?",
+        ])
+        .unwrap();
+        let Some(Commands::Decision {
+            command:
+                DecisionCommands::Add {
+                    kind,
+                    rejected,
+                    ask,
+                    supersedes,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected decision add");
+        };
+        assert_eq!(kind, crate::design_review::record::DecisionKind::Tradeoff);
+        assert_eq!(rejected, ["a: x", "b: y"]);
+        assert_eq!(ask.as_deref(), Some("fresh enough?"));
+        assert_eq!(supersedes, None);
+        assert!(
+            Cli::try_parse_from([
+                "amf", "decision", "add", "--kind", "bogus", "--title", "t", "--why", "w"
+            ])
+            .is_err()
         );
     }
 

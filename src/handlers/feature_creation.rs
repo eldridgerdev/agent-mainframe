@@ -327,6 +327,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                     _ => None,
                 };
+                let mut preset_notice = None;
                 if let Some(preset) = preset
                     && let AppMode::CreatingFeature(state) = &mut app.mode
                 {
@@ -335,12 +336,12 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                         .iter()
                         .position(|mode| *mode == preset.mode)
                         .unwrap_or(0);
-                    state.mode = preset.mode;
+                    state.mode = preset.mode.clone();
                     match state.allowed_agents.iter().position(|a| *a == preset.agent) {
                         Some(index) => state.select_agent(index),
                         None => state.set_agent(preset.agent.clone()),
                     }
-                    state.review = preset.review;
+                    preset_notice = state.apply_preset_review(&preset);
                     state.plan_mode = preset.plan_mode;
                     state.quick_plan = preset.quick_plan;
                     state.enable_chrome = preset.enable_chrome;
@@ -351,6 +352,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                         state.branch = format!("{}/", prefix);
                     }
                     state.step = CreateFeatureStep::Branch;
+                }
+                if let Some(notice) = preset_notice {
+                    app.push_toast_warning(notice);
                 }
             }
             _ => {}
@@ -566,8 +570,9 @@ fn cycle_mode_field(state: &mut CreateFeatureState, forward: bool) {
             };
             state.mode = VibeMode::ALL[state.mode_index].clone();
         }
-        2 => state.review = !state.review,
+        2 => state.toggle_review(),
         3 => state.cycle_plan_choice(forward),
+        n if n == state.mode_max_focus() => state.toggle_design_review(),
         4 if claude => state.enable_chrome = !state.enable_chrome,
         // Remote Control requires claude.ai OAuth; it is unavailable for
         // z.ai / third-party provider sessions, where the toggle is inert.

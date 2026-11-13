@@ -3753,6 +3753,7 @@ mod tests {
                 agent: AgentKind::default(),
                 mode: VibeMode::default(),
                 review: false,
+                design_review: false,
                 plan_mode: false,
                 create_terminal: false,
                 use_worktree: Some(true),

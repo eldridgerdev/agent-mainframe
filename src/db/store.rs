@@ -239,7 +239,7 @@ pub fn load_versioned(conn: &Connection) -> Result<(ProjectStore, u64)> {
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
 /// created_at, last_accessed, ready, triage_source, selected_plan_path,
-/// review_source, issue_source.
+/// review_source, issue_source, design_review.
 type FeatureRow = (
     String,
     String,
@@ -264,6 +264,7 @@ type FeatureRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    bool,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -272,7 +273,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
                 created_at, last_accessed, ready, triage_source,
-                selected_plan_path, review_source, issue_source
+                selected_plan_path, review_source, issue_source, design_review
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -303,6 +304,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(20)?,
                 row.get(21)?,
                 row.get(22)?,
+                row.get(23)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -332,6 +334,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         selected_plan_path,
         review_source_json,
         issue_source_json,
+        design_review,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -346,6 +349,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             collapsed: feat_collapsed,
             mode: mode_from_str(&mode_str),
             review,
+            design_review,
             plan_mode,
             agent: agent_from_str(&agent_str),
             enable_chrome,
@@ -591,9 +595,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
                     created_at, last_accessed, ready, sort_order, triage_source,
-                    selected_plan_path, review_source, issue_source
+                    selected_plan_path, review_source, issue_source, design_review
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26
                 )",
                 params![
                     feature.id,
@@ -633,6 +637,7 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .issue_source
                         .as_ref()
                         .and_then(|link| serde_json::to_string(link).ok()),
+                    feature.design_review as i32,
                 ],
             )?;
 
@@ -766,6 +771,7 @@ mod tests {
         };
 
         let feature = Feature {
+            design_review: false,
             id: "feat-1".to_string(),
             name: "my-feature".to_string(),
             branch: "feature/my-feature".to_string(),
@@ -832,6 +838,20 @@ mod tests {
         let mut store = empty_store();
         store.projects.push(project);
 
+        db.save_store(&store).unwrap();
+        let loaded = db.load_store().unwrap();
+        assert!(
+            !loaded.projects[0].features[0].design_review,
+            "Design Review defaults off"
+        );
+
+        // The Design Review flag survives a save/load round trip.
+        store.projects[0].features[0].set_design_review(true);
+        db.save_store(&store).unwrap();
+        let reloaded = db.load_store().unwrap();
+        assert!(reloaded.projects[0].features[0].design_review);
+        assert!(!reloaded.projects[0].features[0].review);
+        store.projects[0].features[0].set_review_mode(true);
         db.save_store(&store).unwrap();
         let loaded = db.load_store().unwrap();
 
@@ -981,6 +1001,7 @@ mod tests {
             collapsed: false,
             features: vec![
                 Feature {
+                    design_review: false,
                     id: "feat-keep".to_string(),
                     name: "keep".to_string(),
                     branch: "keep".to_string(),
@@ -1009,6 +1030,7 @@ mod tests {
                     issue_source: None,
                 },
                 Feature {
+                    design_review: false,
                     id: "feat-skip".to_string(),
                     name: "skip".to_string(),
                     branch: "skip".to_string(),

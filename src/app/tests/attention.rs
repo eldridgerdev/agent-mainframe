@@ -18,6 +18,7 @@ fn store_with_agents(agents: &[AgentKind]) -> ProjectStore {
         .iter()
         .enumerate()
         .map(|(i, agent)| Feature {
+            design_review: false,
             id: format!("feat-{i}"),
             name: format!("feat-{i}"),
             branch: format!("feat-{i}"),

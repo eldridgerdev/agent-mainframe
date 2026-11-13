@@ -475,17 +475,17 @@ impl App {
         }
     }
 
-    /// Bound Review Mode's live developer-note file when an agent finishes a
-    /// turn. Harness integrations with end-of-turn notifications emit either
-    /// `thinking-stop`, `stop`, or `input-request` at that boundary. Resolve
-    /// the configured feature first instead of trusting an arbitrary IPC cwd
-    /// as a write target.
-    fn archive_review_notes_after_agent_turn(&mut self, msg: &IpcMsg, msg_type: &str) {
+    /// The feature whose agent just finished a turn, if this message marks a
+    /// turn end. Harness integrations with end-of-turn notifications emit
+    /// either `thinking-stop`, `stop`, or `input-request` at that boundary.
+    /// Resolves the configured feature instead of trusting an arbitrary IPC
+    /// cwd as a write target.
+    fn feature_for_ended_agent_turn(&self, msg: &IpcMsg, msg_type: &str) -> Option<(usize, usize)> {
         let notification_type = msg.notification_type.as_deref().unwrap_or_default();
         let ended = matches!(msg_type, "thinking-stop" | "stop" | "input-request")
             || notification_type == "input-request";
         if !ended {
-            return;
+            return None;
         }
 
         let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
@@ -494,14 +494,27 @@ impl App {
             .as_deref()
             .or(msg.amf_tmux_session.as_deref())
             .or(msg.session_id.as_deref());
-        let Some((pi, fi)) = self.project_feature_for_message(amf_session, &cwd_path).3 else {
+        self.project_feature_for_message(amf_session, &cwd_path).3
+    }
+
+    /// Turn-end bookkeeping for the review modes: bound Review Mode's live
+    /// developer-note file, and ingest Design Review's Decision Log outbox.
+    fn after_agent_turn(&mut self, msg: &IpcMsg, msg_type: &str) {
+        let Some((pi, fi)) = self.feature_for_ended_agent_turn(msg, msg_type) else {
             return;
         };
         let feature = &self.store.projects[pi].features[fi];
-        if !feature.review {
-            return;
+        let (review, design_review) = (feature.review, feature.design_review);
+        if review {
+            self.archive_review_notes_after_agent_turn(pi, fi);
         }
-        let workdir = feature.workdir.clone();
+        if design_review {
+            self.ingest_design_review_outbox(pi, fi);
+        }
+    }
+
+    fn archive_review_notes_after_agent_turn(&mut self, pi: usize, fi: usize) {
+        let workdir = self.store.projects[pi].features[fi].workdir.clone();
 
         match super::review::archive_review_notes(&workdir) {
             Ok(0) => {}
@@ -1073,7 +1086,7 @@ impl App {
         self.bind_exact_token_usage_source_from_ipc(&msg);
 
         let msg_type = msg.msg_type.as_deref().unwrap_or("stop").to_string();
-        self.archive_review_notes_after_agent_turn(&msg, &msg_type);
+        self.after_agent_turn(&msg, &msg_type);
 
         // "clear" removes any pending notification for this
         // session, sent by clear-notify.sh on PreToolUse.

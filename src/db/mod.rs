@@ -1,5 +1,6 @@
 mod ai_review_cache;
 mod debug_log;
+pub mod design_review;
 pub mod editors;
 pub mod learning;
 mod migrations;
@@ -873,6 +874,40 @@ impl AmfDb {
     /// from `projects`.
     pub fn delete_learning_sessions_for_project(&self, project_id: &str) -> Result<()> {
         learning::delete_sessions_for_project(&self.conn, project_id)
+    }
+
+    /// Insert an ingested Design Review decision unless its uid is known.
+    pub fn insert_design_decision_if_absent(
+        &self,
+        decision: &design_review::DesignDecision,
+    ) -> Result<bool> {
+        design_review::insert_decision_if_absent(&self.conn, decision)
+    }
+
+    pub fn design_decisions_for_feature(
+        &self,
+        feature_id: &str,
+    ) -> Result<Vec<design_review::DesignDecision>> {
+        design_review::list_decisions_for_feature(&self.conn, feature_id)
+    }
+
+    pub fn design_review_outbox_offset(&self, feature_id: &str) -> Result<u64> {
+        design_review::outbox_offset(&self.conn, feature_id)
+    }
+
+    pub fn set_design_review_outbox_offset(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        offset: u64,
+    ) -> Result<()> {
+        design_review::set_outbox_offset(&self.conn, project_id, feature_id, offset)
+    }
+
+    /// Drop a deleted project's Design Review history. Feature deletion keeps
+    /// it: accepted decisions are project memory.
+    pub fn delete_design_review_for_project(&self, project_id: &str) -> Result<()> {
+        design_review::delete_for_project(&self.conn, project_id)
     }
 
     pub fn learning_qa(&self, session_id: &str) -> Result<Vec<learning::LearningQa>> {

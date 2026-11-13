@@ -1647,14 +1647,35 @@ const PLAN_IGNORE_BEGIN: &str = "# AMF:plan-instructions:begin";
 const PLAN_IGNORE_END: &str = "# AMF:plan-instructions:end";
 const REVIEW_BEGIN: &str = "<!-- AMF:review-instructions:begin -->";
 const REVIEW_END: &str = "<!-- AMF:review-instructions:end -->";
+const DESIGN_REVIEW_BEGIN: &str = "<!-- AMF:design-review:begin -->";
+const DESIGN_REVIEW_END: &str = "<!-- AMF:design-review:end -->";
+
+/// Design Review's always-on instruction (`docs/backlog/design-review-plan.md`
+/// §1). Paid for on every turn, so it is capped at
+/// [`DESIGN_REVIEW_BLOCK_MAX_BYTES`] by test; flag detail lives in
+/// `amf decision add --help` instead.
+pub(crate) const DESIGN_REVIEW_BLOCK: &str = concat!(
+    "<!-- AMF:design-review:begin -->\n\n",
+    "## Design Review\n\n",
+    "A reviewer will ask you to explain this work. When you make a choice a\n",
+    "teammate would question (architecture, data model, dependency, trade-off,\n",
+    "deviation from the plan, known risk), record it once, right then:\n\n",
+    "  amf decision add --kind <kind> --title \"<what>\" --why \"<why>\"\n",
+    "    [--rejected \"<option>: <reason>\"] [--ask \"<question for reviewer>\"]\n\n",
+    "Do not record routine edits. Do not read or write any review file.\n\n",
+    "<!-- AMF:design-review:end -->\n",
+);
+#[cfg(test)]
+pub(crate) const DESIGN_REVIEW_BLOCK_MAX_BYTES: usize = 640;
 
 /// Every marker-delimited block AMF writes into a checkout. Add a new one here
 /// when adding a managed block, or review questions will treat a checkout AMF
 /// itself touched as having local changes.
-const MANAGED_BLOCKS: [(&str, &str); 3] = [
+const MANAGED_BLOCKS: [(&str, &str); 4] = [
     (PLAN_BEGIN, PLAN_END),
     (PLAN_IGNORE_BEGIN, PLAN_IGNORE_END),
     (REVIEW_BEGIN, REVIEW_END),
+    (DESIGN_REVIEW_BEGIN, DESIGN_REVIEW_END),
 ];
 
 /// `s` without any AMF-managed block — what the file would be had AMF never
@@ -1868,6 +1889,72 @@ fn ensure_review_claude_md_with_io(io: &mut SetupIo, workdir: &Path, enabled: bo
     }
 }
 
+/// Write or strip Design Review's instruction block in `CLAUDE.local.md`.
+///
+/// Writes only when `enabled` and `agent` is Claude (the mode is Claude-only
+/// for now; callers pass `enabled` already gated by
+/// `design_review_supported`). For any other harness it writes nothing, and
+/// whenever it does not write it strips a block left from earlier, so turning
+/// the mode off or leaving Claude removes the always-on text.
+pub fn ensure_design_review_instructions(workdir: &Path, agent: &AgentKind, enabled: bool) {
+    ensure_design_review_instructions_with_io(&mut SetupIo::default(), workdir, agent, enabled)
+}
+
+fn ensure_design_review_instructions_with_io(
+    io: &mut SetupIo,
+    workdir: &Path,
+    agent: &AgentKind,
+    enabled: bool,
+) {
+    const BEGIN: &str = DESIGN_REVIEW_BEGIN;
+    const END: &str = DESIGN_REVIEW_END;
+    let write = enabled && matches!(agent, AgentKind::Claude);
+    let md_path = workdir.join("CLAUDE.local.md");
+    let current = io.read_to_string(&md_path).unwrap_or_default();
+    if !io.can_write() {
+        return;
+    }
+    let has_block = current.contains(BEGIN);
+
+    if write {
+        ensure_gitignore_entry_with_io(io, &workdir.join(".gitignore"), "CLAUDE.local.md");
+        let unmanaged = if has_block {
+            strip_between_markers(&current, BEGIN, END)
+        } else {
+            current.clone()
+        };
+        let content = if unmanaged.trim().is_empty() {
+            DESIGN_REVIEW_BLOCK.to_string()
+        } else {
+            format!("{}\n{}", unmanaged.trim_end(), DESIGN_REVIEW_BLOCK)
+        };
+        if content != current {
+            let _ = io.write(&md_path, content);
+        }
+    } else if has_block {
+        let stripped = strip_between_markers(&current, BEGIN, END);
+        if stripped.trim().is_empty() {
+            let _ = io.remove_file(&md_path);
+        } else {
+            let _ = io.write(&md_path, format!("{}\n", stripped.trim_end()));
+        }
+    }
+}
+
+/// Write or strip both review instruction blocks for a feature: Review Mode's
+/// notes block (only when Design Review is off, since a feature uses one or
+/// the other) and Design Review's block (only when the mode is supported for
+/// the feature's harness and project).
+pub fn ensure_feature_review_instructions(workdir: &Path, feature: &Feature, containerized: bool) {
+    ensure_review_claude_md(workdir, feature.review_notes_enabled());
+    ensure_design_review_instructions(
+        workdir,
+        &feature.agent,
+        feature.design_review
+            && crate::design_review::design_review_supported(&feature.agent, containerized),
+    );
+}
+
 /// Read every user-authored input before stopping a feature. The checked writer
 /// reads again when applying changes, so a later read failure cannot overwrite
 /// the document with a default value.
@@ -1910,9 +1997,10 @@ pub(super) fn preflight_harness_change_setup(
     Ok(())
 }
 
-pub(super) fn change_harness_setup(
+pub(crate) fn change_harness_setup(
     feature: &Feature,
     repo: &Path,
+    containerized: bool,
     old_agents: &[AgentKind],
     next: &AgentKind,
 ) -> anyhow::Result<()> {
@@ -1924,7 +2012,13 @@ pub(super) fn change_harness_setup(
         ensure_plan_mode_instructions_with_io(&mut io, &feature.workdir, old, false);
     }
     ensure_notification_hooks_with_io(&mut io, &feature.workdir, repo, &feature.mode, next, true);
-    ensure_review_claude_md_with_io(&mut io, &feature.workdir, feature.review);
+    ensure_review_claude_md_with_io(&mut io, &feature.workdir, feature.review_notes_enabled());
+    ensure_design_review_instructions_with_io(
+        &mut io,
+        &feature.workdir,
+        next,
+        feature.design_review && crate::design_review::design_review_supported(next, containerized),
+    );
     ensure_plan_mode_instructions_with_io(&mut io, &feature.workdir, next, feature.plan_mode);
     io.finish()
 }

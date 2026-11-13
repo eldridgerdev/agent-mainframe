@@ -68,6 +68,7 @@ pub(crate) struct TriageCompanionSpec {
     pub agent: AgentKind,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub enable_chrome: bool,
 }
 
@@ -178,6 +179,9 @@ impl App {
             self.push_toast_warning("No agent harness is allowed for this workspace");
             return;
         }
+        let containerized = self
+            .feature_indices_for_workdir(&state_workdir)
+            .is_some_and(|(pi, _)| self.store.projects[pi].containerized);
         let preferred = self
             .feature_indices_for_workdir(&state_workdir)
             .map(|(pi, _)| self.store.projects[pi].preferred_agent.clone());
@@ -195,6 +199,8 @@ impl App {
                 agent_index,
                 mode: VibeMode::default(),
                 review: false,
+                design_review: false,
+                containerized,
                 enable_chrome: false,
                 branch,
                 row: 0,
@@ -363,6 +369,7 @@ impl App {
                 agent: agent.clone(),
                 mode: setup.mode.clone(),
                 review: setup.review,
+                design_review: setup.design_review,
                 enable_chrome: setup.enable_chrome,
             },
             hook.as_ref(),
@@ -662,6 +669,11 @@ impl App {
             spec.enable_chrome,
             false,
         );
+        feature.set_design_review(self.effective_design_review(
+            &plan.project_name,
+            &spec.agent,
+            spec.design_review,
+        ));
         // The primary session carries the triage label, so the same
         // `pr_triage_session_index` lookup the in-feature dedicated target uses
         // finds it inside the companion feature.

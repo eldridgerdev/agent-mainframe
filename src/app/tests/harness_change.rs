@@ -707,3 +707,48 @@ fn harness_change_rejects_invalid_modes_nonworktrees_and_pending_scripts_before_
         );
     }
 }
+
+#[test]
+fn harness_change_away_from_claude_clears_design_review_and_says_so() {
+    let mut fixture = Fixture::new(stopped_tmux(), ProjectStatus::Stopped);
+    fixture.app.store.projects[0].features[0].set_design_review(true);
+    fixture.app.save().unwrap();
+    fixture
+        .app
+        .change_feature_harness(0, 0, AgentKind::Opencode)
+        .unwrap();
+    assert!(!fixture.app.store.projects[0].features[0].design_review);
+    assert!(
+        !ProjectStore::load(&fixture.app.store_path)
+            .unwrap()
+            .projects[0]
+            .features[0]
+            .design_review,
+        "the cleared flag is persisted"
+    );
+    assert!(
+        fixture
+            .app
+            .toasts
+            .iter()
+            .any(|toast| { toast.message == "Design Review turned off: Claude only for now" })
+    );
+}
+
+#[test]
+fn harness_change_keeps_review_mode_and_leaves_other_features_toast_free() {
+    let mut fixture = Fixture::new(stopped_tmux(), ProjectStatus::Stopped);
+    fixture.app.store.projects[0].features[0].set_review_mode(true);
+    fixture
+        .app
+        .change_feature_harness(0, 0, AgentKind::Opencode)
+        .unwrap();
+    assert!(fixture.app.store.projects[0].features[0].review);
+    assert!(
+        fixture
+            .app
+            .toasts
+            .iter()
+            .all(|toast| !toast.message.contains("Design Review"))
+    );
+}

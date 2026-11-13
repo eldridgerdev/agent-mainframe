@@ -680,6 +680,8 @@ fn app_in_creating_feature_mode(
         mode_index: 0,
         mode_focus: 0,
         review: false,
+        design_review: false,
+        containerized: false,
         plan_mode: false,
         quick_plan: false,
         create_terminal: true,
@@ -1099,6 +1101,17 @@ fn create_feature_default_remote_control_blocked_by_zai() {
 }
 
 fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) {
+    startup_prompt_overlay_launch(agent, expected_window, false);
+}
+
+/// Creates a feature through `finish_feature_launch` (steering on) and returns
+/// the app, the new feature's working directory and the guards that own the
+/// temporary repo and store file.
+pub(super) fn startup_prompt_overlay_launch(
+    agent: AgentKind,
+    expected_window: &'static str,
+    design_review: bool,
+) -> (App, std::path::PathBuf, (TempDir, NamedTempFile)) {
     let repo = TempDir::new().unwrap();
     let workdir = repo.path().join(".worktrees").join("coached");
     std::fs::create_dir_all(&workdir).unwrap();
@@ -1201,6 +1214,8 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         mode_index: 0,
         mode_focus: 0,
         review: false,
+        design_review: false,
+        containerized: false,
         plan_mode: false,
         quick_plan: false,
         create_terminal: false,
@@ -1233,6 +1248,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         is_worktree: true,
         mode,
         review: false,
+        design_review,
         plan_mode: false,
         quick_plan: false,
         agent: agent.clone(),
@@ -1255,6 +1271,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         }
         _ => panic!("expected SteeringPrompt mode"),
     }
+    (app, workdir, (repo, tmp))
 }
 
 #[test]
@@ -1280,6 +1297,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "restore-me".to_string(),
         branch: "restore-me".to_string(),
@@ -1409,6 +1427,7 @@ fn restore_claude_session_only_affects_the_targeted_session() {
 
     let now = Utc::now();
     let mut feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "restore-me".to_string(),
         branch: "restore-me".to_string(),
@@ -1614,6 +1633,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         is_worktree: true,
         mode: VibeMode::Vibeless,
         review: false,
+        design_review: false,
         plan_mode: false,
         quick_plan: false,
         agent: AgentKind::Claude,
@@ -1683,6 +1703,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         is_worktree: true,
         mode: VibeMode::Vibeless,
         review: false,
+        design_review: false,
         plan_mode: false,
         quick_plan: false,
         agent: AgentKind::Opencode,
@@ -2011,6 +2032,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -2092,7 +2114,7 @@ fn create_feature_final_enter_opens_session_name_step() {
             .position(|agent| *agent == AgentKind::Codex)
             .unwrap();
         state.select_agent(codex);
-        state.mode_focus = 4;
+        state.mode_focus = state.mode_max_focus();
     }
 
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
@@ -2177,6 +2199,8 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         mode_index: 0,
         mode_focus: 5,
         review: false,
+        design_review: false,
+        containerized: false,
         plan_mode: false,
         quick_plan: false,
         create_terminal: false,
@@ -2539,6 +2563,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
 
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -3613,6 +3638,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

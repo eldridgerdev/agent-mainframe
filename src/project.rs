@@ -409,6 +409,11 @@ pub struct Feature {
     pub mode: VibeMode,
     #[serde(default)]
     pub review: bool,
+    /// Design Review's Decision Log (`docs/development/features/design-review.md`).
+    /// Mutually exclusive with `review`: set it through
+    /// [`Feature::set_design_review`] / [`Feature::set_review_mode`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub design_review: bool,
     #[serde(default)]
     pub plan_mode: bool,
     #[serde(default)]
@@ -540,6 +545,8 @@ struct FeatureDe {
     #[serde(default)]
     review: bool,
     #[serde(default)]
+    design_review: bool,
+    #[serde(default)]
     plan_mode: bool,
     #[serde(default)]
     agent: AgentKind,
@@ -586,6 +593,7 @@ impl<'de> Deserialize<'de> for Feature {
             collapsed: feature.collapsed,
             mode,
             review: feature.review || legacy_review,
+            design_review: feature.design_review,
             plan_mode: feature.plan_mode,
             agent: feature.agent,
             enable_chrome: feature.enable_chrome,
@@ -747,6 +755,7 @@ impl Feature {
             collapsed: true,
             mode,
             review,
+            design_review: false,
             plan_mode,
             agent,
             enable_chrome,
@@ -772,6 +781,30 @@ impl Feature {
 
     pub fn normalize_legacy_review_mode(&mut self) -> bool {
         false
+    }
+
+    /// Whether Review Mode's per-file notes block should be written. A
+    /// feature uses Review Mode or Design Review, never both, so Design
+    /// Review wins if both flags were somehow set.
+    pub fn review_notes_enabled(&self) -> bool {
+        self.review && !self.design_review
+    }
+
+    /// Turn Design Review on or off. Turning it on clears Review Mode, since
+    /// a feature uses one or the other.
+    pub fn set_design_review(&mut self, enabled: bool) {
+        self.design_review = enabled;
+        if enabled {
+            self.review = false;
+        }
+    }
+
+    /// Turn Review Mode on or off. Turning it on clears Design Review.
+    pub fn set_review_mode(&mut self, enabled: bool) {
+        self.review = enabled;
+        if enabled {
+            self.design_review = false;
+        }
     }
 
     /// Return the next label for a session of the given kind.
@@ -1057,6 +1090,7 @@ fn merge_feature(target: &mut Feature, incoming: Feature) {
     target.collapsed = incoming.collapsed;
     target.mode = incoming.mode;
     target.review = incoming.review;
+    target.design_review = incoming.design_review;
     target.plan_mode = incoming.plan_mode;
     target.agent = incoming.agent;
     target.enable_chrome = incoming.enable_chrome;
@@ -1356,6 +1390,7 @@ impl ProjectStore {
                             },
                         ];
                         Feature {
+                            design_review: false,
                             id: f.id,
                             name: f.name,
                             branch: f.branch,
@@ -1763,6 +1798,7 @@ mod tests {
 
     fn make_feature() -> Feature {
         Feature {
+            design_review: false,
             id: "feat-id".to_string(),
             name: "test-feature".to_string(),
             branch: "test-branch".to_string(),
@@ -1812,6 +1848,7 @@ mod tests {
                 repo: PathBuf::from("/repo/alpha"),
                 collapsed: true,
                 features: vec![Feature {
+                    design_review: false,
                     id: "feature-1".to_string(),
                     name: "feature-one".to_string(),
                     branch: "branch-a".to_string(),
@@ -1879,6 +1916,7 @@ mod tests {
                 collapsed: false,
                 features: vec![
                     Feature {
+                        design_review: false,
                         id: "feature-1".to_string(),
                         name: "feature-one-renamed".to_string(),
                         branch: "branch-b".to_string(),
@@ -1942,6 +1980,7 @@ mod tests {
                         issue_source: None,
                     },
                     Feature {
+                        design_review: false,
                         id: "feature-2".to_string(),
                         name: "feature-two".to_string(),
                         branch: "branch-c".to_string(),

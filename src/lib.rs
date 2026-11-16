@@ -14,6 +14,7 @@
 pub mod automation;
 pub mod cli;
 pub mod container;
+pub mod design_review;
 pub mod git_clone;
 pub mod gui_attention;
 pub mod gui_bookmarks;

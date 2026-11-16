@@ -282,6 +282,7 @@ impl App {
         }
 
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         let viewport = self.view_pane_viewport();
         // Resolve before the mutable borrow of `feature` below.
         let rc_allowed = self.remote_control_allowed();
@@ -302,7 +303,7 @@ impl App {
             &feature.agent,
             feature.is_worktree,
         );
-        setup::ensure_review_claude_md(&feature.workdir, feature.review);
+        setup::ensure_feature_review_instructions(&feature.workdir, feature, containerized);
 
         App::initialize_feature_sessions(feature, false, None);
 

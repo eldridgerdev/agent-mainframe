@@ -149,6 +149,7 @@ fn visible_items_prioritizes_non_worktree_features() {
         collapsed: false,
         features: vec![
             Feature {
+                design_review: false,
                 id: "feat-worktree".to_string(),
                 name: "worktree-newer".to_string(),
                 branch: "worktree-newer".to_string(),
@@ -179,6 +180,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 issue_source: None,
             },
             Feature {
+                design_review: false,
                 id: "feat-repo".to_string(),
                 name: "repo-older".to_string(),
                 branch: "repo-older".to_string(),

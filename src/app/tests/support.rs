@@ -23,6 +23,7 @@ pub(super) fn test_workdir() -> PathBuf {
 pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -74,6 +75,7 @@ pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
 pub(super) fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -151,6 +153,7 @@ pub(super) fn store_with_worktree_agent(
 ) -> ProjectStore {
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -224,6 +227,7 @@ pub(super) fn store_with_custom_session(
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
@@ -295,6 +299,7 @@ pub(super) fn store_with_codex_session(
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

@@ -930,6 +930,7 @@ mod tests {
     ) -> String {
         let now = Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".to_string(),
             name: "usage-feat".to_string(),
             branch: "usage-feat".to_string(),
@@ -1034,6 +1035,7 @@ mod tests {
         let session = session(kind, label, None);
         let session_id = session.id.clone();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".to_string(),
             name: "usage-feat".to_string(),
             branch: "usage-feat".to_string(),
@@ -1409,6 +1411,7 @@ mod tests {
                     is_worktree: true,
                     mode: VibeMode::default(),
                     review: false,
+                    design_review: false,
                     plan_mode: true,
                     quick_plan: false,
                     agent: AgentKind::Claude,

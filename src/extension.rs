@@ -122,6 +122,10 @@ pub struct FeaturePreset {
     pub mode: VibeMode,
     pub agent: AgentKind,
     pub review: bool,
+    /// Turn Design Review on. Claude only for now: on another harness (or a
+    /// container project) the flag is ignored and creation says so.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub design_review: bool,
     pub plan_mode: bool,
     /// Route the preset's `plan_mode` through Quick Plan rather than the full
     /// Plan-mode interview. `#[serde(default)]` at the struct level means an
@@ -140,6 +144,7 @@ struct FeaturePresetDe {
     mode: StoredVibeMode,
     agent: AgentKind,
     review: bool,
+    design_review: bool,
     plan_mode: bool,
     quick_plan: bool,
     enable_chrome: bool,
@@ -159,6 +164,7 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             mode,
             agent: preset.agent,
             review: preset.review || legacy_review,
+            design_review: preset.design_review,
             plan_mode: preset.plan_mode,
             quick_plan: preset.quick_plan,
             enable_chrome: preset.enable_chrome,

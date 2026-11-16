@@ -1125,6 +1125,7 @@ mod tests {
     fn codex_picker_app() -> App {
         let now = Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),

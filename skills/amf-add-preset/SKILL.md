@@ -38,6 +38,7 @@ Add or update an entry in the `feature_presets` array in
 | `mode` | no | `"vibeless"`, `"vibe"`, `"supervibe"` | Default `vibeless` (diff review on every edit); `supervibe` skips permission prompts |
 | `agent` | no | `"claude"`, `"opencode"`, `"codex"`, `"pi"` | Agent harness to use |
 | `review` | no | `true`, `false` | Review Mode: the agent keeps a short note per changed file |
+| `design_review` | no | `true`, `false` | Design Review: the agent records its design decisions as it works. Claude only for now; ignored, with a notice, on another harness. Not with `review` |
 | `plan_mode` | no | `true`, `false` | Run the plan interview first; the plan is saved as `AMF_PLAN.md` |
 | `quick_plan` | no | `true`, `false` | With `plan_mode`, use the shorter Quick Plan triage |
 | `enable_chrome` | no | `true`, `false` | Allow agent to control a browser |

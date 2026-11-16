@@ -62,6 +62,7 @@ fn enter_review_with_two_files(app: &mut App, workdir: &std::path::Path) {
 fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
     let now = Utc::now();
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "feat".to_string(),
         branch: "feat".to_string(),

@@ -366,6 +366,7 @@ mod tests {
 
         let now = Utc::now();
         let make = |name: &str, status: ProjectStatus, accessed: DateTime<Utc>| Feature {
+            design_review: false,
             id: format!("feat-{name}"),
             name: name.to_string(),
             branch: name.to_string(),

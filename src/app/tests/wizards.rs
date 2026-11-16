@@ -102,17 +102,17 @@ fn new_project_starts_blank_and_ctrl_u_clears_instead_of_typing_u() {
 fn feature_form_tab_visits_every_row_and_wraps_like_new_project() {
     let mut app = feature_form("login");
     let mut visited = vec![(feature_state(&app).step.clone(), 0)];
-    // Name, Worktree, 7 Claude option rows, Session = 10 rows.
-    for _ in 0..10 {
+    // Name, Worktree, 8 Claude option rows, Session = 11 rows.
+    for _ in 0..11 {
         press(&mut app, KeyCode::Tab);
         let state = feature_state(&app);
         visited.push((state.step.clone(), state.mode_focus));
     }
     assert_eq!(visited[1].0, CreateFeatureStep::Worktree);
     assert_eq!(visited[2], (CreateFeatureStep::Mode, 0));
-    assert_eq!(visited[8], (CreateFeatureStep::Mode, 6));
-    assert_eq!(visited[9].0, CreateFeatureStep::SessionName);
-    assert_eq!(visited[10].0, CreateFeatureStep::Branch, "Tab wraps");
+    assert_eq!(visited[9], (CreateFeatureStep::Mode, 7), "design review");
+    assert_eq!(visited[10].0, CreateFeatureStep::SessionName);
+    assert_eq!(visited[11].0, CreateFeatureStep::Branch, "Tab wraps");
 
     press(&mut app, KeyCode::BackTab);
     assert_eq!(feature_state(&app).step, CreateFeatureStep::SessionName);
@@ -122,7 +122,7 @@ fn feature_form_tab_visits_every_row_and_wraps_like_new_project() {
             feature_state(&app).step.clone(),
             feature_state(&app).mode_focus
         ),
-        (CreateFeatureStep::Mode, 6)
+        (CreateFeatureStep::Mode, 7)
     );
 }
 

@@ -19,6 +19,8 @@ pub enum FeatureSetupRow {
     Mode,
     /// Review mode (developer notes on every change).
     Review,
+    /// Design Review (the Decision Log). Claude only for now.
+    DesignReview,
     /// Chrome/browser automation.
     Chrome,
     /// The branch name. Pre-filled and editable.
@@ -26,11 +28,12 @@ pub enum FeatureSetupRow {
 }
 
 impl FeatureSetupRow {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Preset,
         Self::Harness,
         Self::Mode,
         Self::Review,
+        Self::DesignReview,
         Self::Chrome,
         Self::Branch,
     ];
@@ -41,6 +44,7 @@ impl FeatureSetupRow {
             Self::Harness => "Harness",
             Self::Mode => "Vibe mode",
             Self::Review => "Review mode",
+            Self::DesignReview => "Design review",
             Self::Chrome => "Chrome",
             Self::Branch => "Branch",
         }
@@ -60,6 +64,11 @@ pub struct FeatureSetupState {
     pub agent_index: usize,
     pub mode: VibeMode,
     pub review: bool,
+    /// Never true with `review`, and never for a harness or project that
+    /// cannot run Design Review.
+    pub design_review: bool,
+    /// The project is containerized, which gates Design Review off.
+    pub containerized: bool,
     pub enable_chrome: bool,
     /// The isolated companion branch, pre-filled by the owning workflow.
     pub branch: String,
@@ -94,6 +103,12 @@ impl FeatureSetupState {
             .unwrap_or(FeatureSetupRow::Branch)
     }
 
+    /// Why Design Review cannot be turned on for the chosen harness and
+    /// project, or `None` when it can.
+    pub fn design_review_unavailable_reason(&self) -> Option<&'static str> {
+        crate::design_review::design_review_unavailable_reason(&self.agent(), self.containerized)
+    }
+
     pub fn agent(&self) -> AgentKind {
         self.agents
             .get(self.agent_index)
@@ -107,10 +122,11 @@ impl FeatureSetupState {
         self.row = ((self.row as isize + delta).rem_euclid(len)) as usize;
     }
 
-    /// Adjust the focused setting. Returns the newly selected preset so the
-    /// caller can apply it to the dependent rows without knowing about the
-    /// dialog's ownership or `AppMode`.
-    pub fn adjust(&mut self, delta: isize) -> Option<FeaturePreset> {
+    /// Adjust the focused setting. Selecting a preset applies it to the
+    /// dependent rows; returns the warning to toast when that preset's Design
+    /// Review was dropped ([`Self::apply_preset`]).
+    #[must_use]
+    pub fn adjust(&mut self, delta: isize) -> Option<String> {
         self.error = None;
         let applied = match self.focused_row() {
             FeatureSetupRow::Preset => {
@@ -121,6 +137,9 @@ impl FeatureSetupState {
             FeatureSetupRow::Harness => {
                 let len = self.agents.len().max(1) as isize;
                 self.agent_index = ((self.agent_index as isize + delta).rem_euclid(len)) as usize;
+                if self.design_review_unavailable_reason().is_some() {
+                    self.design_review = false;
+                }
                 None
             }
             FeatureSetupRow::Mode => {
@@ -132,6 +151,18 @@ impl FeatureSetupState {
             }
             FeatureSetupRow::Review => {
                 self.review = !self.review;
+                if self.review {
+                    self.design_review = false;
+                }
+                None
+            }
+            FeatureSetupRow::DesignReview => {
+                if self.design_review_unavailable_reason().is_none() {
+                    self.design_review = !self.design_review;
+                    if self.design_review {
+                        self.review = false;
+                    }
+                }
                 None
             }
             FeatureSetupRow::Chrome => {
@@ -140,19 +171,26 @@ impl FeatureSetupState {
             }
             FeatureSetupRow::Branch => None,
         };
-        if let Some(preset) = &applied {
-            self.apply_preset(preset);
-        }
-        applied
+        applied.and_then(|preset| self.apply_preset(&preset))
     }
 
     /// Apply a preset's settings while keeping the branch's meaningful suffix.
-    pub fn apply_preset(&mut self, preset: &FeaturePreset) {
+    /// Returns the warning to show when the preset's Design Review was dropped
+    /// ([`crate::design_review::resolve_preset_review`]).
+    #[must_use]
+    pub fn apply_preset(&mut self, preset: &FeaturePreset) -> Option<String> {
         if let Some(index) = self.agents.iter().position(|agent| *agent == preset.agent) {
             self.agent_index = index;
         }
         self.mode = preset.mode.clone();
-        self.review = preset.review;
+        let resolved = crate::design_review::resolve_preset_review(
+            &preset.name,
+            preset.review,
+            preset.design_review,
+            self.design_review_unavailable_reason(),
+        );
+        self.review = resolved.review;
+        self.design_review = resolved.design_review;
         self.enable_chrome = preset.enable_chrome;
         if let Some(prefix) = &preset.branch_prefix {
             let base = self
@@ -163,6 +201,7 @@ impl FeatureSetupState {
                 .to_string();
             self.branch = format!("{prefix}{base}");
         }
+        resolved.notice
     }
 
     pub fn on_branch_row(&self) -> bool {
@@ -196,6 +235,8 @@ mod tests {
             agent_index: 0,
             mode: VibeMode::Vibeless,
             review: false,
+            design_review: false,
+            containerized: false,
             enable_chrome: false,
             branch: "feature".to_string(),
             row: 0,
@@ -216,8 +257,69 @@ mod tests {
 
         state.row = 2;
         assert_eq!(state.focused_row(), FeatureSetupRow::Mode);
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert_eq!(state.mode, VibeMode::Vibe);
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn design_review_row_is_exclusive_with_review_and_gated_by_harness() {
+        let mut state = setup();
+        state.agents = vec![AgentKind::Claude, AgentKind::Codex];
+        state.row = FeatureSetupRow::ALL
+            .iter()
+            .position(|row| *row == FeatureSetupRow::DesignReview)
+            .unwrap();
+        let _ = state.adjust(1);
+        assert!(state.design_review);
+
+        state.row = FeatureSetupRow::ALL
+            .iter()
+            .position(|row| *row == FeatureSetupRow::Review)
+            .unwrap();
+        let _ = state.adjust(1);
+        assert!(state.review && !state.design_review);
+
+        state.row = FeatureSetupRow::ALL
+            .iter()
+            .position(|row| *row == FeatureSetupRow::DesignReview)
+            .unwrap();
+        let _ = state.adjust(1);
+        assert!(state.design_review && !state.review);
+
+        // Switching to Codex unchecks it, and the row cannot be turned on.
+        state.row = 1;
+        let _ = state.adjust(1);
+        assert_eq!(state.agent(), AgentKind::Codex);
+        assert!(!state.design_review);
+        state.row = FeatureSetupRow::ALL.len() - 3;
+        assert_eq!(state.focused_row(), FeatureSetupRow::DesignReview);
+        let _ = state.adjust(1);
+        assert!(!state.design_review);
+    }
+
+    #[test]
+    fn preset_design_review_is_ignored_for_unsupported_harness() {
+        let mut state = setup();
+        let preset = FeaturePreset {
+            design_review: true,
+            ..FeaturePreset::default()
+        };
+        assert_eq!(state.apply_preset(&preset), None);
+        assert!(state.design_review);
+        state.agents = vec![AgentKind::Codex];
+        let notice = state.apply_preset(&FeaturePreset {
+            agent: AgentKind::Codex,
+            ..preset.clone()
+        });
+        assert!(!state.design_review);
+        assert!(notice.unwrap().contains("Claude only for now"));
+        state.agents = vec![AgentKind::Claude];
+        let notice = state.apply_preset(&FeaturePreset {
+            review: true,
+            ..preset
+        });
+        assert!(state.review && !state.design_review);
+        assert!(notice.unwrap().contains("Review Mode"));
     }
 }

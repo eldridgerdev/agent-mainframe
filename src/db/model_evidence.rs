@@ -109,6 +109,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("db");
         let db = AmfDb::open(&path).unwrap();
+        db.conn
+            .execute_batch(crate::db::migrations::UNDO_MIGRATION_049)
+            .unwrap();
         db.conn.execute_batch("DROP TABLE screenshot_scopes; DROP TABLE model_research; ALTER TABLE feature_sessions DROP COLUMN stopped; ALTER TABLE projects DROP COLUMN containerized; DELETE FROM schema_version WHERE version>=44; CREATE TABLE upgrade_sentinel(value TEXT); INSERT INTO upgrade_sentinel VALUES ('keep');").unwrap();
         drop(db);
         let db = AmfDb::open(&path).unwrap();

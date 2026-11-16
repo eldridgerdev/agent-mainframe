@@ -5,6 +5,7 @@
   "mode": "vibe",
   "no_start": false,
   "review": false,
+  "design_review": false,
   "plan_mode": false,
   "create_terminal": false,
   "use_worktree": true,

@@ -104,6 +104,7 @@ fn fixture(tmux: MockTmuxOps) -> (App, tempfile::TempDir) {
         is_worktree: false,
         mode: VibeMode::Vibe,
         review: false,
+        design_review: false,
         plan_mode: true,
         quick_plan: false,
         agent: AgentKind::Codex,

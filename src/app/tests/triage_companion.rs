@@ -776,6 +776,7 @@ fn spec(branch: &str) -> TriageCompanionSpec {
         agent: AgentKind::Claude,
         mode: VibeMode::Vibe,
         review: false,
+        design_review: false,
         enable_chrome: false,
     }
 }

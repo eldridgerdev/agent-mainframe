@@ -714,6 +714,7 @@ mod tests {
 
     fn feature(name: &str, status: ProjectStatus) -> Feature {
         Feature {
+            design_review: false,
             id: format!("feat-{name}"),
             name: name.to_string(),
             branch: name.to_string(),

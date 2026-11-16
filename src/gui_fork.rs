@@ -144,6 +144,7 @@ struct SourceBinding {
     stopped: bool,
     mode: VibeMode,
     review: bool,
+    design_review: bool,
     enable_chrome: bool,
     remote_control: bool,
     session: Option<SessionBinding>,
@@ -203,6 +204,7 @@ impl SourceBinding {
             stopped: feature.status == ProjectStatus::Stopped,
             mode: feature.mode.clone(),
             review: feature.review,
+            design_review: feature.design_review,
             enable_chrome: feature.enable_chrome,
             remote_control: feature.remote_control,
             session: session.map(|s| SessionBinding {
@@ -246,6 +248,7 @@ impl SourceBinding {
             || current.stopped != self.stopped
             || current.mode != self.mode
             || current.review != self.review
+            || current.design_review != self.design_review
             || current.enable_chrome != self.enable_chrome
             || current.remote_control != self.remote_control
         {
@@ -1271,6 +1274,11 @@ fn register(
         binding.enable_chrome,
         binding.remote_control,
     );
+    feature.set_design_review(app.effective_design_review(
+        &binding.project_name,
+        agent,
+        binding.design_review,
+    ));
     App::initialize_feature_sessions(&mut feature, false, None);
     let feature_id = feature.id.clone();
     let Some(project) = app

@@ -123,6 +123,7 @@ pub struct CompanionPreview {
     pub agent: AgentKind,
     pub mode: VibeMode,
     pub review: bool,
+    pub design_review: bool,
     pub enable_chrome: bool,
     pub hook: Option<HookPreview>,
     /// Existing companions for this PR on an older head (left untouched).
@@ -419,6 +420,7 @@ fn plan(
                 agent: settings.agent.clone(),
                 mode: settings.mode.clone(),
                 review: settings.review,
+                design_review: settings.design_review,
                 enable_chrome: settings.enable_chrome,
             },
             hook.as_ref(),
@@ -584,6 +586,7 @@ fn plan(
             agent: settings.agent.clone(),
             mode: settings.mode.clone(),
             review: settings.review,
+            design_review: settings.design_review,
             enable_chrome: settings.enable_chrome,
             hook: hook_view,
             older_companions: older,

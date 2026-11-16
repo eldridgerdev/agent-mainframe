@@ -80,6 +80,7 @@ impl App {
         workdir: &Path,
         mode: &VibeMode,
         review: bool,
+        design_review: bool,
         plan_mode: bool,
         agent: &AgentKind,
         create_terminal: bool,
@@ -87,6 +88,7 @@ impl App {
         enable_chrome: bool,
         remote_control: bool,
     ) -> Option<(usize, usize)> {
+        let design_review = self.effective_design_review(project_name, agent, design_review);
         let pi = self
             .store
             .projects
@@ -130,7 +132,8 @@ impl App {
                 feature.workdir = workdir.to_path_buf();
                 feature.is_worktree = true;
                 feature.mode = mode.clone();
-                feature.review = review;
+                feature.set_review_mode(review);
+                feature.set_design_review(design_review);
                 feature.plan_mode = plan_mode;
                 feature.agent = agent.clone();
                 feature.enable_chrome = enable_chrome;
@@ -162,6 +165,7 @@ impl App {
         branch: String,
         mode: VibeMode,
         review: bool,
+        design_review: bool,
         plan_mode: bool,
         quick_plan: bool,
         agent: AgentKind,
@@ -186,6 +190,7 @@ impl App {
             &workdir,
             &mode,
             review,
+            design_review,
             plan_mode,
             &agent,
             create_terminal,
@@ -216,6 +221,7 @@ impl App {
             is_worktree,
             mode,
             review,
+            design_review,
             plan_mode,
             quick_plan,
             agent,
@@ -370,6 +376,7 @@ impl App {
                 branch,
                 mode,
                 review,
+                design_review,
                 plan_mode,
                 quick_plan,
                 agent,
@@ -391,6 +398,7 @@ impl App {
                     branch,
                     mode,
                     review,
+                    design_review,
                     plan_mode,
                     quick_plan,
                     agent,
@@ -429,6 +437,7 @@ impl App {
         branch: String,
         mode: VibeMode,
         review: bool,
+        design_review: bool,
         plan_mode: bool,
         quick_plan: bool,
         agent: AgentKind,
@@ -476,6 +485,7 @@ impl App {
             &workdir,
             &mode,
             review,
+            design_review,
             plan_mode,
             &agent,
             create_terminal,
@@ -526,6 +536,7 @@ impl App {
             branch,
             mode,
             review,
+            design_review,
             plan_mode,
             quick_plan,
             agent,
@@ -590,6 +601,7 @@ impl App {
             branch,
             mode,
             review,
+            design_review,
             plan_mode,
             quick_plan,
             agent,
@@ -612,6 +624,7 @@ impl App {
                     s.branch.clone(),
                     s.mode.clone(),
                     s.review,
+                    s.design_review,
                     s.plan_mode,
                     s.quick_plan,
                     s.agent.clone(),
@@ -638,6 +651,7 @@ impl App {
             branch.clone(),
             mode,
             review,
+            design_review,
             plan_mode,
             quick_plan,
             agent,
@@ -729,6 +743,7 @@ impl App {
                     hook.branch.clone(),
                     hook.mode.clone(),
                     hook.review,
+                    hook.design_review,
                     hook.plan_mode,
                     hook.quick_plan,
                     hook.agent.clone(),

@@ -1458,6 +1458,7 @@ mod tests {
     fn sidebar_usage_app(kind: SessionKind) -> App {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -1838,6 +1839,7 @@ mod tests {
     fn store_with_claude_feature() -> (ProjectStore, Feature) {
         let now = chrono::Utc::now();
         let mut feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -2504,6 +2506,7 @@ mod tests {
     fn fallback_sidebar_work_text_prefers_pending_input_message() {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -2599,6 +2602,7 @@ mod tests {
     fn pending_diff_review_updates_claude_sidebar_work_text() {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -2713,6 +2717,7 @@ mod tests {
     fn pending_change_reason_updates_claude_sidebar_work_text() {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -2827,6 +2832,7 @@ mod tests {
     fn pending_diff_review_updates_opencode_sidebar_work_text() {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),
@@ -2941,6 +2947,7 @@ mod tests {
     fn build_agent_sidebar_data_still_builds_for_codex_with_plan_sources_present() {
         let now = chrono::Utc::now();
         let feature = Feature {
+            design_review: false,
             id: "feat-1".into(),
             name: "feature".into(),
             branch: "feature".into(),

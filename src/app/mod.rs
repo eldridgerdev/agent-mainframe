@@ -17,6 +17,7 @@ mod config_wizard;
 mod construction;
 mod context_hints;
 mod context_settings;
+pub(crate) mod design_review;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod edit_explanation;

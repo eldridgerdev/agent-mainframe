@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::setup::{
-    ensure_notification_hooks, ensure_plan_mode_instructions, ensure_review_claude_md,
+    ensure_feature_review_instructions, ensure_notification_hooks, ensure_plan_mode_instructions,
 };
 use super::*;
 use crate::app::util::read_latest_prompt;
@@ -342,6 +342,10 @@ impl App {
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.git_available = project_is_git;
+        state.containerized = self
+            .store
+            .find_project(&state.project_name)
+            .is_some_and(|project| project.containerized);
         if !project_is_git {
             state.use_worktree = false;
         }
@@ -382,6 +386,7 @@ impl App {
         let worktree_name = worktree_name(&project_name, &branch);
         let mode = state.mode.clone();
         let review = state.review;
+        let design_review = state.design_review;
         let plan_mode = state.plan_mode;
         let quick_plan = state.quick_plan;
         let create_terminal = state.create_terminal;
@@ -496,6 +501,7 @@ impl App {
                             branch,
                             mode,
                             review,
+                            design_review,
                             plan_mode,
                             quick_plan,
                             agent: agent.clone(),
@@ -519,6 +525,7 @@ impl App {
                         branch,
                         mode,
                         review,
+                        design_review,
                         plan_mode,
                         quick_plan,
                         agent.clone(),
@@ -550,6 +557,7 @@ impl App {
             is_worktree,
             mode,
             review,
+            design_review,
             plan_mode,
             quick_plan,
             agent: agent.clone(),
@@ -598,9 +606,14 @@ impl App {
 
     fn finish_feature_launch_with_resource_approval(
         &mut self,
-        prepared: PreparedFeatureLaunch,
+        mut prepared: PreparedFeatureLaunch,
         resource_approved: bool,
     ) -> Result<()> {
+        prepared.design_review = self.effective_design_review(
+            &prepared.project_name,
+            &prepared.agent,
+            prepared.design_review,
+        );
         if let Some(selection) = &prepared.model_selection {
             self.ensure_agent_mode_supported(&prepared.agent, &prepared.mode)?;
             anyhow::ensure!(
@@ -689,7 +702,8 @@ impl App {
             feature.workdir = prepared.workdir.clone();
             feature.is_worktree = prepared.is_worktree;
             feature.mode = prepared.mode.clone();
-            feature.review = prepared.review;
+            feature.set_review_mode(prepared.review);
+            feature.set_design_review(prepared.design_review);
             feature.plan_mode = prepared.plan_mode;
             feature.agent = prepared.agent.clone();
             feature.enable_chrome = prepared.enable_chrome;
@@ -727,6 +741,8 @@ impl App {
             );
 
             let mut feature = feature;
+            feature.set_review_mode(prepared.review);
+            feature.set_design_review(prepared.design_review);
             if let Some(selection) = &prepared.model_selection {
                 feature.id = selection.feature_id.clone();
             }
@@ -1279,6 +1295,7 @@ impl App {
         }
 
         let repo = self.store.projects[pi].repo.clone();
+        let containerized = self.store.projects[pi].containerized;
         let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
@@ -1316,7 +1333,7 @@ impl App {
                 feature.is_worktree,
             );
         }
-        ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_feature_review_instructions(&feature.workdir, feature, containerized);
         ensure_plan_mode_instructions(&feature.workdir, &feature.agent, feature.plan_mode);
 
         Self::initialize_feature_sessions(feature, false, None);
@@ -2397,6 +2414,7 @@ impl App {
             agent_index,
             mode: feature.mode.clone(),
             review: feature.review,
+            design_review: feature.design_review,
             enable_chrome: feature.enable_chrome,
             remote_control: feature.remote_control,
             include_context: true,
@@ -2419,6 +2437,7 @@ impl App {
         let new_branch = state.new_branch.clone();
         let mode = state.mode.clone();
         let review = state.review;
+        let design_review = state.design_review;
         let agent = state.agent.clone();
         let enable_chrome = state.enable_chrome;
         let remote_control = state.remote_control;
@@ -2450,6 +2469,7 @@ impl App {
                     == (state.source_status == ProjectStatus::Stopped)
                 && source.mode == mode
                 && source.review == review
+                && source.design_review == design_review
                 && source.enable_chrome == enable_chrome
                 && source.remote_control == remote_control,
             "Fork source feature changed; prepare again"
@@ -2559,7 +2579,7 @@ impl App {
         }
 
         // Record the stopped checkout before a hook prompt can be cancelled.
-        let feature = Feature::new_for_project(
+        let mut feature = Feature::new_for_project(
             &project_name,
             new_branch.clone(),
             new_branch.clone(),
@@ -2572,6 +2592,11 @@ impl App {
             enable_chrome,
             remote_control,
         );
+        feature.set_design_review(self.effective_design_review(
+            &project_name,
+            &agent,
+            design_review,
+        ));
         let feature_id = feature.id.clone();
         if !self.store.add_feature(&project_name, feature) {
             anyhow::bail!(
@@ -2624,6 +2649,7 @@ impl App {
                         branch: new_branch,
                         mode,
                         review,
+                        design_review,
                         plan_mode: false,
                         quick_plan: false,
                         agent: agent.clone(),
@@ -2650,6 +2676,7 @@ impl App {
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                design_review,
                 false,
                 false,
                 agent.clone(),

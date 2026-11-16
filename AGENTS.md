@@ -80,6 +80,7 @@ Skip the ones the task does not touch.
 | `HeadlessRunner`, prompt registry and overrides, pre-call notice, reasoning levels | [headless-prompts.md](docs/development/features/headless-prompts.md) |
 | Oversized-diff review: splitting, batching, prompt budgets | [batched-review.md](docs/development/features/batched-review.md) |
 | Start gate, headless leases, editor tracking, dormancy, `amf doctor` | [resources.md](docs/development/features/resources.md) |
+| Design Review: Decision Log capture, outbox ingest, Claude-only gate, Review Mode exclusion | [design-review.md](docs/development/features/design-review.md) |
 
 ## Conventions
 

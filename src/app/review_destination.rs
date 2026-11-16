@@ -52,6 +52,8 @@ pub(crate) struct ReviewCompanionSpec {
     pub agent: crate::project::AgentKind,
     pub mode: VibeMode,
     pub review: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub design_review: bool,
     pub enable_chrome: bool,
 }
 
@@ -280,6 +282,8 @@ impl App {
                 agent_index,
                 mode: VibeMode::default(),
                 review: false,
+                design_review: false,
+                containerized: self.store.projects[pi].containerized,
                 enable_chrome: false,
                 branch,
                 row: 0,
@@ -320,8 +324,9 @@ impl App {
     pub fn review_feature_setup_adjust(&mut self, delta: isize) {
         if let AppMode::DiffViewer(state) = &mut self.mode
             && let Some(setup) = &mut state.review_feature_setup
+            && let Some(notice) = setup.adjust(delta)
         {
-            setup.adjust(delta);
+            self.push_toast_warning(notice);
         }
     }
 
@@ -411,6 +416,7 @@ impl App {
                 agent: setup.agent(),
                 mode: setup.mode.clone(),
                 review: setup.review,
+                design_review: setup.design_review,
                 enable_chrome: setup.enable_chrome,
             },
             hook.as_ref(),
@@ -588,6 +594,11 @@ impl App {
             spec.enable_chrome,
             false,
         );
+        feature.set_design_review(self.effective_design_review(
+            project_name,
+            &spec.agent,
+            spec.design_review,
+        ));
         let session_id = feature
             .add_session_named(
                 crate::app::session_kind_for_agent(&spec.agent),
@@ -1011,6 +1022,7 @@ mod tests {
                     agent: AgentKind::Claude,
                     mode: VibeMode::SuperVibe,
                     review: false,
+                    design_review: false,
                     enable_chrome: false,
                 },
                 Some(&crate::extension::HookConfig::Script(

@@ -3492,6 +3492,8 @@ mod tests {
             agent_index: 0,
             mode: crate::project::VibeMode::Vibeless,
             review: false,
+            design_review: false,
+            containerized: false,
             enable_chrome: false,
             branch: "main-triage".to_string(),
             row: 0,

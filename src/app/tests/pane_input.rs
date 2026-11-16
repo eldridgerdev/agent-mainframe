@@ -1282,6 +1282,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         stopped: false,
     };
     let feature = Feature {
+        design_review: false,
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),

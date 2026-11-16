@@ -1,9 +1,16 @@
 //! Design Review App glue (`docs/development/features/design-review.md`).
 //!
-//! Ingest moves the agent's outbox lines into `amf.db`; the review room
-//! (`room`, `actions`, `usage_tab`) reads them back as an agenda.
-//! The pure pieces (gate, record caps, outbox format, CLI) live in
-//! `crate::design_review`.
+//! Ingest moves the agent's outbox lines into `amf.db` (Phase 1); `packet`
+//! prepares the review packet with staff runs, the artifact cache and the
+//! ledger (Phase 2). The review room (`room`, `actions`, `usage_tab`) reads
+//! the records back as an agenda. The pure pieces (gate, record caps, outbox
+//! format, CLI, context builders) live in `crate::design_review` and
+//! `crate::design_packet`.
+
+// The review room's packet hook is the first non-test caller of this API.
+#[allow(dead_code)]
+pub(crate) mod packet;
+mod packet_inputs;
 
 use crate::db::design_review::DesignDecision;
 use crate::design_review::outbox;

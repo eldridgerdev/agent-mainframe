@@ -6,8 +6,9 @@ phases are in [the plan](../../backlog/design-review-plan.md).
 
 Design Review has two halves. The **Decision Log** (Phase 1, built) has the
 agent record the choices a reviewer would question while it works. The
-**review room** lays those records out as an agenda. Phase 3 built the room
-shell (agenda, content, thread, Usage tab); the packet builder (Phase 2b), the
+**review room** lays those records out as an agenda, beside the **packet**
+(Phase 2, built) that staff models prepare. Phase 3 built the room shell
+(agenda, content, thread, Usage tab); wiring the room to the packet, the
 question ladder above L0 and refinement (Phase 4) come later.
 
 ```text
@@ -18,13 +19,19 @@ src/design_review/          # pure, no App
 └── capture.rs   # `amf decision add` (git-derived head and paths)
 src/design_review/agenda.rs # pure: agenda derivation, merge, item states
 src/design_review/usage.rs  # pure: Usage tab aggregation and Markdown copy
-src/app/design_review/      # App glue: ingest_design_review_outbox()
+src/design_packet/          # pure: staff roles, context builders, input
+                            # hash, Mermaid vetting, detectors
+src/app/design_review/      # App glue
+├── mod.rs           # ingest_design_review_outbox()
+├── packet.rs        # prepare_design_review_packet(), poll, status
+├── packet_inputs.rs # background git gather, ledger token counts
 ├── room.rs      # AppMode::DesignReview state, open/close, agenda storage
 ├── actions.rs   # accept / note / request change / ask, open files
 ├── usage_tab.rs # ledger reload, grouping, drill-down, copy
 └── snapshot.rs  # base/head commit, diff fingerprint, changed files
 src/handlers/design_review.rs, src/ui/dialogs/design_review.rs  # keys, draw
-src/db/design_review.rs     # decisions, outbox offsets, project cleanup
+src/db/design_review.rs     # decisions, outbox offsets, room rows, artifacts,
+                            # ledger, project cleanup
 src/app/setup.rs            # ensure_design_review_instructions()
 ```
 
@@ -117,6 +124,65 @@ src/app/setup.rs            # ensure_design_review_instructions()
   `features`, since the store's full-replace save would cascade them away.
   Deleting a feature keeps its decisions. Deleting a project removes every
   Design Review row (`AmfDb::delete_design_review_for_project`).
+
+## Packet
+
+`App::prepare_design_review_packet(pi, fi, round)` is the room's entry; the
+room reads progress from `design_review_packet_status(feature_id)` and each
+section with `AmfDb::latest_design_review_artifact(feature_id, section)`.
+
+- **Section keys** are `token_cost::ledger::Task` strings: `brief`,
+  `architecture`, `key-flow`, `fit`, `unexplained`, `plan-drift`. Every
+  artifact's `format` is `markdown`. A diagram section stores exactly one
+  fenced ```` ```mermaid ```` block (source, never rendered text, without the
+  model's trailing prose); its list fallback is plain Markdown.
+- **Off the UI thread.** Preparation ingests the outbox, reads decisions
+  (not `superseded`) on the UI thread, then gathers on a worker thread:
+  `diff::load_snapshot` against the resolved base, commit subjects since it,
+  `git ls-tree -d` of the base at the root and `src/` (for the new-module
+  detector) and up to 48 KiB of `AMF_PLAN.md`. `poll_design_review_bg` in
+  `cli.rs` collects it and every staff result.
+- **Cache by input hash, template included.** Each section's key is
+  `design_packet::context::input_hash` over the built context, the resolved
+  template text (so a feature, project or global override invalidates only
+  its section), the renderer limits and the staff harness, model and
+  reasoning. A stored artifact with that hash is reused; nothing runs.
+- **One ledger row per call.** Every staff call, each diagram attempt and
+  every failed or stale call, writes one `design_review_usage` row: phase
+  `prepare`, task = section, agent = role, the harness, model and reasoning
+  that ran (a level the harness cannot express is recorded empty), round,
+  duration. Reported usage is `measured`; `HeadlessRunner::run` and
+  `run_read_only` report none today, so rows are `estimated` at bytes/4 of
+  prompt and reply. A failed call has every count unavailable. A cache hit
+  writes a `LedgerRow::cache_hit` row whose `saved_usd` is the cost of the
+  row that produced the artifact (`usage_id`), or empty when unknown.
+- **Staff runs.** Roles resolve through `design_packet::staff::resolve`
+  from `AppConfig::design_review`; no model for the harness marks the
+  section `Skipped`. Cartographer sections (`architecture`, `key-flow`,
+  `fit`) run `HeadlessRunner::run_read_only`, scribe sections run
+  `run(.., restricted)`. Each run is a thread; `HeadlessRunner` holds a
+  headless lease for it. At most `MAX_PARALLEL_RUNS` (3) run at once, fewer
+  when the agent concurrency limit, less harness sessions and other
+  headless runs, leaves less room, but never fewer than one. A prompt over
+  its role's input cap (only possible with an override) fails the section.
+- **Plan drift** waits for the brief (cached or new) and is built from it;
+  without `AMF_PLAN.md` it is `Skipped`, and it fails when the brief does.
+- **Diagram retry policy.** A diagram reply that fails `diagram::check` is
+  retried once with `diagram::retry_prompt`; `diagram::accept` then keeps
+  valid source or falls back to a list. A harness error on the first
+  attempt fails the section; on the retry, the first reply decides.
+- **Stale results are dropped.** One packet is active at a time, with a
+  request id. Preparing again (any round or feature) or
+  `cancel_design_review_packet` supersedes it; a result with another id
+  still writes its ledger row (the spend happened) but never becomes an
+  artifact or changes the status. Superseded runs are not killed; they
+  finish and release their leases.
+- **Failures** log `log_warn("design-review", ..)`, leave
+  `SectionState::Failed(reason)` and no artifact, so the next preparation
+  retries them.
+- **Tests** install a fake runner with
+  `PacketRuntime::set_runner_for_test`; the default runner refuses under
+  `cfg(test)`, so no test can launch a paid harness.
 
 ## Persistence
 

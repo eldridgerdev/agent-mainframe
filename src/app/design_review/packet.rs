@@ -197,19 +197,18 @@ fn headless_runner() -> StaffRunFn {
         }
         let model = (!call.model.is_empty()).then_some(call.model);
         let sel = ModelSel::new(model, call.reasoning);
-        let result = if call.read_only {
-            crate::headless::HeadlessRunner::run_read_only(
-                call.harness,
-                call.workdir,
-                call.prompt,
-                sel,
-            )
-        } else {
-            crate::headless::HeadlessRunner::run(call.harness, call.workdir, call.prompt, sel, true)
-        };
-        result
-            .map(|text| StaffReply { text, usage: None })
-            .map_err(|err| format!("{} failed: {err}", call.harness.display_name()))
+        crate::headless::HeadlessRunner::run_with_usage(
+            call.harness,
+            call.workdir,
+            call.prompt,
+            sel,
+            call.read_only,
+        )
+        .map(|(text, usage)| StaffReply {
+            text,
+            usage: Some(usage),
+        })
+        .map_err(|err| format!("{} failed: {err}", call.harness.display_name()))
     })
 }
 

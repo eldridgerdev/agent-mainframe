@@ -921,4 +921,65 @@ index 1111111..2222222 100644
         assert!(!paths_intersect("src/bill", "src/billing/mod.rs"));
         assert!(paths_intersect("src/billing/", "src/billing/mod.rs"));
     }
+
+    /// Regression: real hunks come from `parse_unified_diff`, whose lines
+    /// keep their ` `/`+`/`-` marker. The detectors once read that marker as
+    /// part of the code, so `+serde = "1"` was not a TOML key and no
+    /// dependency was ever found in a real diff.
+    #[test]
+    fn parsed_diffs_are_detected_with_or_without_the_header_in_the_hunk() {
+        let with_header = "diff --git a/Cargo.toml b/Cargo.toml\n\
+            --- a/Cargo.toml\n+++ b/Cargo.toml\n\
+            @@ -3,2 +3,3 @@\n \n [dependencies]\n+serde = \"1\"\n";
+        let files = crate::diff::parse_unified_diff(with_header).unwrap();
+        let hits = detect(&files, &[]);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].kind, DetectorKind::Dependency);
+        assert!(
+            hits[0].summary.contains("serde = \"1\""),
+            "no marker: {}",
+            hits[0].summary
+        );
+
+        // The header is far above the hunk: it comes from the file at head.
+        let mut manifest = String::from("[package]\nname = \"x\"\n\n[dependencies]\n");
+        for i in 0..20 {
+            manifest.push_str(&format!("dep{i} = \"1\"\n"));
+        }
+        manifest.push_str("tokio = \"1\"\n");
+        let without_header = "diff --git a/Cargo.toml b/Cargo.toml\n\
+            --- a/Cargo.toml\n+++ b/Cargo.toml\n\
+            @@ -23,2 +23,3 @@\n dep18 = \"1\"\n dep19 = \"1\"\n+tokio = \"1\"\n";
+        let mut files = crate::diff::parse_unified_diff(without_header).unwrap();
+        assert!(
+            !files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|l| l.text.contains("[dependencies]"))
+        );
+        files[0].new_content = Some(manifest);
+        let hits = detect(&files, &[]);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].summary.contains("tokio"));
+
+        // A version bump in a parsed diff is still not a new dependency.
+        let bump = "diff --git a/Cargo.toml b/Cargo.toml\n\
+            --- a/Cargo.toml\n+++ b/Cargo.toml\n\
+            @@ -1,2 +1,2 @@\n [dependencies]\n-serde = \"1.0\"\n+serde = \"1.1\"\n";
+        let files = crate::diff::parse_unified_diff(bump).unwrap();
+        assert!(detect(&files, &[]).is_empty());
+    }
+
+    #[test]
+    fn parsed_diff_with_a_removed_test_is_detected() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n\
+            --- a/src/a.rs\n+++ b/src/a.rs\n\
+            @@ -1,4 +1,1 @@\n fn a() {}\n-#[test]\n-fn t() {}\n-\n";
+        let files = crate::diff::parse_unified_diff(patch).unwrap();
+        let hits = detect(&files, &[]);
+        assert!(
+            hits.iter().any(|h| h.kind == DetectorKind::TestsDeleted),
+            "{hits:?}"
+        );
+    }
 }

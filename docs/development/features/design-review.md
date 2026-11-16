@@ -56,6 +56,9 @@ src/app/setup.rs            # ensure_design_review_instructions()
 - **Truncate, never reject.** Caps live in `record.rs`: title 80 chars, why
   400, rejected 3 × 160 (extras dropped), ask 200, paths 40. Text is cut on a
   char boundary and ends in `…`.
+- **Detectors read code, not diff markers.** `DiffLine::text` from
+  `parse_unified_diff` keeps its ` `/`+`/`-` marker; `detectors::code`
+  strips it before any detector looks at a line.
 - **Paths are per decision.** Each record carries a capture-only `dirty` map
   (path to `git hash-object` blob id or `deleted`, 200 entries, not stored in
   the DB). A later record lists files committed in `prev_head..HEAD` unless
@@ -151,16 +154,20 @@ section with `AmfDb::latest_design_review_artifact(feature_id, section)`.
   every failed or stale call, writes one `design_review_usage` row: phase
   `prepare`, task = section, agent = role, the harness, model and reasoning
   that ran (a level the harness cannot express is recorded empty), round,
-  duration. Reported usage is `measured`; `HeadlessRunner::run` and
-  `run_read_only` report none today, so rows are `estimated` at bytes/4 of
-  prompt and reply. A failed call has every count unavailable. A cache hit
+  duration. Staff runs use `HeadlessRunner::run_with_usage` (the same tool
+  policy as `run`/`run_read_only`, in the structured event mode), so
+  reported usage is `measured`: Claude's input excludes its cache reads,
+  which go to `cache_read`; Codex's cached share is taken out of input.
+  Cache writes are not parsed and stay unavailable. Only a run that reports
+  nothing is `estimated` at bytes/4 of prompt and reply. A failed call has
+  every count unavailable. A cache hit
   writes a `LedgerRow::cache_hit` row whose `saved_usd` is the cost of the
   row that produced the artifact (`usage_id`), or empty when unknown.
 - **Staff runs.** Roles resolve through `design_packet::staff::resolve`
   from `AppConfig::design_review`; no model for the harness marks the
   section `Skipped`. Cartographer sections (`architecture`, `key-flow`,
-  `fit`) run `HeadlessRunner::run_read_only`, scribe sections run
-  `run(.., restricted)`. Each run is a thread; `HeadlessRunner` holds a
+  `fit`) run read-only, scribe sections run restricted with no tools.
+  Each run is a thread; `HeadlessRunner` holds a
   headless lease for it. At most `MAX_PARALLEL_RUNS` (3) run at once, fewer
   when the agent concurrency limit, less harness sessions and other
   headless runs, leaves less room, but never fewer than one. A prompt over

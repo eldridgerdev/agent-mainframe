@@ -488,6 +488,27 @@ impl HeadlessRunner {
         )
     }
 
+    /// [`Self::run`] (`read_only == false`, always restricted: no tools) or
+    /// [`Self::run_read_only`] with the same command, but in the harness's
+    /// structured event mode, so the reply comes back with the usage the
+    /// harness reported. The tool policy is the plain entry's; only the
+    /// output format differs. For Claude, `input_tokens` excludes cache reads
+    /// (`cached_tokens`); for Codex it includes them.
+    pub fn run_with_usage<'a>(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: impl Into<ModelSel<'a>>,
+        read_only: bool,
+    ) -> Result<(String, HeadlessUsage)> {
+        let spec = if read_only {
+            read_only_command_for(harness)?
+        } else {
+            command_for(harness, true)
+        };
+        run_jsonl_command_with_usage(harness, &spec, workdir, prompt, model.into(), |_| {}, None)
+    }
+
     pub(crate) fn run_cancellable<'a>(
         harness: &AgentKind,
         workdir: &Path,
@@ -1037,6 +1058,21 @@ fn run_jsonl_command(
     on_progress: impl Fn(HeadlessProgress) + Send + 'static,
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<String> {
+    run_jsonl_command_with_usage(harness, spec, workdir, prompt, sel, on_progress, cancelled)
+        .map(|(message, _usage)| message)
+}
+
+/// [`run_jsonl_command`], also returning the usage the event stream
+/// reported (all `None` when it reported none).
+fn run_jsonl_command_with_usage(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+    prompt: &str,
+    sel: ModelSel<'_>,
+    on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(String, HeadlessUsage)> {
     use std::os::unix::process::CommandExt;
     refuse_unrestricted_in_untrusted(harness, spec, workdir)?;
     let check_cancelled = || -> Result<()> {
@@ -1173,7 +1209,7 @@ fn run_jsonl_command(
     }
     write_result.with_context(|| format!("Failed to send prompt to {}", harness.display_name()))?;
     if let Some(message) = json_output.final_message {
-        return Ok(message);
+        return Ok((message, json_output.usage));
     }
     if let Some(error) = json_output.event_error {
         if is_prompt_too_long_message(&error) {
@@ -3065,6 +3101,55 @@ if [ "$1" = --version ]; then sleep 1; echo version; else touch ai-started; cat 
             std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
             "review"
         );
+    }
+
+    #[test]
+    fn jsonl_run_returns_the_reported_claude_usage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let spec = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec![
+                "-c",
+                r#"cat >/dev/null; printf '%s\n' '{"type":"result","is_error":false,"result":"brief","usage":{"input_tokens":120,"output_tokens":30,"cache_read_input_tokens":4000}}'"#,
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let (text, usage) = run_jsonl_command_with_usage(
+            &AgentKind::Claude,
+            &spec,
+            dir.path(),
+            "prompt",
+            ModelSel::default(),
+            |_| {},
+            None,
+        )
+        .unwrap();
+        assert_eq!(text, "brief");
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(30));
+        assert_eq!(usage.cached_tokens, Some(4000));
+
+        let silent = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec![
+                "-c",
+                r#"cat >/dev/null; printf '%s\n' '{"type":"result","is_error":false,"result":"ok"}'"#,
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let (_, usage) = run_jsonl_command_with_usage(
+            &AgentKind::Claude,
+            &silent,
+            dir.path(),
+            "prompt",
+            ModelSel::default(),
+            |_| {},
+            None,
+        )
+        .unwrap();
+        assert_eq!(usage, HeadlessUsage::default(), "nothing reported");
     }
 
     #[test]

@@ -13,6 +13,9 @@ when it disagrees; update this file in the same change.
   round/synthesis/critique passes when the interview has attached reference
   docs (see
   [plan-interview reference docs](plan-interview.md#plan-interview-reference-docs))
+- `run_with_usage`: the `run` (restricted) or `run_read_only` command in
+  the structured event mode, returning the reply and the reported
+  `HeadlessUsage` (Design Review staff runs)
 - Harness selection and fallback for plan interviews
 
 **Prompt registry** (`src/prompts/`): the single home for every headless

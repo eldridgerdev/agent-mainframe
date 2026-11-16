@@ -39,8 +39,8 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.status.success(), "git {args:?}: {status:?}");
 }
 
-/// A repo on `my-feat` with one commit over `main`: a new module and a
-/// manifest change.
+/// A repo on `my-feat` with one commit over `main`: a new module and a new
+/// dependency.
 fn repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
@@ -99,7 +99,7 @@ fn default_reply(call: &Call) -> Result<StaffReply, String> {
             usage: Some(HeadlessUsage {
                 input_tokens: Some(900),
                 output_tokens: Some(40),
-                cached_tokens: Some(0),
+                cached_tokens: Some(300),
                 total_tokens: None,
             }),
         }),
@@ -255,6 +255,9 @@ fn first_preparation_runs_each_section_once_and_ledgers_every_call() {
             assert_eq!(row.provenance, Provenance::Measured);
             assert_eq!(row.counts.input, Some(900));
             assert_eq!(row.counts.output, Some(40));
+            // Claude's input excludes cache reads, so both are kept as given.
+            assert_eq!(row.counts.cache_read, Some(300));
+            assert_eq!(row.counts.cache_write_5m, None, "not reported");
         } else {
             assert_eq!(row.provenance, Provenance::Estimated);
             assert!(row.counts.input.unwrap() > 0);
@@ -283,6 +286,10 @@ fn first_preparation_runs_each_section_once_and_ledgers_every_call() {
     assert!(!diagram.contains("Two boxes"), "only the diagram is stored");
     // The detectors and the commit made it into the prompts.
     let fit = &fx.calls_for(Task::Fit)[0].prompt;
+    assert!(
+        fit.contains("Cargo.toml gained 1 dependency line(s): serde = \"1\""),
+        "dependency hit in the fit context: {fit}"
+    );
     assert!(
         fit.contains("New module or directory src/store"),
         "detector hit (base dirs from the base commit) in the fit context: {fit}"

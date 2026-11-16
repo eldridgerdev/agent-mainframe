@@ -177,6 +177,8 @@ fn app_with_db(dir: &TempDir, design_review: bool) -> (NamedTempFile, App) {
     );
     let db_file = NamedTempFile::new().unwrap();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    let feature_id = app.store.projects[0].features[0].id.clone();
+    outbox::bind(dir.path(), &feature_id).unwrap();
     (db_file, app)
 }
 
@@ -251,6 +253,32 @@ fn turn_end_skips_features_without_design_review() {
     // Review-open ingests on demand regardless of the turn-end filter.
     assert_eq!(app.ingest_design_review_outbox(0, 0), 1);
     assert_eq!(decisions(&app).len(), 1);
+}
+
+#[test]
+fn an_outbox_owned_by_another_feature_is_not_ingested() {
+    let dir = TempDir::new().unwrap();
+    let (_db, mut app) = app_with_db(&dir, true);
+    let path = outbox::outbox_path(dir.path());
+    outbox::append(&path, &record("u1", 1)).unwrap();
+    assert_eq!(app.ingest_design_review_outbox(0, 0), 1);
+
+    // Another feature on the same checkout binds it: the old outbox goes and
+    // that feature's decisions are never taken as this one's.
+    assert!(outbox::bind(dir.path(), "other-feature").unwrap());
+    outbox::append(&path, &record("theirs", 1)).unwrap();
+    assert_eq!(app.ingest_design_review_outbox(0, 0), 0);
+
+    // Rebinding resets the outbox again; the stale cursor is detected even
+    // though the new file is longer than the old offset.
+    let feature = app.store.projects[0].features[0].clone();
+    ensure_feature_review_instructions(dir.path(), &feature, false);
+    assert_eq!(outbox::owner(dir.path()), Some(feature.id.clone()));
+    outbox::append(&path, &record("u2-with-a-longer-uid", 1)).unwrap();
+    outbox::append(&path, &record("u3", 2)).unwrap();
+    assert_eq!(app.ingest_design_review_outbox(0, 0), 2);
+    let uids: Vec<_> = decisions(&app).into_iter().map(|d| d.uid).collect();
+    assert_eq!(uids, ["u1", "u2-with-a-longer-uid", "u3"]);
 }
 
 // ── Creation surfaces ─────────────────────────────────────

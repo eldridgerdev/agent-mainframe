@@ -115,10 +115,13 @@ export default function CreateFeatureForm({
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
             setAgent(preset.agent);
+            // Mirrors `resolve_preset_review` in src/design_review/support.rs:
+            // Review Mode wins when a preset sets both.
             const presetDesignReview = !!preset.design_review && !preset.review;
             const ignoredDesignReview = presetDesignReview && designReviewUnavailableReason(preset.agent) !== null;
             if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available agent.`);
             else if (ignoredDesignReview) setPresetNotice(`${preset.name}: Design Review ignored (${DESIGN_REVIEW_CLAUDE_ONLY}).`);
+            else if (preset.design_review && preset.review) setPresetNotice(`${preset.name}: Design Review ignored (the preset also enables Review Mode).`);
             setMode(preset.mode); setReview(preset.review); setDesignReview(presetDesignReview && !ignoredDesignReview); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full"); if (preset.plan_mode) setSteering(false);
             // Keep the name the user typed; only the preset's prefix changes.

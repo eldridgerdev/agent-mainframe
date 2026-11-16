@@ -276,6 +276,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Design Review: per-feature flag, decision log, review state and token ledger",
             MIGRATION_049,
         ),
+        (
+            "Design Review: fingerprint the outbox bytes before the ingest offset",
+            MIGRATION_050,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1373,7 +1377,16 @@ CREATE INDEX idx_design_review_outbox_offsets_project
     ON design_review_outbox_offsets(project_id);
 ";
 
-/// Reverses `MIGRATION_049`, for tests that rebuild an older schema by peeling
+/// The SHA-256 of the outbox bytes just before `byte_offset`, so ingest
+/// notices a replaced outbox that is already longer than the offset. NULL
+/// (rows written before this) makes the next ingest re-read from 0, which is
+/// safe because ingest is idempotent by uid.
+const MIGRATION_050: &str = "
+ALTER TABLE design_review_outbox_offsets ADD COLUMN tail_sha256 TEXT;
+";
+
+/// Reverses `MIGRATION_049` (and `MIGRATION_050`, which only adds a column to
+/// a table this drops), for tests that rebuild an older schema by peeling
 /// later migrations off a fully migrated database.
 #[cfg(test)]
 pub(super) const UNDO_MIGRATION_049: &str = "
@@ -1433,7 +1446,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 49);
+        assert_eq!(version, 50);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1472,7 +1485,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 49);
+        assert_eq!(version, 50);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1567,7 +1580,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 49);
+        assert_eq!(version, 50);
     }
 
     #[test]
@@ -1994,7 +2007,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 49);
+        assert_eq!(version, 50);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -2007,7 +2020,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 49);
+        assert_eq!(rows, 50);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -2176,7 +2189,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 49);
+        assert_eq!(version, 50);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
@@ -2338,6 +2351,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "a second head SHA updates the row in place");
+    }
+
+    /// An existing v49 outbox offset survives 050 with no fingerprint, which
+    /// makes the next ingest re-read from 0.
+    #[test]
+    fn migration_050_adds_a_null_outbox_fingerprint() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE design_review_outbox_offsets DROP COLUMN tail_sha256;
+             DELETE FROM schema_version WHERE version >= 50;
+             INSERT INTO design_review_outbox_offsets
+                (feature_id, project_id, byte_offset, updated_at)
+             VALUES ('f', 'p', 120, datetime('now'));",
+        )
+        .unwrap();
+        super::run(&conn).unwrap();
+        let (offset, sha): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT byte_offset, tail_sha256 FROM design_review_outbox_offsets",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((offset, sha), (120, None));
     }
 
     /// An existing v48 database keeps its features, each defaulting to

@@ -891,17 +891,20 @@ impl AmfDb {
         design_review::list_decisions_for_feature(&self.conn, feature_id)
     }
 
-    pub fn design_review_outbox_offset(&self, feature_id: &str) -> Result<u64> {
-        design_review::outbox_offset(&self.conn, feature_id)
+    pub fn design_review_outbox_cursor(
+        &self,
+        feature_id: &str,
+    ) -> Result<crate::design_review::outbox::OutboxCursor> {
+        design_review::outbox_cursor(&self.conn, feature_id)
     }
 
-    pub fn set_design_review_outbox_offset(
+    pub fn set_design_review_outbox_cursor(
         &self,
         project_id: &str,
         feature_id: &str,
-        offset: u64,
+        cursor: &crate::design_review::outbox::OutboxCursor,
     ) -> Result<()> {
-        design_review::set_outbox_offset(&self.conn, project_id, feature_id, offset)
+        design_review::set_outbox_cursor(&self.conn, project_id, feature_id, cursor)
     }
 
     /// Drop a deleted project's Design Review history. Feature deletion keeps

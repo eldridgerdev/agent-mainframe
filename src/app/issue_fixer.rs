@@ -229,15 +229,19 @@ impl IssueSetupState {
         self.error = None;
     }
 
-    pub(crate) fn adjust(&mut self, delta: isize) {
+    /// Adjust the focused row. Returns the warning to toast when a selected
+    /// preset's Design Review was dropped.
+    #[must_use]
+    pub(crate) fn adjust(&mut self, delta: isize) -> Option<String> {
         self.error = None;
+        let mut notice = None;
         match self.row {
             IssueSetupRow::Preset => {
                 self.settings.row = crate::app::FeatureSetupRow::ALL
                     .iter()
                     .position(|row| *row == crate::app::FeatureSetupRow::Preset)
                     .unwrap_or(0);
-                let _ = self.settings.adjust(delta);
+                notice = self.settings.adjust(delta);
             }
             IssueSetupRow::Harness => {
                 self.settings.row = crate::app::FeatureSetupRow::ALL
@@ -292,6 +296,7 @@ impl IssueSetupState {
             }
             IssueSetupRow::FeatureName | IssueSetupRow::Branch | IssueSetupRow::Prompt => {}
         }
+        notice
     }
 
     pub(crate) fn agent(&self) -> AgentKind {
@@ -634,8 +639,9 @@ impl App {
     pub(crate) fn issue_setup_adjust(&mut self, delta: isize) {
         if let crate::app::AppMode::IssueSetup(state) = &mut self.mode
             && !state.prompt_editing
+            && let Some(notice) = state.adjust(delta)
         {
-            state.adjust(delta);
+            self.push_toast_warning(notice);
         }
     }
 

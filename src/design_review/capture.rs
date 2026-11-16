@@ -7,8 +7,9 @@
 //! agent spends no tokens on it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -90,7 +91,9 @@ const DELETED: &str = "deleted";
 /// committed) and dirty files whose content differs from the previous
 /// record's snapshot. AMF-managed paths are dropped and the list is capped at
 /// [`PATHS_CAP`]. Best-effort: a git failure yields fewer paths, never an
-/// error, since the record itself is what matters.
+/// error, since the record itself is what matters. Git runs a fixed number of
+/// times (plus a per-file fallback only when batched hashing fails), however
+/// many files changed.
 fn changed_paths(
     root: &Path,
     previous: Option<&DecisionRecord>,
@@ -102,13 +105,12 @@ fn changed_paths(
     let mut paths = BTreeSet::new();
     match (previous, since) {
         (Some(previous), Some(since)) => {
-            if let Some(out) = git(root, &["diff", "--name-only", since, "HEAD", "--"]) {
-                for path in out.lines() {
-                    let committed = git(root, &["rev-parse", &format!("HEAD:{path}")])
-                        .unwrap_or_else(|| DELETED.to_string());
-                    if previous.dirty.get(path) != Some(&committed) {
-                        paths.insert(path.to_string());
-                    }
+            let committed = git_paths(root, &["diff", "--name-only", "-z", since, "HEAD", "--"]);
+            let blobs = head_blobs(root, &committed);
+            for path in committed {
+                let blob = blobs.get(&path).map_or(DELETED, String::as_str);
+                if previous.dirty.get(&path).map(String::as_str) != Some(blob) {
+                    paths.insert(path);
                 }
             }
             for (path, blob) in &dirty {
@@ -121,20 +123,49 @@ fn changed_paths(
             let base = crate::diff::resolve_base_ref(root, None)
                 .ok()
                 .map(|resolved| resolved.base_commit);
-            if let Some(base) = base
-                && let Some(out) = git(root, &["diff", "--name-only", &base, "--"])
-            {
-                paths.extend(out.lines().map(str::to_string));
+            if let Some(base) = base {
+                paths.extend(git_paths(root, &["diff", "--name-only", "-z", &base, "--"]));
             }
             paths.extend(dirty.keys().cloned());
         }
     }
     let paths = paths
         .into_iter()
-        .filter(|path| !path.is_empty() && !crate::amf_managed::is_amf_managed_path(path))
+        .filter(|path| !crate::amf_managed::is_amf_managed_path(path))
         .take(PATHS_CAP)
         .collect();
     (paths, dirty)
+}
+
+/// Blob ids at `HEAD` for `paths`, from one `git ls-tree`. A path missing from
+/// the result is not in `HEAD` (deleted there).
+fn head_blobs(root: &Path, paths: &[String]) -> BTreeMap<String, String> {
+    if paths.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut args = vec![
+        "--literal-pathspecs",
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        "HEAD",
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    let Some(out) = git_raw(root, &args, None) else {
+        return BTreeMap::new();
+    };
+    String::from_utf8_lossy(&out)
+        .split('\0')
+        .filter_map(|entry| {
+            // `<mode> SP <type> SP <object> TAB <path>`
+            let (meta, path) = entry.split_once('\t')?;
+            let mut fields = meta.split(' ');
+            let (_mode, kind, object) = (fields.next()?, fields.next()?, fields.next()?);
+            (kind == "blob").then(|| (path.to_string(), object.to_string()))
+        })
+        .collect()
 }
 
 /// Uncommitted files (tracked changes against `HEAD` plus untracked), each
@@ -143,41 +174,120 @@ fn changed_paths(
 fn dirty_snapshot(root: &Path) -> BTreeMap<String, String> {
     let mut names = BTreeSet::new();
     for args in [
-        &["diff", "--name-only", "HEAD", "--"][..],
-        &["ls-files", "--others", "--exclude-standard"][..],
+        &["diff", "--name-only", "-z", "HEAD", "--"][..],
+        &["ls-files", "-z", "--others", "--exclude-standard"][..],
     ] {
-        if let Some(out) = git(root, args) {
-            names.extend(out.lines().map(str::to_string));
-        }
+        names.extend(git_paths(root, args));
     }
+    let names: Vec<String> = names
+        .into_iter()
+        .filter(|path| !crate::amf_managed::is_amf_managed_path(path))
+        .take(DIRTY_CAP)
+        .collect();
+    // `--stdin-paths` is newline-separated, so a path containing a newline
+    // cannot be batched; it is recorded as deleted.
+    let present: Vec<&str> = names
+        .iter()
+        .filter(|path| !path.contains('\n') && root.join(path).is_file())
+        .map(String::as_str)
+        .collect();
+    let blobs = hash_objects(root, &present);
     names
         .into_iter()
-        .filter(|path| !path.is_empty() && !crate::amf_managed::is_amf_managed_path(path))
-        .take(DIRTY_CAP)
         .map(|path| {
-            let blob = if root.join(&path).is_file() {
-                git(root, &["hash-object", "--", &path]).unwrap_or_else(|| DELETED.to_string())
-            } else {
-                DELETED.to_string()
-            };
+            let blob = blobs
+                .get(&path)
+                .cloned()
+                .unwrap_or_else(|| DELETED.to_string());
             (path, blob)
         })
         .collect()
 }
 
+/// `git hash-object` for every path in one process. If the batch fails (a
+/// file vanished between listing and hashing aborts the whole batch), hash
+/// each path on its own instead.
+fn hash_objects(root: &Path, paths: &[&str]) -> BTreeMap<String, String> {
+    if paths.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut input = paths.join("\n");
+    input.push('\n');
+    let batched = git_raw(
+        root,
+        &["hash-object", "--stdin-paths"],
+        Some(input.as_bytes()),
+    )
+    .map(|out| {
+        String::from_utf8_lossy(&out)
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    })
+    .filter(|blobs| blobs.len() == paths.len());
+    match batched {
+        Some(blobs) => paths
+            .iter()
+            .map(|path| path.to_string())
+            .zip(blobs)
+            .collect(),
+        None => paths
+            .iter()
+            .filter_map(|path| {
+                let blob = git(root, &["hash-object", "--", path])?;
+                Some((path.to_string(), blob))
+            })
+            .collect(),
+    }
+}
+
+/// Run a git command whose output is a `-z` (NUL-separated) path list. Paths
+/// come back unquoted, so non-ASCII names survive. Empty on failure.
+fn git_paths(dir: &Path, args: &[&str]) -> Vec<String> {
+    git_raw(dir, args, None)
+        .map(|out| {
+            String::from_utf8_lossy(&out)
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Run git in `dir`; trimmed stdout on success, `None` on any failure. Empty
 /// output from a successful command is `Some("")`.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    git_raw(dir, args, None).map(|out| String::from_utf8_lossy(&out).trim().to_string())
+}
+
+/// Run git in `dir`, feeding `stdin` when given; raw stdout on success.
+fn git_raw(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Option<Vec<u8>> {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(dir)
         .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    if let Some(input) = stdin {
+        // Write from a thread so a large input cannot deadlock against a
+        // full stdout pipe.
+        let mut pipe = child.stdin.take()?;
+        let input = input.to_vec();
+        let writer = std::thread::spawn(move || pipe.write_all(&input));
+        let output = child.wait_with_output().ok()?;
+        writer.join().ok()?.ok()?;
+        return output.status.success().then_some(output.stdout);
+    }
+    let output = child.wait_with_output().ok()?;
+    output.status.success().then_some(output.stdout)
 }
 
 #[cfg(test)]
@@ -347,6 +457,48 @@ mod tests {
         decision_add(dir.path(), DecisionKind::Data, text("many"), None).unwrap();
         let records = outbox::decisions(&outbox::outbox_path(dir.path())).unwrap();
         assert_eq!(records[0].paths.len(), PATHS_CAP);
+    }
+
+    #[test]
+    fn non_ascii_and_glob_like_paths_keep_their_names() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::write(root.join("é.rs"), "one").unwrap();
+        std::fs::write(root.join("a*b.rs"), "one").unwrap();
+        std::fs::write(root.join("axb.rs"), "one").unwrap();
+        add(root);
+        run(root, &["add", "."]);
+        run(root, &["commit", "-q", "-m", "files"]);
+        // Committed unchanged: not reattributed, which needs the HEAD blob of
+        // each name, including the glob-like one, to resolve exactly.
+        add(root);
+        std::fs::write(root.join("é.rs"), "two").unwrap();
+        add(root);
+        let records = outbox::decisions(&outbox::outbox_path(root)).unwrap();
+        assert_eq!(
+            records[0].paths,
+            vec![
+                "a*b.rs".to_string(),
+                "axb.rs".to_string(),
+                "é.rs".to_string()
+            ]
+        );
+        assert!(records[0].dirty.values().all(|blob| blob != DELETED));
+        assert!(records[1].paths.is_empty(), "{:?}", records[1].paths);
+        assert_eq!(records[2].paths, vec!["é.rs".to_string()]);
+    }
+
+    #[test]
+    fn hashing_falls_back_per_file_when_a_batched_path_is_missing() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "a").unwrap();
+        let blobs = hash_objects(root, &["a.rs", "gone.rs"]);
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(
+            blobs.get("a.rs"),
+            git(root, &["hash-object", "--", "a.rs"]).as_ref()
+        );
     }
 
     #[test]

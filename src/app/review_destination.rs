@@ -324,8 +324,9 @@ impl App {
     pub fn review_feature_setup_adjust(&mut self, delta: isize) {
         if let AppMode::DiffViewer(state) = &mut self.mode
             && let Some(setup) = &mut state.review_feature_setup
+            && let Some(notice) = setup.adjust(delta)
         {
-            setup.adjust(delta);
+            self.push_toast_warning(notice);
         }
     }
 

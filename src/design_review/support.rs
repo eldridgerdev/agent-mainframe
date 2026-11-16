@@ -32,6 +32,38 @@ pub fn design_review_unavailable_reason(
     }
 }
 
+/// A preset's review choices as applied on every creation surface: Review
+/// Mode wins when a preset sets both, and an unavailable mode stays off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetReview {
+    pub review: bool,
+    pub design_review: bool,
+    /// The warning to show when the preset's `design_review` was dropped.
+    pub notice: Option<String>,
+}
+
+/// Resolve a preset's `review` / `design_review` flags. `unavailable` is
+/// [`design_review_unavailable_reason`] for the chosen harness and project.
+/// The GUI's `CreateFeatureForm.tsx` mirrors this rule.
+pub fn resolve_preset_review(
+    preset_name: &str,
+    review: bool,
+    design_review: bool,
+    unavailable: Option<&str>,
+) -> PresetReview {
+    let notice = match (design_review, review, unavailable) {
+        (false, _, _) => None,
+        (true, true, _) => Some("the preset also enables Review Mode"),
+        (true, false, reason) => reason,
+    }
+    .map(|reason| format!("Preset '{preset_name}': Design Review ignored ({reason})"));
+    PresetReview {
+        review,
+        design_review: design_review && notice.is_none(),
+        notice,
+    }
+}
+
 /// [`design_review_supported`] for an existing feature of `project`.
 pub fn feature_design_review_supported(project: &Project, feature: &Feature) -> bool {
     design_review_supported(&feature.agent, project.containerized)
@@ -46,6 +78,26 @@ pub fn feature_design_review_active(project: &Project, feature: &Feature) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_review_mode_wins_and_unavailable_design_review_is_dropped() {
+        let on = resolve_preset_review("p", false, true, None);
+        assert_eq!(
+            (on.review, on.design_review, on.notice),
+            (false, true, None)
+        );
+        let both = resolve_preset_review("p", true, true, None);
+        assert!(both.review && !both.design_review);
+        assert!(both.notice.unwrap().contains("Review Mode"));
+        let codex = resolve_preset_review("p", false, true, Some(DESIGN_REVIEW_CLAUDE_ONLY));
+        assert!(!codex.design_review);
+        assert!(codex.notice.unwrap().contains(DESIGN_REVIEW_CLAUDE_ONLY));
+        let off = resolve_preset_review("p", true, false, Some(DESIGN_REVIEW_CLAUDE_ONLY));
+        assert_eq!(
+            (off.review, off.design_review, off.notice),
+            (true, false, None)
+        );
+    }
 
     #[test]
     fn only_claude_outside_containers_is_supported() {

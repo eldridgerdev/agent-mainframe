@@ -30,6 +30,14 @@ src/app/setup.rs            # ensure_design_review_instructions()
   `<checkout>/.amf/design-review/outbox.jsonl` with a single `O_APPEND` write
   and never opens `amf.db`, so it works with AMF closed. The directory holds
   its own `*` `.gitignore`, and `.amf/` is AMF-managed in diffs.
+- **One owner per outbox.** The outbox is per checkout but decisions belong
+  to one feature. `ensure_feature_review_instructions` calls `outbox::bind`
+  for an active Design Review feature before its agent starts; it records the
+  feature id in `.amf/design-review/owner` and, when another feature (or
+  nobody) owned the outbox, deletes it first, so the CLI numbers from `d1`
+  again. Ingest skips an outbox the feature does not own. Two Design Review
+  features on one checkout therefore take turns: lines the previous owner
+  wrote after its last ingest are dropped when the other binds.
 - **Truncate, never reject.** Caps live in `record.rs`: title 80 chars, why
   400, rejected 3 × 160 (extras dropped), ask 200, paths 40. Text is cut on a
   char boundary and ends in `…`.
@@ -37,13 +45,18 @@ src/app/setup.rs            # ensure_design_review_instructions()
   (path to `git hash-object` blob id or `deleted`, 200 entries, not stored in
   the DB). A later record lists files committed in `prev_head..HEAD` unless
   they were dirty with that same blob, plus dirty files whose blob differs
-  from the previous snapshot. The first record uses the merge-base.
+  from the previous snapshot. The first record uses the merge-base. Path
+  lists come from `-z` output, so non-ASCII names are not quoted, and blob
+  ids are batched (`ls-tree` with literal pathspecs, `hash-object
+  --stdin-paths`), so git runs a fixed number of times per record.
 - **Idempotent ingest by uid.** `App::ingest_design_review_outbox` reads
-  complete lines from the stored byte offset and inserts with
-  `INSERT OR IGNORE` on `uid`. A trailing partial line waits for the next
-  read; a file shorter than the offset restarts at 0; a malformed line is
-  logged (`design-review`) and skipped. The offset is not advanced when an
-  insert fails, so the next turn retries.
+  complete lines from the stored cursor and inserts with `INSERT OR IGNORE`
+  on `uid`. The cursor is a byte offset plus the SHA-256 of up to 4 KiB
+  before it (`OutboxCursor`); when those bytes changed or the file is
+  shorter, the outbox was replaced and reading restarts at 0. A trailing
+  partial line waits for the next read; a malformed line is logged
+  (`design-review`) and skipped. The cursor is not advanced when an insert
+  fails, so the next turn retries.
 - **Ingest triggers.** At agent turn end (`stop`, `thinking-stop`,
   `input-request`), beside Review Mode's note archiving in
   `notifications.rs`, only for features with `design_review` on. The review
@@ -73,8 +86,11 @@ src/app/setup.rs            # ensure_design_review_instructions()
     `CreateFeatureState::toggle_review` / `toggle_design_review` keep the two
     modes exclusive. The compact companion setup (`FeatureSetupState`, PR
     Triage, Final Review, issue fixer) has the same row.
-  - A preset's `design_review: true` on an unsupported harness is ignored and
-    a warning toast says so (`apply_preset_review`).
+  - Presets resolve through `resolve_preset_review` on every TUI surface (the
+    New Feature dialog and the compact companion setup), and the GUI form
+    mirrors it: Review Mode wins when a preset sets both, and
+    `design_review: true` on an unsupported harness or container project is
+    dropped. Either way a warning toast (GUI: inline notice) says so.
   - The GUI New Feature form has a disabled "Design review" switch for any
     harness but Claude (`creationCopy.ts` mirrors the wording). Container
     projects are refused by the server, not pre-checked in the form.
@@ -86,8 +102,8 @@ src/app/setup.rs            # ensure_design_review_instructions()
     fork, companion registration), so an unsupported feature is never stored
     with the flag on and never gets the instruction block.
   - `change_feature_harness` (TUI and GUI) clears the flag when the new
-    harness is unsupported and toasts "Design Review turned off: Claude only
-    for now".
+    harness is unsupported and toasts "Design Review turned off: <reason>",
+    with the reason from `design_review_unavailable_reason`.
   - Batch creation and the GUI's TODO/issue forms do not offer it yet.
 - **Decisions are project memory.** The tables have no FK to `projects` or
   `features`, since the store's full-replace save would cascade them away.
@@ -100,6 +116,7 @@ src/app/setup.rs            # ensure_design_review_instructions()
 phases need: `design_decisions`, `design_review_rounds`,
 `design_review_items`, `design_review_turns`, `design_review_artifacts`,
 `design_review_usage` (the token ledger) and
-`design_review_outbox_offsets`. Each table carries `project_id` for
-cleanup. Ledger token counts are nullable: absent means unavailable, not
-zero.
+`design_review_outbox_offsets`. `MIGRATION_050` adds the cursor's
+`tail_sha256`; a NULL fingerprint re-reads the outbox from 0. Each table
+carries `project_id` for cleanup. Ledger token counts are nullable: absent
+means unavailable, not zero.

@@ -1796,26 +1796,19 @@ impl CreateFeatureState {
         }
     }
 
-    /// Apply a preset's Review Mode / Design Review choice. A Design Review
-    /// preset on an unsupported harness keeps the flag off and returns the
-    /// message to show.
+    /// Apply a preset's Review Mode / Design Review choice
+    /// ([`crate::design_review::resolve_preset_review`]). Returns the message
+    /// to show when the preset's Design Review was dropped.
     pub fn apply_preset_review(&mut self, preset: &FeaturePreset) -> Option<String> {
-        self.review = preset.review;
-        self.design_review = false;
-        if !preset.design_review {
-            return None;
-        }
-        match self.design_review_unavailable_reason() {
-            None => {
-                self.design_review = true;
-                self.review = false;
-                None
-            }
-            Some(reason) => Some(format!(
-                "Preset '{}': Design Review ignored ({reason})",
-                preset.name
-            )),
-        }
+        let resolved = crate::design_review::resolve_preset_review(
+            &preset.name,
+            preset.review,
+            preset.design_review,
+            self.design_review_unavailable_reason(),
+        );
+        self.review = resolved.review;
+        self.design_review = resolved.design_review;
+        resolved.notice
     }
 
     /// The feature reuses a worktree picked on the Source step, so its name

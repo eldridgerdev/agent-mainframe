@@ -16,7 +16,7 @@ pub mod record;
 pub mod support;
 
 pub use support::{
-    DESIGN_REVIEW_CLAUDE_ONLY, DESIGN_REVIEW_CONTAINER_UNAVAILABLE, design_review_supported,
-    design_review_unavailable_reason, feature_design_review_active,
-    feature_design_review_supported,
+    DESIGN_REVIEW_CLAUDE_ONLY, DESIGN_REVIEW_CONTAINER_UNAVAILABLE, PresetReview,
+    design_review_supported, design_review_unavailable_reason, feature_design_review_active,
+    feature_design_review_supported, resolve_preset_review,
 };

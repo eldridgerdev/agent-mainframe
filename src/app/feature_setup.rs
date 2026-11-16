@@ -122,10 +122,11 @@ impl FeatureSetupState {
         self.row = ((self.row as isize + delta).rem_euclid(len)) as usize;
     }
 
-    /// Adjust the focused setting. Returns the newly selected preset so the
-    /// caller can apply it to the dependent rows without knowing about the
-    /// dialog's ownership or `AppMode`.
-    pub fn adjust(&mut self, delta: isize) -> Option<FeaturePreset> {
+    /// Adjust the focused setting. Selecting a preset applies it to the
+    /// dependent rows; returns the warning to toast when that preset's Design
+    /// Review was dropped ([`Self::apply_preset`]).
+    #[must_use]
+    pub fn adjust(&mut self, delta: isize) -> Option<String> {
         self.error = None;
         let applied = match self.focused_row() {
             FeatureSetupRow::Preset => {
@@ -170,22 +171,26 @@ impl FeatureSetupState {
             }
             FeatureSetupRow::Branch => None,
         };
-        if let Some(preset) = &applied {
-            self.apply_preset(preset);
-        }
-        applied
+        applied.and_then(|preset| self.apply_preset(&preset))
     }
 
     /// Apply a preset's settings while keeping the branch's meaningful suffix.
-    pub fn apply_preset(&mut self, preset: &FeaturePreset) {
+    /// Returns the warning to show when the preset's Design Review was dropped
+    /// ([`crate::design_review::resolve_preset_review`]).
+    #[must_use]
+    pub fn apply_preset(&mut self, preset: &FeaturePreset) -> Option<String> {
         if let Some(index) = self.agents.iter().position(|agent| *agent == preset.agent) {
             self.agent_index = index;
         }
         self.mode = preset.mode.clone();
-        self.review = preset.review;
-        self.design_review = preset.design_review
-            && !preset.review
-            && self.design_review_unavailable_reason().is_none();
+        let resolved = crate::design_review::resolve_preset_review(
+            &preset.name,
+            preset.review,
+            preset.design_review,
+            self.design_review_unavailable_reason(),
+        );
+        self.review = resolved.review;
+        self.design_review = resolved.design_review;
         self.enable_chrome = preset.enable_chrome;
         if let Some(prefix) = &preset.branch_prefix {
             let base = self
@@ -196,6 +201,7 @@ impl FeatureSetupState {
                 .to_string();
             self.branch = format!("{prefix}{base}");
         }
+        resolved.notice
     }
 
     pub fn on_branch_row(&self) -> bool {
@@ -251,7 +257,7 @@ mod tests {
 
         state.row = 2;
         assert_eq!(state.focused_row(), FeatureSetupRow::Mode);
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert_eq!(state.mode, VibeMode::Vibe);
         assert!(state.error.is_none());
     }
@@ -264,31 +270,31 @@ mod tests {
             .iter()
             .position(|row| *row == FeatureSetupRow::DesignReview)
             .unwrap();
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert!(state.design_review);
 
         state.row = FeatureSetupRow::ALL
             .iter()
             .position(|row| *row == FeatureSetupRow::Review)
             .unwrap();
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert!(state.review && !state.design_review);
 
         state.row = FeatureSetupRow::ALL
             .iter()
             .position(|row| *row == FeatureSetupRow::DesignReview)
             .unwrap();
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert!(state.design_review && !state.review);
 
         // Switching to Codex unchecks it, and the row cannot be turned on.
         state.row = 1;
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert_eq!(state.agent(), AgentKind::Codex);
         assert!(!state.design_review);
         state.row = FeatureSetupRow::ALL.len() - 3;
         assert_eq!(state.focused_row(), FeatureSetupRow::DesignReview);
-        state.adjust(1);
+        let _ = state.adjust(1);
         assert!(!state.design_review);
     }
 
@@ -299,13 +305,21 @@ mod tests {
             design_review: true,
             ..FeaturePreset::default()
         };
-        state.apply_preset(&preset);
+        assert_eq!(state.apply_preset(&preset), None);
         assert!(state.design_review);
         state.agents = vec![AgentKind::Codex];
-        state.apply_preset(&FeaturePreset {
+        let notice = state.apply_preset(&FeaturePreset {
             agent: AgentKind::Codex,
-            ..preset
+            ..preset.clone()
         });
         assert!(!state.design_review);
+        assert!(notice.unwrap().contains("Claude only for now"));
+        state.agents = vec![AgentKind::Claude];
+        let notice = state.apply_preset(&FeaturePreset {
+            review: true,
+            ..preset
+        });
+        assert!(state.review && !state.design_review);
+        assert!(notice.unwrap().contains("Review Mode"));
     }
 }

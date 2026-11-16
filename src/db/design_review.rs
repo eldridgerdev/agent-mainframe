@@ -1,4 +1,4 @@
-//! SQLite persistence for Design Review (`MIGRATION_049`,
+//! SQLite persistence for Design Review (`MIGRATION_049`, `MIGRATION_050`,
 //! `docs/development/features/design-review.md`).
 //!
 //! Like Learning Mode, these tables sit outside the store's full-replace save
@@ -16,6 +16,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::design_review::outbox::OutboxCursor;
 use crate::design_review::record::DecisionRecord;
 
 /// Every Design Review table, for project-wide cleanup.
@@ -153,33 +154,48 @@ pub fn list_decisions_for_feature(
     Ok(rows)
 }
 
-/// Byte offset into the feature's outbox up to which lines were ingested;
-/// 0 when never ingested.
-pub fn outbox_offset(conn: &Connection, feature_id: &str) -> Result<u64> {
-    let offset: Option<i64> = conn
+/// Where ingest of the feature's outbox stopped; the default (offset 0) when
+/// never ingested.
+pub fn outbox_cursor(conn: &Connection, feature_id: &str) -> Result<OutboxCursor> {
+    let row: Option<(i64, Option<String>)> = conn
         .query_row(
-            "SELECT byte_offset FROM design_review_outbox_offsets WHERE feature_id = ?1",
+            "SELECT byte_offset, tail_sha256 FROM design_review_outbox_offsets
+             WHERE feature_id = ?1",
             params![feature_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    Ok(offset.map_or(0, |o| o.max(0) as u64))
+    Ok(
+        row.map_or_else(OutboxCursor::default, |(offset, tail_sha256)| {
+            OutboxCursor {
+                offset: offset.max(0) as u64,
+                tail_sha256,
+            }
+        }),
+    )
 }
 
-pub fn set_outbox_offset(
+pub fn set_outbox_cursor(
     conn: &Connection,
     project_id: &str,
     feature_id: &str,
-    offset: u64,
+    cursor: &OutboxCursor,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO design_review_outbox_offsets (feature_id, project_id, byte_offset, updated_at)
-         VALUES (?1, ?2, ?3, datetime('now'))
+        "INSERT INTO design_review_outbox_offsets
+            (feature_id, project_id, byte_offset, tail_sha256, updated_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'))
          ON CONFLICT(feature_id) DO UPDATE SET
             project_id = excluded.project_id,
             byte_offset = excluded.byte_offset,
+            tail_sha256 = excluded.tail_sha256,
             updated_at = excluded.updated_at",
-        params![feature_id, project_id, offset as i64],
+        params![
+            feature_id,
+            project_id,
+            cursor.offset as i64,
+            cursor.tail_sha256
+        ],
     )?;
     Ok(())
 }
@@ -255,12 +271,24 @@ mod tests {
     }
 
     #[test]
-    fn outbox_offset_round_trips() {
+    fn outbox_cursor_round_trips() {
         let (_tmp, db) = open_temp_db();
-        assert_eq!(db.design_review_outbox_offset("f").unwrap(), 0);
-        db.set_design_review_outbox_offset("p", "f", 120).unwrap();
-        db.set_design_review_outbox_offset("p", "f", 240).unwrap();
-        assert_eq!(db.design_review_outbox_offset("f").unwrap(), 240);
+        assert_eq!(
+            db.design_review_outbox_cursor("f").unwrap(),
+            OutboxCursor::default()
+        );
+        let cursor = |offset, sha: &str| OutboxCursor {
+            offset,
+            tail_sha256: Some(sha.into()),
+        };
+        db.set_design_review_outbox_cursor("p", "f", &cursor(120, "aa"))
+            .unwrap();
+        db.set_design_review_outbox_cursor("p", "f", &cursor(240, "bb"))
+            .unwrap();
+        assert_eq!(
+            db.design_review_outbox_cursor("f").unwrap(),
+            cursor(240, "bb")
+        );
     }
 
     #[test]
@@ -270,7 +298,15 @@ mod tests {
             .unwrap();
         db.insert_design_decision_if_absent(&decision("u2", "p2", "f2", 1))
             .unwrap();
-        db.set_design_review_outbox_offset("p1", "f1", 10).unwrap();
+        db.set_design_review_outbox_cursor(
+            "p1",
+            "f1",
+            &OutboxCursor {
+                offset: 10,
+                tail_sha256: None,
+            },
+        )
+        .unwrap();
         db.conn
             .execute(
                 "INSERT INTO design_review_usage
@@ -285,7 +321,10 @@ mod tests {
 
         assert!(db.design_decisions_for_feature("f1").unwrap().is_empty());
         assert_eq!(db.design_decisions_for_feature("f2").unwrap().len(), 1);
-        assert_eq!(db.design_review_outbox_offset("f1").unwrap(), 0);
+        assert_eq!(
+            db.design_review_outbox_cursor("f1").unwrap(),
+            OutboxCursor::default()
+        );
         let usage: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM design_review_usage", [], |r| r.get(0))

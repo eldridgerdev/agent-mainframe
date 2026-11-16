@@ -31,8 +31,11 @@ impl App {
     }
 
     /// Ingest new Decision Log lines from the feature's outbox into `amf.db`,
-    /// resuming at the stored byte offset. Idempotent by uid, so re-reading a
-    /// line (a truncated outbox, a lost offset write) never duplicates it.
+    /// resuming at the stored cursor. Idempotent by uid, so re-reading a line
+    /// (a replaced outbox, a lost cursor write) never duplicates it. The
+    /// outbox is per checkout, so it is read only while this feature owns it
+    /// ([`outbox::bind`]); another feature's decisions are never ingested as
+    /// this one's.
     /// Malformed lines are logged and skipped. Returns how many decisions were
     /// new. Runs at agent turn end and is meant to run again when the review
     /// opens, which also covers harnesses without turn-end hooks.
@@ -46,12 +49,15 @@ impl App {
         let project_id = project.id.clone();
         let feature_id = feature.id.clone();
         let path = outbox::outbox_path(&feature.workdir);
+        if outbox::owner(&feature.workdir).as_deref() != Some(feature_id.as_str()) {
+            return 0;
+        }
         let Some(db) = self.db.as_ref() else {
             return 0;
         };
 
-        let offset = match db.design_review_outbox_offset(&feature_id) {
-            Ok(offset) => offset,
+        let cursor = match db.design_review_outbox_cursor(&feature_id) {
+            Ok(cursor) => cursor,
             Err(err) => {
                 self.log_warn(
                     "design-review",
@@ -60,7 +66,11 @@ impl App {
                 return 0;
             }
         };
-        let (lines, next_offset, malformed) = match outbox::read_from(&path, offset) {
+        let outbox::OutboxRead {
+            lines,
+            cursor: next_cursor,
+            malformed,
+        } = match outbox::read_from(&path, &cursor) {
             Ok(read) => read,
             Err(err) => {
                 self.log_warn(
@@ -87,8 +97,8 @@ impl App {
         }
         // Keep the old offset when a row failed to insert, so the next turn
         // retries it; the uid makes the retry safe for the rows that landed.
-        let offset_err = if failures.is_empty() && next_offset != offset {
-            db.set_design_review_outbox_offset(&project_id, &feature_id, next_offset)
+        let offset_err = if failures.is_empty() && next_cursor != cursor {
+            db.set_design_review_outbox_cursor(&project_id, &feature_id, &next_cursor)
                 .err()
         } else {
             None

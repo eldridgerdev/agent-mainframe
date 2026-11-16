@@ -1944,15 +1944,19 @@ fn ensure_design_review_instructions_with_io(
 /// Write or strip both review instruction blocks for a feature: Review Mode's
 /// notes block (only when Design Review is off, since a feature uses one or
 /// the other) and Design Review's block (only when the mode is supported for
-/// the feature's harness and project).
+/// the feature's harness and project). An active Design Review feature also
+/// binds the checkout's outbox to itself before its agent starts
+/// ([`crate::design_review::outbox::bind`]).
 pub fn ensure_feature_review_instructions(workdir: &Path, feature: &Feature, containerized: bool) {
     ensure_review_claude_md(workdir, feature.review_notes_enabled());
-    ensure_design_review_instructions(
-        workdir,
-        &feature.agent,
-        feature.design_review
-            && crate::design_review::design_review_supported(&feature.agent, containerized),
-    );
+    let design_review = feature.design_review
+        && crate::design_review::design_review_supported(&feature.agent, containerized);
+    ensure_design_review_instructions(workdir, &feature.agent, design_review);
+    if design_review {
+        // Best-effort: on failure the owner is unchanged and ingest skips the
+        // outbox rather than misattributing it.
+        let _ = crate::design_review::outbox::bind(workdir, &feature.id);
+    }
 }
 
 /// Read every user-authored input before stopping a feature. The checked writer

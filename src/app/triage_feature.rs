@@ -235,8 +235,9 @@ impl App {
     pub fn pr_review_triage_setup_adjust(&mut self, delta: isize) {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(setup) = &mut state.new_feature_setup
+            && let Some(notice) = setup.adjust(delta)
         {
-            setup.adjust(delta);
+            self.push_toast_warning(notice);
         }
     }
 

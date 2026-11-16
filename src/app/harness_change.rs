@@ -167,11 +167,11 @@ impl App {
             original.name,
             next.display_name()
         ));
-        if design_review_cleared {
-            self.push_toast_warning(format!(
-                "Design Review turned off: {}",
-                crate::design_review::DESIGN_REVIEW_CLAUDE_ONLY
-            ));
+        if design_review_cleared
+            && let Some(reason) =
+                crate::design_review::design_review_unavailable_reason(&next, containerized)
+        {
+            self.push_toast_warning(format!("Design Review turned off: {reason}"));
         }
         Ok(())
     }

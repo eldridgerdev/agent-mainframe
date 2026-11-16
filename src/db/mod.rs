@@ -876,6 +876,18 @@ impl AmfDb {
         learning::delete_sessions_for_project(&self.conn, project_id)
     }
 
+    /// Run several Design Review writes as one `BEGIN IMMEDIATE` transaction,
+    /// so a failure partway leaves nothing behind. `f` must not start its own.
+    pub fn design_review_transaction<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let value = f(self)?;
+        tx.commit()?;
+        Ok(value)
+    }
+
     /// Insert an ingested Design Review decision unless its uid is known.
     pub fn insert_design_decision_if_absent(
         &self,

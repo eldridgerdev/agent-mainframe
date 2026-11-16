@@ -275,7 +275,7 @@ pub struct DesignReviewItem {
     pub title: String,
     pub paths: Vec<String>,
     pub state: String,
-    pub stale: bool,
+    pub stale: crate::design_review::agenda::Staleness,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -302,7 +302,7 @@ pub fn list_items(conn: &Connection, round_id: &str) -> Result<Vec<DesignReviewI
                 title: row.get(8)?,
                 paths: parse_list(row.get(9)?),
                 state: row.get(10)?,
-                stale: row.get::<_, i64>(11)? != 0,
+                stale: crate::design_review::agenda::Staleness::from_i64(row.get(11)?),
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
             })
@@ -329,7 +329,7 @@ pub fn insert_item(conn: &Connection, item: &DesignReviewItem) -> Result<()> {
             item.title,
             json_list(&item.paths),
             item.state,
-            item.stale as i64,
+            item.stale.as_i64(),
             item.created_at,
             item.updated_at,
         ],
@@ -350,7 +350,7 @@ pub fn update_item_layout(conn: &Connection, item: &DesignReviewItem) -> Result<
             item.label,
             item.title,
             json_list(&item.paths),
-            item.stale as i64,
+            item.stale.as_i64(),
         ],
     )?;
     Ok(())
@@ -544,6 +544,54 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let db = AmfDb::open(tmp.path()).unwrap();
         (tmp, db)
+    }
+
+    #[test]
+    fn a_failed_write_in_a_transaction_leaves_nothing_behind() {
+        let (_tmp, db) = open_temp_db();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER reject_state BEFORE UPDATE OF state ON design_review_items
+                 BEGIN SELECT RAISE(ABORT, 'write refused'); END;",
+            )
+            .unwrap();
+        let turn = DesignReviewTurn {
+            id: "t1".into(),
+            item_id: "i1".into(),
+            round_id: None,
+            feature_id: "f".into(),
+            project_id: "p".into(),
+            seq: 0,
+            role: "reviewer".into(),
+            level: None,
+            body: "note".into(),
+            status: "done".into(),
+            usage_id: None,
+            created_at: "t".into(),
+        };
+        let item = DesignReviewItem {
+            id: "i1".into(),
+            round_id: "r".into(),
+            feature_id: "f".into(),
+            project_id: "p".into(),
+            position: 0,
+            kind: "brief".into(),
+            ref_key: None,
+            label: None,
+            title: "Brief".into(),
+            paths: vec![],
+            state: "pending".into(),
+            stale: Default::default(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        };
+        db.insert_design_review_item(&item).unwrap();
+        let result = db.design_review_transaction(|db| {
+            db.append_design_review_turn(&turn)?;
+            db.set_design_review_item_state("i1", "accepted", "t")
+        });
+        assert!(result.is_err());
+        assert!(db.design_review_turns("i1").unwrap().is_empty());
     }
 
     fn decision(uid: &str, project: &str, feature: &str, seq: i64) -> DesignDecision {

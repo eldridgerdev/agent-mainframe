@@ -113,6 +113,21 @@ fn state_of(app: &App, title: &str) -> String {
         .clone()
 }
 
+/// Wait for the background snapshot of a leader-`y` open and apply it.
+fn finish_opening(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app.design_review_opening.is_some() {
+        if app.poll_design_review_opening() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never opened"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 // ── Opening ───────────────────────────────────────────────
 
 #[test]
@@ -156,6 +171,10 @@ fn leader_y_opens_the_room_with_ingested_decisions_in_meeting_order() {
     let (_db, mut app) = setup(&dir);
     app.activate_leader();
     press(&mut app, KeyCode::Char('y'));
+    // The git snapshot is read off the UI thread; the view stays meanwhile.
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert!(app.design_review_opening.is_some());
+    finish_opening(&mut app);
 
     assert!(matches!(app.mode, AppMode::DesignReview(_)));
     assert_eq!(
@@ -230,6 +249,17 @@ fn a_section_without_an_artifact_says_not_prepared_and_a_stored_one_renders() {
 }
 
 #[test]
+fn a_snapshot_that_arrives_after_leaving_the_view_opens_nothing() {
+    let dir = TempDir::new().unwrap();
+    let (_db, mut app) = setup(&dir);
+    app.open_design_review_from_view();
+    app.mode = AppMode::Normal;
+    finish_opening(&mut app);
+    assert!(app.design_review_opening.is_none());
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
 fn a_decision_whose_paths_left_the_diff_is_marked_stale() {
     let dir = TempDir::new().unwrap();
     let (_db, mut app) = setup(&dir);
@@ -251,7 +281,7 @@ fn a_decision_whose_paths_left_the_diff_is_marked_stale() {
     let stale: Vec<_> = room(&app)
         .items
         .iter()
-        .filter(|i| i.stale)
+        .filter(|i| i.stale == crate::design_review::agenda::Staleness::PossiblyStale)
         .map(|i| i.title.clone())
         .collect();
     assert_eq!(stale, ["d2 decision 2"]);
@@ -321,6 +351,26 @@ fn item_states_and_threads_persist_and_resume_after_reopening() {
     assert_eq!(room(&app).selected_item().unwrap().title, "Key flow");
     select(&mut app, "d2 decision 2");
     assert_eq!(room(&app).turns.len(), 2);
+}
+
+#[test]
+fn the_room_resumes_past_items_waiting_on_the_developer() {
+    let dir = TempDir::new().unwrap();
+    let (_db, mut app) = setup(&dir);
+    open(&mut app);
+    for _ in ["Brief", "Architecture", "Key flow", "Fit"] {
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('j'));
+    }
+    assert_eq!(room(&app).selected_item().unwrap().title, "d1 decision 1");
+    press(&mut app, KeyCode::Char('c'));
+    type_text(&mut app, "use a table");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(state_of(&app, "d1 decision 1"), "change-requested");
+
+    press(&mut app, KeyCode::Esc);
+    open(&mut app);
+    assert_eq!(room(&app).selected_item().unwrap().title, "d2 decision 2");
 }
 
 #[test]
@@ -418,4 +468,22 @@ fn usage_tab_groups_drills_and_the_header_totals_dollars() {
     // `u` jumps straight to the tab, as the header says.
     press(&mut app, KeyCode::Char('u'));
     assert_eq!(room(&app).tab, RoomTab::Usage);
+
+    // A reload that shrinks the drilled group pulls the call selection back.
+    while room(&app).usage.grouping.label() != "agent" {
+        press(&mut app, KeyCode::Char('g'));
+    }
+    while room(&app).usage.table().groups[room(&app).usage.selected].key != "presenter" {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(room(&app).usage.call_selected, 1);
+    conn.execute(
+        "DELETE FROM design_review_usage WHERE task = 'fit'",
+        rusqlite::params![],
+    )
+    .unwrap();
+    app.design_review_reload_usage();
+    assert_eq!(room(&app).usage.call_selected, 0);
 }

@@ -66,6 +66,9 @@ pub struct UsageTabState {
     /// The group whose calls are open (an index into the table's groups).
     pub drill: Option<usize>,
     pub call_selected: usize,
+    /// First visible row of whichever list is shown; the renderer moves it
+    /// to keep the selection on screen.
+    pub scroll: usize,
 }
 
 impl UsageTabState {
@@ -76,6 +79,7 @@ impl UsageTabState {
             selected: 0,
             drill: None,
             call_selected: 0,
+            scroll: 0,
         }
     }
 
@@ -88,6 +92,13 @@ impl Default for UsageTabState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A room waiting for its git snapshot, which is read off the UI thread so a
+/// large diff or repository does not freeze the TUI while the room opens.
+pub(crate) struct DesignReviewOpening {
+    feature_id: String,
+    rx: std::sync::mpsc::Receiver<RoomSnapshot>,
 }
 
 pub struct DesignReviewRoom {
@@ -194,32 +205,37 @@ pub(crate) fn derive_and_store_agenda(
     let planned = merge_agenda(&stored_items, &drafts, current.as_deref());
 
     let now = crate::db::learning::now_timestamp();
-    for (position, plan) in planned.iter().enumerate() {
-        let item = DesignReviewItem {
-            id: plan
-                .existing_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            round_id: round.id.clone(),
-            feature_id: round.feature_id.clone(),
-            project_id: round.project_id.clone(),
-            position: position as i64,
-            kind: plan.kind.clone(),
-            ref_key: plan.ref_key.clone(),
-            label: plan.label.clone(),
-            title: plan.title.clone(),
-            paths: plan.paths.clone(),
-            state: plan.state.as_str().to_string(),
-            stale: plan.stale,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
-        if plan.existing_id.is_some() {
-            db.update_design_review_item_layout(&item)?;
-        } else {
-            db.insert_design_review_item(&item)?;
+    // One transaction: a failure partway must not leave a half-reordered
+    // agenda for the next open to build on.
+    db.design_review_transaction(|db| {
+        for (position, plan) in planned.iter().enumerate() {
+            let item = DesignReviewItem {
+                id: plan
+                    .existing_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                round_id: round.id.clone(),
+                feature_id: round.feature_id.clone(),
+                project_id: round.project_id.clone(),
+                position: position as i64,
+                kind: plan.kind.clone(),
+                ref_key: plan.ref_key.clone(),
+                label: plan.label.clone(),
+                title: plan.title.clone(),
+                paths: plan.paths.clone(),
+                state: plan.state.as_str().to_string(),
+                stale: plan.stale,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            if plan.existing_id.is_some() {
+                db.update_design_review_item_layout(&item)?;
+            } else {
+                db.insert_design_review_item(&item)?;
+            }
         }
-    }
+        Ok(())
+    })?;
     db.design_review_items(&round.id)
 }
 
@@ -230,8 +246,9 @@ impl App {
     /// artifacts are stored, so it is a no-op until that builder exists.
     pub(crate) fn request_design_review_packet(&mut self, _pi: usize, _fi: usize, _round: i64) {}
 
-    /// Leader `y` from a session view: open the review room for the viewed
-    /// feature.
+    /// Leader `y` from a session view: read the viewed feature's git snapshot
+    /// in the background; [`App::poll_design_review_opening`] opens the room
+    /// when it arrives. A refusal is toasted at once.
     pub fn open_design_review_from_view(&mut self) {
         let AppMode::Viewing(view) = &self.mode else {
             return;
@@ -249,19 +266,72 @@ impl App {
             self.push_toast_warning("No active feature to review");
             return;
         };
-        self.open_design_review(pi, fi, view, None);
+        if self.design_review_opening.is_some() {
+            self.push_toast_info("Design Review is already opening");
+            return;
+        }
+        if !self.design_review_may_open(pi, fi) {
+            return;
+        }
+        let feature = &self.store.projects[pi].features[fi];
+        let feature_id = feature.id.clone();
+        let workdir = feature.workdir.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_room_snapshot(&workdir));
+        });
+        self.design_review_opening = Some(DesignReviewOpening { feature_id, rx });
+        self.push_toast_info("Reading the diff for Design Review…");
     }
 
-    /// Open the room for a feature. Refuses with a toast when Design Review
-    /// is unavailable for its harness or project, or off for the feature.
-    /// `snapshot` is read from git when `None`. Returns whether it opened.
-    pub(crate) fn open_design_review(
-        &mut self,
-        pi: usize,
-        fi: usize,
-        from_view: ViewState,
-        snapshot: Option<RoomSnapshot>,
-    ) -> bool {
+    /// Open the room once its background snapshot has arrived, if the
+    /// reviewer is still viewing that feature. Returns whether anything
+    /// changed on screen.
+    pub fn poll_design_review_opening(&mut self) -> bool {
+        let Some(opening) = &self.design_review_opening else {
+            return false;
+        };
+        let snapshot = match opening.rx.try_recv() {
+            Ok(snapshot) => snapshot,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.design_review_opening = None;
+                self.log_error("design-review", "snapshot reader stopped".to_string());
+                self.push_toast_error("Design Review could not read the diff; see the debug log");
+                return true;
+            }
+        };
+        let Some(DesignReviewOpening { feature_id, .. }) = self.design_review_opening.take() else {
+            return false;
+        };
+        let target = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|f| f.id == feature_id)
+                .map(|fi| (pi, fi, p.name.clone(), p.features[fi].name.clone()))
+        });
+        let view = match (&self.mode, target) {
+            (AppMode::Viewing(view), Some((pi, fi, project, feature)))
+                if view.project_name == project && view.feature_name == feature =>
+            {
+                Some((pi, fi, view.clone()))
+            }
+            _ => None,
+        };
+        let Some((pi, fi, view)) = view else {
+            self.log_info(
+                "design-review",
+                "left the feature before the room opened; not opening it".to_string(),
+            );
+            return false;
+        };
+        self.open_design_review(pi, fi, view, Some(snapshot))
+    }
+
+    /// The open gate: toasts and returns false when Design Review is
+    /// unavailable for the feature's harness or project, off for the
+    /// feature, or without a database.
+    fn design_review_may_open(&mut self, pi: usize, fi: usize) -> bool {
         let Some((project, feature)) = self
             .store
             .projects
@@ -284,6 +354,25 @@ impl App {
             self.push_toast_warning("Design Review needs the AMF database, which is unavailable");
             return false;
         }
+        true
+    }
+
+    /// Open the room for a feature. Refuses with a toast when Design Review
+    /// is unavailable for its harness or project, or off for the feature.
+    /// `snapshot` is read from git, on this thread, when `None`. Returns
+    /// whether it opened.
+    pub(crate) fn open_design_review(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        from_view: ViewState,
+        snapshot: Option<RoomSnapshot>,
+    ) -> bool {
+        if !self.design_review_may_open(pi, fi) {
+            return false;
+        }
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
         let project_id = project.id.clone();
         let project_name = project.name.clone();
         let feature_id = feature.id.clone();
@@ -356,7 +445,7 @@ impl App {
         room.selected = room
             .items
             .iter()
-            .position(|i| ItemState::parse(&i.state) != ItemState::Accepted)
+            .position(|i| ItemState::parse(&i.state).awaits_reviewer())
             .unwrap_or(0);
         self.mode = AppMode::DesignReview(Box::new(room));
         self.design_review_load_selected();

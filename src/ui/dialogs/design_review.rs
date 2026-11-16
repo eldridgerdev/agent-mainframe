@@ -180,7 +180,7 @@ fn draw_agenda(frame: &mut Frame, area: Rect, room: &mut DesignReviewRoom, theme
         .take(visible)
         .map(|(index, item)| {
             let state = ItemState::parse(&item.state);
-            let stale = if item.stale { " ⚠ stale?" } else { "" };
+            let stale = item.stale.tag();
             let body = truncate(&item.title, width.saturating_sub(3 + stale.chars().count()));
             let mut line = Line::from(vec![
                 Span::styled(
@@ -211,9 +211,9 @@ fn draw_content(frame: &mut Frame, area: Rect, room: &mut DesignReviewRoom, them
                 truncate(&item.title, area.width.saturating_sub(24) as usize),
                 ItemState::parse(&item.state).label()
             ),
-            item.stale,
+            item.stale.banner(),
         ),
-        None => (" Content ".to_string(), false),
+        None => (" Content ".to_string(), None),
     };
     let block = pane_block(title, theme);
     let mut inner = block.inner(area);
@@ -221,11 +221,11 @@ fn draw_content(frame: &mut Frame, area: Rect, room: &mut DesignReviewRoom, them
     if inner.height == 0 || inner.width == 0 {
         return;
     }
-    if stale {
+    if let Some(text) = stale {
         let banner = Rect { height: 1, ..inner };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "Possibly stale: none of this decision's files are in the diff any more",
+                text,
                 Style::default().fg(theme.warning.to_color()),
             )),
             banner,
@@ -480,20 +480,42 @@ fn widths(header: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
         .collect()
 }
 
-fn draw_usage_tab(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &Theme) {
+fn draw_usage_tab(frame: &mut Frame, area: Rect, room: &mut DesignReviewRoom, theme: &Theme) {
     let block = pane_block(" Usage ".to_string(), theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
     let table = room.usage.table();
-    let mut lines: Vec<Line> = Vec::new();
+    let note = Line::from(Span::styled(USAGE_ACCURACY_NOTE, muted(theme)));
 
     if room.usage.rows.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No usage recorded yet. Staff runs and developer turns made for the review appear here.",
-            muted(theme),
-        )));
-    } else if let Some(group) = room.usage.drill.and_then(|g| table.groups.get(g)) {
-        lines.push(Line::from(Span::styled(
+        let lines = vec![
+            Line::from(Span::styled(
+                "No usage recorded yet. Staff runs and developer turns made for the review appear here.",
+                muted(theme),
+            )),
+            Line::raw(""),
+            note,
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    let header_style = Style::default()
+        .add_modifier(Modifier::BOLD)
+        .fg(theme.text.to_color());
+    let selection = Style::default().bg(theme.selection.to_color());
+    // `head` stays put, `body` scrolls to keep the selection visible, `foot`
+    // wraps at the bottom.
+    let mut head: Vec<Line> = Vec::new();
+    let mut body: Vec<Line> = Vec::new();
+    let mut foot: Vec<Line> = vec![Line::raw("")];
+    let selected_line;
+
+    if let Some(group) = room.usage.drill.and_then(|g| table.groups.get(g)) {
+        head.push(Line::from(Span::styled(
             format!(
                 "Calls in {} {}  (Esc for groups)",
                 table.grouping.label(),
@@ -501,7 +523,7 @@ fn draw_usage_tab(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme:
             ),
             text_style(theme),
         )));
-        lines.push(Line::raw(""));
+        head.push(Line::raw(""));
         let rows: Vec<Vec<String>> = group
             .rows
             .iter()
@@ -509,71 +531,90 @@ fn draw_usage_tab(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme:
             .collect();
         let w = widths(&CALL_COLUMNS, &rows);
         let header: Vec<String> = CALL_COLUMNS.iter().map(|c| c.to_string()).collect();
-        lines.push(Line::from(Span::styled(
-            pad(&header, &w),
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.text.to_color()),
-        )));
+        head.push(Line::from(Span::styled(pad(&header, &w), header_style)));
         for (index, row) in rows.iter().enumerate() {
             let mut line = Line::from(Span::styled(pad(row, &w), text_style(theme)));
             if index == room.usage.call_selected {
-                line = line.style(Style::default().bg(theme.selection.to_color()));
+                line = line.style(selection);
             }
-            lines.push(line);
+            body.push(line);
         }
+        selected_line = room.usage.call_selected;
     } else {
-        lines.push(Line::from(Span::styled(
+        head.push(Line::from(Span::styled(
             format!("Group by: {}  (g to change)", table.grouping.label()),
             text_style(theme),
         )));
-        lines.push(Line::raw(""));
+        head.push(Line::raw(""));
         let rows = usage::table_cells(&table);
         let mut header: Vec<&str> = COLUMNS.to_vec();
         header[0] = table.grouping.label();
         let w = widths(&header, &rows);
-        let head: Vec<String> = header.iter().map(|c| c.to_string()).collect();
-        lines.push(Line::from(Span::styled(
-            pad(&head, &w),
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.text.to_color()),
-        )));
+        let names: Vec<String> = header.iter().map(|c| c.to_string()).collect();
+        head.push(Line::from(Span::styled(pad(&names, &w), header_style)));
         let total_index = rows.len() - 1;
         for (index, row) in rows.iter().enumerate() {
             if index == total_index {
-                lines.push(Line::from(Span::styled(
+                body.push(Line::from(Span::styled(
                     "─".repeat(pad(row, &w).chars().count()),
                     muted(theme),
                 )));
             }
             let mut line = Line::from(Span::styled(pad(row, &w), text_style(theme)));
             if index == room.usage.selected && index != total_index {
-                line = line.style(Style::default().bg(theme.selection.to_color()));
+                line = line.style(selection);
             }
-            lines.push(line);
+            body.push(line);
         }
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
+        selected_line = room.usage.selected;
+        foot.push(Line::from(Span::styled(
             usage::footer_line(&table),
             text_style(theme),
         )));
-        lines.push(Line::from(Span::styled(usage::MARKER_LEGEND, muted(theme))));
+        foot.push(Line::from(Span::styled(usage::MARKER_LEGEND, muted(theme))));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(USAGE_ACCURACY_NOTE, muted(theme))));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    foot.push(Line::raw(""));
+    foot.push(note);
+
+    // The list keeps at least one row; the footer gives way first.
+    let foot = Paragraph::new(foot).wrap(Wrap { trim: false });
+    let head_height = (head.len() as u16).min(inner.height);
+    let foot_height =
+        (foot.line_count(inner.width) as u16).min(inner.height.saturating_sub(head_height + 1));
+    let body_height = inner.height - head_height - foot_height;
+    let [head_area, body_area, foot_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(head_height),
+            Constraint::Length(body_height),
+            Constraint::Length(foot_height),
+        ])
+        .areas(inner);
+
+    let visible = body_area.height as usize;
+    let scroll = &mut room.usage.scroll;
+    if selected_line < *scroll {
+        *scroll = selected_line;
+    } else if visible > 0 && selected_line >= *scroll + visible {
+        *scroll = selected_line + 1 - visible;
+    }
+    *scroll = (*scroll).min(body.len().saturating_sub(visible));
+
+    frame.render_widget(Paragraph::new(head), head_area);
+    frame.render_widget(Paragraph::new(body).scroll((*scroll as u16, 0)), body_area);
+    frame.render_widget(foot, foot_area);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::design_review::DesignReviewItem;
+    use crate::design_review::agenda::Staleness;
     use ratatui::{Terminal, backend::TestBackend};
 
     pub(crate) fn blank_room() -> DesignReviewRoom {
-        let item =
-            |position: i64, kind: &str, title: &str, state: &str, stale: bool| DesignReviewItem {
+        let item = |position: i64, kind: &str, title: &str, state: &str, stale: Staleness| {
+            DesignReviewItem {
                 id: format!("i{position}"),
                 round_id: "r".into(),
                 feature_id: "f".into(),
@@ -588,7 +629,8 @@ mod tests {
                 stale,
                 created_at: "t".into(),
                 updated_at: "t".into(),
-            };
+            }
+        };
         let view = crate::app::ViewState::new(
             "proj".into(),
             "feat".into(),
@@ -607,8 +649,21 @@ mod tests {
             workdir: std::path::PathBuf::from("/tmp"),
             round: 1,
             items: vec![
-                item(0, "brief", "Brief", "accepted", false),
-                item(1, "decision", "d1 Outbox file", "pending", true),
+                item(0, "brief", "Brief", "accepted", Staleness::Current),
+                item(
+                    1,
+                    "decision",
+                    "d1 Outbox file",
+                    "pending",
+                    Staleness::PossiblyStale,
+                ),
+                item(
+                    2,
+                    "unexplained-hit",
+                    "Cargo.toml",
+                    "pending",
+                    Staleness::Retired,
+                ),
             ],
             selected: 1,
             list_scroll: 0,
@@ -659,6 +714,50 @@ mod tests {
         ] {
             assert!(screen.contains(want), "missing {want:?}:\n{screen}");
         }
+    }
+
+    #[test]
+    fn a_retired_item_is_not_called_possibly_stale() {
+        let mut room = blank_room();
+        room.selected = 2;
+        let screen = render(&mut room, 120, 36);
+        assert!(screen.contains("off agenda"), "{screen}");
+        assert!(screen.contains("No longer on the agenda"), "{screen}");
+        assert!(!screen.contains("Possibly stale"), "{screen}");
+    }
+
+    #[test]
+    fn usage_lists_scroll_to_keep_the_selection_visible() {
+        let mut room = blank_room();
+        room.tab = RoomTab::Usage;
+        room.usage.rows = (0..40)
+            .map(|i| usage::UsageRow {
+                id: i,
+                phase: "prepare".into(),
+                task: format!("task-{i:02}"),
+                agent: "presenter".into(),
+                model: Some(format!("model-{i:02}")),
+                cost_usd: Some(0.01),
+                started_at: "2026-11-13T10:00:00Z".into(),
+                ..Default::default()
+            })
+            .collect();
+        room.usage.grouping = usage::Grouping::Model;
+        room.usage.selected = 39;
+        let screen = render(&mut room, 120, 24);
+        assert!(screen.contains("model-39"), "{screen}");
+        assert!(!screen.contains("model-00"), "{screen}");
+
+        room.usage.grouping = usage::Grouping::Agent;
+        room.usage.selected = 0;
+        room.usage.drill = Some(0);
+        room.usage.call_selected = 39;
+        let screen = render(&mut room, 120, 24);
+        assert!(screen.contains("task-39"), "{screen}");
+        assert!(!screen.contains("task-00"), "{screen}");
+        room.usage.call_selected = 0;
+        let screen = render(&mut room, 120, 24);
+        assert!(screen.contains("task-00"), "{screen}");
     }
 
     #[test]

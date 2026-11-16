@@ -141,7 +141,10 @@ or `q` returns to the session view. The room creates no session row.
   (`design_review_unavailable_reason`) and toasts `Design Review is <reason>`;
   a feature without the flag toasts `Design Review is off for this feature`;
   no database also refuses. Nothing is created on a refusal.
-- **Open sequence.** Ingest the outbox, read the git snapshot, find or create
+- **Open sequence.** Leader `y` runs the gate, then reads the git snapshot
+  (`load_room_snapshot`) on a background thread; `poll_design_review_opening`
+  opens the room when it arrives, and only if the reviewer is still viewing
+  that feature. Opening then ingests the outbox, finds or creates
   round 1 (`design_review_rounds`: base and head commit, diff fingerprint),
   call `request_design_review_packet(pi, fi, round)` (a no-op that Phase 2b
   fills), then derive and store the agenda.
@@ -152,7 +155,13 @@ or `q` returns to the session view. The room creates no session row.
   reopen by `(kind, ref_key)` (section key, decision uid, `<detector>:<path>`)
   in `merge_agenda`: a match keeps id, state and thread and takes the new
   position, title and paths; a new item is `pending`; an item the inputs no
-  longer produce stays, after the derived ones, flagged stale.
+  longer produce stays, after the derived ones, marked `Retired` ("off
+  agenda"). The whole agenda is written in one transaction
+  (`AmfDb::design_review_transaction`), so a failed open leaves the stored
+  order as it was.
+- **Staleness** (`agenda::Staleness`, stored in `design_review_items.stale` as
+  0 current, 1 possibly stale, 2 retired). Retired and possibly stale have
+  separate tags and banners.
 - **Possibly stale** is a decision item whose recorded paths have all left the
   current diff (`possibly_stale`). It is unknown (false) without a loadable
   diff and for a decision with no paths.
@@ -160,10 +169,13 @@ or `q` returns to the session view. The room creates no session row.
   `pending`, `question-open`, `change-requested`, `re-review`, `accepted`.
   `agenda::transition` is the one table: accept and note from pending or
   re-review go to accepted, request change goes to change-requested, ask goes
-  to question-open and the answer returns it to pending. Change-requested and
-  accepted accept no action until Phase 4 brings replies (`re-review`). Every
-  action writes the database first; the room's copy changes only after the
-  write succeeded.
+  to question-open and the answer (`Answered { back_to }`) returns it to the
+  state it was asked from, pending or re-review; the caller keeps that state
+  while the question is open. Change-requested and accepted accept no action
+  until Phase 4 brings replies (`re-review`). Every action writes the database
+  first, as one transaction; the room's copy changes only after the commit.
+  The room resumes at the first item that `awaits_reviewer` (pending or
+  re-review).
 - **Threads** are `design_review_turns` (`reviewer`, `record`; the ladder's
   presenter and developer roles are later). Note, request-change and ask text
   is a reviewer turn.

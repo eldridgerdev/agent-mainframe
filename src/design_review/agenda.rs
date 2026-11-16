@@ -48,6 +48,12 @@ impl ItemState {
         }
     }
 
+    /// Whether the reviewer can act on the item now, which is where the room
+    /// resumes. A question or a requested change waits on someone else.
+    pub fn awaits_reviewer(self) -> bool {
+        matches!(self, ItemState::Pending | ItemState::ReReview)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             ItemState::Pending => "pending",
@@ -67,8 +73,12 @@ pub enum ItemAction {
     Note,
     RequestChange,
     Ask,
-    /// A question was answered, so the item goes back to where it was.
-    Answered,
+    /// A question was answered, so the item goes back to `back_to`, the
+    /// state it had when the question was asked (`pending` or `re-review`).
+    /// The caller keeps that state while the question is open.
+    Answered {
+        back_to: ItemState,
+    },
 }
 
 /// The state `action` leads to, or why it is refused (worded for a toast).
@@ -80,12 +90,15 @@ pub fn transition(state: ItemState, action: ItemAction) -> Result<ItemState, &'s
         (Pending | ReReview, Accept | Note) => Ok(Accepted),
         (Pending | ReReview, RequestChange) => Ok(ChangeRequested),
         (Pending | ReReview, Ask) => Ok(QuestionOpen),
-        (QuestionOpen, Answered) => Ok(Pending),
+        (QuestionOpen, Answered { back_to }) if back_to.awaits_reviewer() => Ok(back_to),
+        (QuestionOpen, Answered { .. }) => {
+            Err("A question can only return to pending or re-review")
+        }
         (QuestionOpen, _) => Err("A question is still open on this item"),
         (ChangeRequested, _) => {
             Err("Waiting for the developer's reply; the item returns for re-review")
         }
-        (_, Answered) => Err("No question is open on this item"),
+        (_, Answered { .. }) => Err("No question is open on this item"),
     }
 }
 
@@ -335,6 +348,60 @@ pub struct StoredItem {
     pub state: ItemState,
 }
 
+/// Whether an item still matches the change it reviews. Stored as an integer
+/// in `design_review_items.stale` (0, 1, 2); an unknown value reads as
+/// `Current`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Staleness {
+    #[default]
+    Current,
+    /// A decision whose recorded paths have all left the diff.
+    PossiblyStale,
+    /// The inputs no longer produce the item (a superseded decision, a hit
+    /// that is now covered, a vanished section). Kept for its thread.
+    Retired,
+}
+
+impl Staleness {
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Staleness::Current => 0,
+            Staleness::PossiblyStale => 1,
+            Staleness::Retired => 2,
+        }
+    }
+
+    pub fn from_i64(value: i64) -> Self {
+        match value {
+            1 => Staleness::PossiblyStale,
+            2 => Staleness::Retired,
+            _ => Staleness::Current,
+        }
+    }
+
+    /// The agenda row's suffix.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Staleness::Current => "",
+            Staleness::PossiblyStale => " ⚠ stale?",
+            Staleness::Retired => " · off agenda",
+        }
+    }
+
+    /// The content pane's banner.
+    pub fn banner(self) -> Option<&'static str> {
+        match self {
+            Staleness::Current => None,
+            Staleness::PossiblyStale => {
+                Some("Possibly stale: none of this decision's files are in the diff any more")
+            }
+            Staleness::Retired => {
+                Some("No longer on the agenda: what produced this item is gone; its thread is kept")
+            }
+        }
+    }
+}
+
 /// One row of the merged agenda.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedItem {
@@ -347,7 +414,7 @@ pub struct PlannedItem {
     pub title: String,
     pub paths: Vec<String>,
     pub state: ItemState,
-    pub stale: bool,
+    pub stale: Staleness,
 }
 
 /// "Possibly stale": a decision whose recorded paths have all left the
@@ -368,7 +435,7 @@ pub fn possibly_stale(kind: &str, paths: &[String], current_diff: Option<&[Strin
 /// item's id and state; its position, title, label and paths follow the new
 /// derivation. Drafts with no match are new and `Pending`. A stored item that
 /// no draft matches (its decision was superseded, its hit is now covered)
-/// stays, after the derived ones and flagged stale, because its thread
+/// stays, after the derived ones and marked `Retired`, because its thread
 /// belongs to the review.
 pub fn merge_agenda(
     existing: &[StoredItem],
@@ -398,7 +465,11 @@ pub fn merge_agenda(
             title: draft.title.clone(),
             paths: draft.paths.clone(),
             state,
-            stale: possibly_stale(draft.kind.as_str(), &draft.paths, current_diff),
+            stale: if possibly_stale(draft.kind.as_str(), &draft.paths, current_diff) {
+                Staleness::PossiblyStale
+            } else {
+                Staleness::Current
+            },
         });
     }
     for (i, e) in existing.iter().enumerate() {
@@ -411,7 +482,7 @@ pub fn merge_agenda(
                 title: e.title.clone(),
                 paths: e.paths.clone(),
                 state: e.state,
-                stale: true,
+                stale: Staleness::Retired,
             });
         }
     }
@@ -570,7 +641,10 @@ mod tests {
         let merged = merge_agenda(&existing, &second, None);
         assert_eq!(merged.len(), second.len() + 2);
         let tail: Vec<_> = merged[second.len()..].iter().collect();
-        assert!(tail.iter().all(|m| m.stale && m.existing_id.is_some()));
+        assert!(
+            tail.iter()
+                .all(|m| m.stale == Staleness::Retired && m.existing_id.is_some())
+        );
     }
 
     #[test]
@@ -599,12 +673,15 @@ mod tests {
             has_unexplained_artifact: false,
         });
         let merged = merge_agenda(&[], &drafts, cur);
-        assert!(merged.iter().find(|m| m.kind == "decision").unwrap().stale);
+        assert_eq!(
+            merged.iter().find(|m| m.kind == "decision").unwrap().stale,
+            Staleness::PossiblyStale
+        );
         assert!(
             merged
                 .iter()
                 .filter(|m| m.kind != "decision")
-                .all(|m| !m.stale)
+                .all(|m| m.stale == Staleness::Current)
         );
     }
 
@@ -642,13 +719,16 @@ mod tests {
         assert_eq!(transition(Pending, Note), Ok(Accepted));
         assert_eq!(transition(Pending, RequestChange), Ok(ChangeRequested));
         assert_eq!(transition(Pending, Ask), Ok(QuestionOpen));
-        assert_eq!(transition(QuestionOpen, Answered), Ok(Pending));
+        let answered = |back_to| Answered { back_to };
+        assert_eq!(transition(QuestionOpen, answered(Pending)), Ok(Pending));
+        assert_eq!(transition(QuestionOpen, answered(ReReview)), Ok(ReReview));
+        assert!(transition(QuestionOpen, answered(Accepted)).is_err());
         assert_eq!(transition(ReReview, Accept), Ok(Accepted));
         assert_eq!(transition(ReReview, RequestChange), Ok(ChangeRequested));
         assert!(transition(QuestionOpen, Accept).is_err());
         assert!(transition(ChangeRequested, Accept).is_err());
         assert!(transition(Accepted, Ask).is_err());
-        assert!(transition(Pending, Answered).is_err());
+        assert!(transition(Pending, answered(Pending)).is_err());
         for state in [Pending, QuestionOpen, ChangeRequested, ReReview, Accepted] {
             assert_eq!(ItemState::parse(state.as_str()), state);
         }

@@ -24,6 +24,11 @@ impl App {
                 if room.usage.drill.is_some_and(|g| g >= groups) {
                     room.usage.drill = None;
                 }
+                let calls = match room.usage.drill {
+                    Some(group) => room.usage.table().groups[group].rows.len(),
+                    None => 0,
+                };
+                room.usage.call_selected = room.usage.call_selected.min(calls.saturating_sub(1));
             }
             Err(err) => {
                 let message = format!("cannot read the usage ledger: {err}");

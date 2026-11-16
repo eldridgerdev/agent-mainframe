@@ -1769,6 +1769,9 @@ fn run_loop<B: Backend + io::Write>(
         if app.poll_learning_answers_bg() {
             force_redraw = true;
         }
+        if app.design_review_opening.is_some() && app.poll_design_review_opening() {
+            force_redraw = true;
+        }
         if !app.pr_workspace_owns_engines() && app.poll_review_questions() {
             force_redraw = true;
         }

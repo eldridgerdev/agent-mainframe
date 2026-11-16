@@ -165,7 +165,9 @@ impl App {
             created_at: now.clone(),
         };
 
-        let outcome = (|| -> anyhow::Result<ItemState> {
+        // One transaction, so a failed write leaves none of the action behind
+        // and the toast's "nothing changed" is true.
+        let outcome = db.design_review_transaction(|db| -> anyhow::Result<ItemState> {
             match (action, text, answer) {
                 (ItemAction::Accept, _, _) => {}
                 (ItemAction::Note | ItemAction::RequestChange, Some(text), _) => {
@@ -179,7 +181,8 @@ impl App {
                         Some(answer.level),
                         answer.body,
                     ))?;
-                    let back = transition(next, ItemAction::Answered)
+                    let back_to = ItemState::parse(&item.state);
+                    let back = transition(next, ItemAction::Answered { back_to })
                         .map_err(|message| anyhow::anyhow!(message))?;
                     db.set_design_review_item_state(&item.id, back.as_str(), &now)?;
                     return Ok(back);
@@ -188,7 +191,7 @@ impl App {
             }
             db.set_design_review_item_state(&item.id, next.as_str(), &now)?;
             Ok(next)
-        })();
+        });
 
         match outcome {
             Ok(state) => {

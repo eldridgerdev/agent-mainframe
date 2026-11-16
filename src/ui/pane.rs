@@ -57,6 +57,7 @@ pub(crate) const LEADER_COMMANDS: &[(&str, &str, &str)] = &[
     ("Review & plan", "V", "Check pending diff review"),
     ("Review & plan", "f", "Final review"),
     ("Review & plan", "W", "AI Review"),
+    ("Review & plan", "y", "Design Review (Claude only for now)"),
     ("Review & plan", "G", "PR Workspace (experimental)"),
     ("Review & plan", "U", "PR Triage (legacy)"),
     ("Remote & help", "c", "Copy Claude /rc URL"),

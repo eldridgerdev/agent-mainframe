@@ -6,8 +6,9 @@ phases are in [the plan](../../backlog/design-review-plan.md).
 
 Design Review has two halves. The **Decision Log** (Phase 1, built) has the
 agent record the choices a reviewer would question while it works. The
-**review room** (Phases 2–4, not built yet) lays those records out as an
-agenda.
+**review room** lays those records out as an agenda. Phase 3 built the room
+shell (agenda, content, thread, Usage tab); the packet builder (Phase 2b), the
+question ladder above L0 and refinement (Phase 4) come later.
 
 ```text
 src/design_review/          # pure, no App
@@ -15,7 +16,14 @@ src/design_review/          # pure, no App
 ├── record.rs    # DecisionKind, field caps, DecisionRecord, OutboxLine
 ├── outbox.rs    # .amf/design-review/outbox.jsonl: append, read_from
 └── capture.rs   # `amf decision add` (git-derived head and paths)
+src/design_review/agenda.rs # pure: agenda derivation, merge, item states
+src/design_review/usage.rs  # pure: Usage tab aggregation and Markdown copy
 src/app/design_review/      # App glue: ingest_design_review_outbox()
+├── room.rs      # AppMode::DesignReview state, open/close, agenda storage
+├── actions.rs   # accept / note / request change / ask, open files
+├── usage_tab.rs # ledger reload, grouping, drill-down, copy
+└── snapshot.rs  # base/head commit, diff fingerprint, changed files
+src/handlers/design_review.rs, src/ui/dialogs/design_review.rs  # keys, draw
 src/db/design_review.rs     # decisions, outbox offsets, project cleanup
 src/app/setup.rs            # ensure_design_review_instructions()
 ```
@@ -120,3 +128,65 @@ phases need: `design_decisions`, `design_review_rounds`,
 `tail_sha256`; a NULL fingerprint re-reads the outbox from 0. Each table
 carries `project_id` for cleanup. Ledger token counts are nullable: absent
 means unavailable, not zero.
+
+## Review room
+
+`AppMode::DesignReview(Box<DesignReviewRoom>)`, opened with leader `y` from a
+session view (`Ctrl+Space`, `y`). `y` was the only unused letter in the leader
+menu that was not a scroll key (`j`/`k`) and not a Learning/diff key; the
+menu entry is in `ui/pane.rs` and the handler is in `handlers/view.rs`. Esc
+or `q` returns to the session view. The room creates no session row.
+
+- **Open gate.** `open_design_review` asks the one gate
+  (`design_review_unavailable_reason`) and toasts `Design Review is <reason>`;
+  a feature without the flag toasts `Design Review is off for this feature`;
+  no database also refuses. Nothing is created on a refusal.
+- **Open sequence.** Ingest the outbox, read the git snapshot, find or create
+  round 1 (`design_review_rounds`: base and head commit, diff fingerprint),
+  call `request_design_review_packet(pi, fi, round)` (a no-op that Phase 2b
+  fills), then derive and store the agenda.
+- **Agenda derivation is pure** (`agenda::derive_agenda`): brief,
+  architecture, key flow, fit, each non-superseded decision (`d<seq> <title>`),
+  the `unexplained` artifact (only when stored), each uncovered detector hit,
+  each decision's `--ask` (`d<seq>? <ask>`), plan drift. Items are matched on
+  reopen by `(kind, ref_key)` (section key, decision uid, `<detector>:<path>`)
+  in `merge_agenda`: a match keeps id, state and thread and takes the new
+  position, title and paths; a new item is `pending`; an item the inputs no
+  longer produce stays, after the derived ones, flagged stale.
+- **Possibly stale** is a decision item whose recorded paths have all left the
+  current diff (`possibly_stale`). It is unknown (false) without a loadable
+  diff and for a decision with no paths.
+- **States** (`ItemState`, stored as text in `design_review_items.state`):
+  `pending`, `question-open`, `change-requested`, `re-review`, `accepted`.
+  `agenda::transition` is the one table: accept and note from pending or
+  re-review go to accepted, request change goes to change-requested, ask goes
+  to question-open and the answer returns it to pending. Change-requested and
+  accepted accept no action until Phase 4 brings replies (`re-review`). Every
+  action writes the database first; the room's copy changes only after the
+  write succeeded.
+- **Threads** are `design_review_turns` (`reviewer`, `record`; the ladder's
+  presenter and developer roles are later). Note, request-change and ask text
+  is a reviewer turn.
+- **Ask is L0 only** (`actions::answer_question`): it quotes the decision's
+  stored why and rejected options as a `record` turn at level `L0`, or says no
+  decision is recorded. L1 and L2 branch from that function once the staff
+  runner is merged.
+- **Content** is Markdown through the shared renderer with Mermaid: a packet
+  section shows the newest `design_review_artifacts` row for its key by id
+  (`latest_design_review_artifact`) and reads "Not prepared yet" when there is
+  none; a decision, ask or detector hit is rendered from its record. Content
+  and thread are re-read on every selection.
+- **Open files** (`o`/Enter) opens the ordinary diff viewer on the item's first
+  path (`DiffViewerState::focus_path`, which also matches a directory) with
+  `return_to` set to the room, so closing the viewer lands back in it.
+- **Usage tab** (`Tab` or `u`): aggregation is pure
+  (`design_review::usage`). Groupings cycle with `g` (phase, task, agent, model,
+  item, round); `In` is input plus cache read plus cache write; `Eff` is shown
+  only for a group with one model (`-` otherwise, and never for the total);
+  `~` marks estimated rows, `*` an assumed price, `-` an unavailable figure.
+  The footer is `Premium $x · Staff $y · Saved by cache $z (n sections
+  reused)`, premium being agent `developer`. Enter opens a group's calls, `y`
+  copies the table as Markdown. The header shows the feature's dollar total
+  (`—` when the ledger has none). The Usage tab prices each call at its own
+  model's rate, so it is the accurate figure and may disagree with the sidebar
+  (#863); help and the tab say so.

@@ -571,6 +571,9 @@ pub struct DiffViewerState {
     /// cursor and loaded list intact). `None` for every local-feature viewer,
     /// which returns to `from_view`.
     pub return_to: Option<Box<AppMode>>,
+    /// A file (or directory) to select once the first load finishes; the
+    /// Design Review room uses it to open a decision's linked files.
+    pub focus_path: Option<String>,
     /// A PR review's saved comments whose file is no longer in the PR's diff
     /// (the PR changed since the draft was saved). Not shown in the file list,
     /// but written back with every save so a PR update never loses a comment.
@@ -915,6 +918,7 @@ impl DiffViewerState {
         Self {
             from_view,
             return_to: None,
+            focus_path: None,
             pr_detached_line_comments: std::collections::HashMap::new(),
             pr_detached_file_comments: std::collections::HashMap::new(),
             pr_submit: None,

@@ -1001,7 +1001,7 @@ pub fn format_feature_token_usage(
     format!("usage {}", format_token_usage_summary(usage, pricing))
 }
 
-fn format_dollar_cost(usd: f64) -> String {
+pub(crate) fn format_dollar_cost(usd: f64) -> String {
     if usd < 0.005 {
         "<$0.01".to_string()
     } else if usd < 10.0 {

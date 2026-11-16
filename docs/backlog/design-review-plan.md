@@ -776,16 +776,17 @@ uses the same ledger to check this table against a real feature.
 
 ### Phase 3 — Review room
 
-- [ ] `AppMode::DesignReview`, handler, renderer, footer, help
-- [ ] Claude-only label in the header and help; refusal toast elsewhere
-- [ ] Agenda derivation and item states, including the "possibly stale"
+- [x] `AppMode::DesignReview`, handler, renderer, footer, help
+- [x] Claude-only label in the header and help; refusal toast elsewhere
+- [x] Agenda derivation and item states, including the "possibly stale"
       marker
-- [ ] Pick a free entry key from the keymap
-- [ ] Persisted threads; ladder levels L0–L2
-- [ ] Open linked files in the diff viewer
-- [ ] Usage tab: six groupings, drill-down to calls, premium and staff
+- [x] Pick a free entry key from the keymap
+- [ ] Persisted threads; ladder levels L0–L2 (threads and L0 done; L1–L2
+      wait for the staff-run branch)
+- [x] Open linked files in the diff viewer
+- [x] Usage tab: six groupings, drill-down to calls, premium and staff
       split, provenance markers, copy as Markdown
-- [ ] One-line cost total in the header
+- [x] One-line cost total in the header
 
 ### Phase 4 — Refinement
 

@@ -4,6 +4,7 @@ mod attention;
 mod automation;
 mod clone_project_form;
 mod design_review;
+mod design_review_room;
 mod editor_lifecycle;
 mod feature_sessions;
 mod final_review;

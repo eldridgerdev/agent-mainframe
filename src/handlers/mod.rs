@@ -5,6 +5,7 @@ mod clone_project;
 mod compose;
 mod config_wizard;
 mod context_settings;
+mod design_review;
 mod dialog;
 mod diff;
 pub(crate) mod diff_review;
@@ -47,6 +48,7 @@ pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
 pub use config_wizard::handle_config_wizard_key;
 pub use context_settings::handle_context_settings_key;
+pub use design_review::handle_design_review_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -132,6 +134,7 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::Todos(_) => handle_todos_key(app, key),
         AppMode::Learning(_) => handle_learning_key(app, key),
+        AppMode::DesignReview(_) => handle_design_review_key(app, key),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
         AppMode::FreshContextPrompt(_) => handle_fresh_context_prompt_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),

@@ -476,6 +476,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::DesignReview(room) = &mut app.mode {
+        super::dialogs::draw_design_review(frame, room, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
+        return;
+    }
+
     if matches!(app.mode, AppMode::Viewing(_)) {
         // `message` is shared by dashboard status bars and dialog validation,
         // but pane view should not leave AMF-owned text painted over the

@@ -210,8 +210,15 @@ impl App {
                         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
                 }
                 state.group_amf_files();
+                let focus = state.focus_path.take().and_then(|focus| {
+                    let focus = focus.trim_end_matches('/').to_string();
+                    state.files.iter().position(|file| {
+                        file.path == focus || file.path.starts_with(&format!("{focus}/"))
+                    })
+                });
                 state.selected_file = selected_path
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
+                    .or(focus)
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
                 state.reapply_context_expansion();

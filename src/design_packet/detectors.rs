@@ -86,11 +86,26 @@ fn is_new(file: &DiffFile) -> bool {
     )
 }
 
-fn lines_of(file: &DiffFile, kind: DiffLineKind) -> impl Iterator<Item = &DiffLine> {
+/// A diff line's source text. The diff parser keeps git's one-character
+/// `+`/`-`/` ` prefix in `DiffLine::text`; every detector reads lines through
+/// here so none of them sees it.
+fn source_text(line: &DiffLine) -> &str {
+    let prefix = match line.kind {
+        DiffLineKind::Added => '+',
+        DiffLineKind::Removed => '-',
+        DiffLineKind::Context => ' ',
+        DiffLineKind::NoNewlineMarker => return &line.text,
+    };
+    line.text.strip_prefix(prefix).unwrap_or(&line.text)
+}
+
+/// The source text of `file`'s lines of `kind`.
+fn lines_of(file: &DiffFile, kind: DiffLineKind) -> impl Iterator<Item = &str> {
     file.hunks
         .iter()
         .flat_map(|h| h.lines.iter())
         .filter(move |l| l.kind == kind)
+        .map(source_text)
 }
 
 /// Where a manifest line sits: the TOML table header above it (TOML files
@@ -221,10 +236,11 @@ fn lines_in_scope(
             if line.kind != DiffLineKind::Context && line.kind != own {
                 continue;
             }
-            if line.kind == kind && want(&scope, &line.text) {
-                out.push(line.text.trim().to_owned());
+            let text = source_text(line);
+            if line.kind == kind && want(&scope, text) {
+                out.push(text.trim().to_owned());
             }
-            scope.feed(&line.text);
+            scope.feed(text);
         }
     }
     out
@@ -370,7 +386,7 @@ fn migration_hits(files: &[DiffFile]) -> Vec<DetectorHit> {
             let lower = file.path.to_ascii_lowercase();
             let by_path = is_new(file) && (lower.contains("migrations/") || is_schema_file(&lower));
             let by_const = file.path == "src/db/migrations.rs"
-                && lines_of(file, DiffLineKind::Added).any(|l| l.text.contains("MIGRATION_"));
+                && lines_of(file, DiffLineKind::Added).any(|l| l.contains("MIGRATION_"));
             (by_path || by_const).then(|| DetectorHit {
                 kind: DetectorKind::Migration,
                 paths: vec![file.path.clone()],
@@ -462,10 +478,10 @@ fn tests_deleted_hits(files: &[DiffFile]) -> Vec<DetectorHit> {
     let mut paths = Vec::new();
     for file in files.iter().filter(|f| f.status != DiffFileStatus::Deleted) {
         let r = lines_of(file, DiffLineKind::Removed)
-            .filter(|l| is_test_attr(&l.text))
+            .filter(|l| is_test_attr(l))
             .count();
         let a = lines_of(file, DiffLineKind::Added)
-            .filter(|l| is_test_attr(&l.text))
+            .filter(|l| is_test_attr(l))
             .count();
         removed += r;
         added += a;
@@ -531,7 +547,8 @@ mod tests {
         }
     }
 
-    /// `body` lines: `+x` added, `-x` removed, ` x` context.
+    /// `body` lines: `+x` added, `-x` removed, ` x` context. The text keeps
+    /// its prefix, as `crate::diff`'s parser leaves it.
     fn file(path: &str, status: DiffFileStatus, body: &[&str]) -> DiffFile {
         let lines = body
             .iter()
@@ -541,7 +558,7 @@ mod tests {
                     b'-' => DiffLineKind::Removed,
                     _ => DiffLineKind::Context,
                 };
-                line(kind, &l[1..])
+                line(kind, l)
             })
             .collect();
         DiffFile {
@@ -584,6 +601,50 @@ mod tests {
         assert!(detect(&[no], &[]).is_empty());
         let table = modified("Cargo.toml", &["+[dependencies.tokio]", "+version = \"1\""]);
         assert_eq!(kinds(&detect(&[table], &[])), [DetectorKind::Dependency]);
+    }
+
+    /// Through the real parser, not the fixture: an added dependency, a
+    /// removed test and a new migration constant are all found.
+    #[test]
+    fn parsed_git_diffs_are_detected() {
+        let patch = "\
+diff --git a/Cargo.toml b/Cargo.toml
+index 1111111..2222222 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -3,3 +3,4 @@
+ version = \"0.1.0\"
+ 
+ [dependencies]
++sha2 = \"0.10\"
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,4 +1,1 @@
+ pub fn a() {}
+-#[test]
+-fn checks_a() {}
+-
+diff --git a/src/db/migrations.rs b/src/db/migrations.rs
+index 1111111..2222222 100644
+--- a/src/db/migrations.rs
++++ b/src/db/migrations.rs
+@@ -1,1 +1,2 @@
+ const MIGRATION_001: &str = \"\";
++const MIGRATION_002: &str = \"\";
+";
+        let files = crate::diff::parse_unified_diff(patch).unwrap();
+        let mut found = kinds(&detect(&files, &[]));
+        found.sort_by_key(|k| k.as_str());
+        assert_eq!(
+            found,
+            [
+                DetectorKind::Dependency,
+                DetectorKind::Migration,
+                DetectorKind::TestsDeleted
+            ]
+        );
     }
 
     #[test]

@@ -1098,6 +1098,7 @@ impl App {
     pub(crate) fn poll_markdown_diagrams(&mut self) -> bool {
         let (diagrams, lines) = match &mut self.mode {
             AppMode::MarkdownViewer(state) => (&mut state.diagrams, &mut state.rendered_lines),
+            AppMode::DesignReview(room) => (&mut room.diagrams, &mut room.content_lines),
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review => {
                 (&mut state.review_diagrams, &mut state.review_rendered_lines)
             }
@@ -1114,6 +1115,7 @@ impl App {
     pub(crate) fn markdown_diagrams_pending(&self) -> bool {
         match &self.mode {
             AppMode::MarkdownViewer(state) => state.diagrams.is_pending(),
+            AppMode::DesignReview(room) => room.diagrams.is_pending(),
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review => {
                 state.review_diagrams.is_pending()
             }

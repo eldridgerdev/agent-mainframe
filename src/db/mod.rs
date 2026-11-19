@@ -876,6 +876,18 @@ impl AmfDb {
         learning::delete_sessions_for_project(&self.conn, project_id)
     }
 
+    /// Run several Design Review writes as one `BEGIN IMMEDIATE` transaction,
+    /// so a failure partway leaves nothing behind. `f` must not start its own.
+    pub fn design_review_transaction<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let value = f(self)?;
+        tx.commit()?;
+        Ok(value)
+    }
+
     /// Insert an ingested Design Review decision unless its uid is known.
     pub fn insert_design_decision_if_absent(
         &self,
@@ -905,6 +917,74 @@ impl AmfDb {
         cursor: &crate::design_review::outbox::OutboxCursor,
     ) -> Result<()> {
         design_review::set_outbox_cursor(&self.conn, project_id, feature_id, cursor)
+    }
+
+    pub fn design_review_latest_round(
+        &self,
+        feature_id: &str,
+    ) -> Result<Option<design_review::DesignReviewRound>> {
+        design_review::latest_round(&self.conn, feature_id)
+    }
+
+    pub fn insert_design_review_round(
+        &self,
+        round: &design_review::DesignReviewRound,
+    ) -> Result<()> {
+        design_review::insert_round(&self.conn, round)
+    }
+
+    pub fn design_review_items(
+        &self,
+        round_id: &str,
+    ) -> Result<Vec<design_review::DesignReviewItem>> {
+        design_review::list_items(&self.conn, round_id)
+    }
+
+    pub fn insert_design_review_item(&self, item: &design_review::DesignReviewItem) -> Result<()> {
+        design_review::insert_item(&self.conn, item)
+    }
+
+    pub fn update_design_review_item_layout(
+        &self,
+        item: &design_review::DesignReviewItem,
+    ) -> Result<()> {
+        design_review::update_item_layout(&self.conn, item)
+    }
+
+    pub fn set_design_review_item_state(
+        &self,
+        item_id: &str,
+        state: &str,
+        now: &str,
+    ) -> Result<()> {
+        design_review::set_item_state(&self.conn, item_id, state, now)
+    }
+
+    pub fn design_review_turns(
+        &self,
+        item_id: &str,
+    ) -> Result<Vec<design_review::DesignReviewTurn>> {
+        design_review::list_turns(&self.conn, item_id)
+    }
+
+    pub fn append_design_review_turn(&self, turn: &design_review::DesignReviewTurn) -> Result<()> {
+        design_review::append_turn(&self.conn, turn)
+    }
+
+    /// The newest packet section artifact (by id) of `section`.
+    pub fn latest_design_review_artifact(
+        &self,
+        feature_id: &str,
+        section: &str,
+    ) -> Result<Option<design_review::DesignReviewArtifact>> {
+        design_review::latest_artifact(&self.conn, feature_id, section)
+    }
+
+    pub fn design_review_usage(
+        &self,
+        feature_id: &str,
+    ) -> Result<Vec<crate::design_review::usage::UsageRow>> {
+        design_review::list_usage(&self.conn, feature_id)
     }
 
     /// Drop a deleted project's Design Review history. Feature deletion keeps

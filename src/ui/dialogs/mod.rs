@@ -5,6 +5,7 @@ mod compose;
 mod config_wizard;
 mod context_settings;
 mod debug;
+mod design_review;
 mod diff;
 mod dormant;
 mod editor_view;
@@ -44,6 +45,7 @@ pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
 pub use context_settings::draw_context_settings_dialog;
 pub use debug::draw_debug_log;
+pub use design_review::draw_design_review;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use dormant::draw_dormant_view;
 pub use feature::{

@@ -1,12 +1,18 @@
 //! Design Review App glue (`docs/development/features/design-review.md`).
 //!
-//! Phase 1 owns only ingest: moving the agent's outbox lines into `amf.db`.
+//! Ingest moves the agent's outbox lines into `amf.db`; the review room
+//! (`room`, `actions`, `usage_tab`) reads them back as an agenda.
 //! The pure pieces (gate, record caps, outbox format, CLI) live in
 //! `crate::design_review`.
 
 use crate::db::design_review::DesignDecision;
 use crate::design_review::outbox;
 use crate::design_review::record::OutboxLine;
+
+pub(crate) mod actions;
+pub(crate) mod room;
+mod snapshot;
+pub(crate) mod usage_tab;
 
 use super::App;
 
@@ -132,5 +138,14 @@ impl App {
             );
         }
         inserted
+    }
+}
+
+/// A snapshot whose diff is exactly `files`, for tests that need a known diff.
+#[cfg(test)]
+pub(crate) fn room_snapshot_for_test(files: Vec<crate::diff::DiffFile>) -> snapshot::RoomSnapshot {
+    snapshot::RoomSnapshot {
+        files: Some(files),
+        ..Default::default()
     }
 }

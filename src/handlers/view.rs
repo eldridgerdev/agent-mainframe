@@ -520,6 +520,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('W') => {
             app.open_ai_review_from_view();
         }
+        KeyCode::Char('y') => {
+            app.open_design_review_from_view();
+        }
         _ => app.leader_unrecognised(&key),
     }
 

@@ -1127,6 +1127,9 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
+    /// A Design Review room whose git snapshot is being read in the
+    /// background (`App::poll_design_review_opening`).
+    pub(crate) design_review_opening: Option<design_review::room::DesignReviewOpening>,
     /// Receiver for the optional Expert review of a draft plan. Separate again
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.

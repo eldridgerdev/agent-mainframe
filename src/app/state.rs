@@ -562,6 +562,9 @@ pub enum AppMode {
     /// about what you're looking at (`crate::app::learning`).
     #[allow(dead_code)] // Entered by the plan's Epic 4 dashboard key.
     Learning(Box<LearningViewState>),
+    /// The Design Review room: agenda, content and thread panes, and the
+    /// Usage tab (`crate::app::design_review::room`).
+    DesignReview(Box<crate::app::design_review::room::DesignReviewRoom>),
     TodoQuickCapture(TodoQuickCaptureState),
     /// Collect the user's instruction before starting a fresh-context agent
     /// session (see `FreshContextPromptState`).

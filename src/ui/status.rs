@@ -1032,6 +1032,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Esc", key_style()),
             Span::raw(" close Learning Mode"),
         ]),
+        AppMode::DesignReview(_) => Line::from(vec![
+            Span::styled(" Esc", key_style()),
+            Span::raw(" close Design Review"),
+        ]),
         AppMode::Dormant(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" open  "),

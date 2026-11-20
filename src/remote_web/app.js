@@ -295,18 +295,28 @@ function showHome() {
   if (snapshot) renderHome();
 }
 
+// A dot that is purely decorative: the row's text already says the same.
+function statusDot(kind) {
+  const dot = el("span", `status-dot ${kind}`);
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
+}
+
 function featureItem(feature, { showProject, href }) {
-  const li = el("li");
+  const li = el("li", "feature-row");
   if (feature.needs_attention) li.classList.add("attention");
   if (feature.status !== "stopped") li.classList.add("running");
-  li.append(el("div", "item-title", feature.feature_name));
-  const sub = [showProject ? feature.project_name : null, feature.status, feature.agent]
+  const text = el("div", "grow");
+  text.append(el("div", "item-title", feature.feature_name));
+  const sub = [showProject ? feature.project_name : null, feature.status]
     .filter(Boolean).join(" · ");
-  li.append(el("div", "item-sub", sub));
+  text.append(el("div", "item-sub", sub));
   if (feature.needs_attention && feature.attention_reason) {
-    li.append(el("div", "item-reason", feature.attention_detail
+    text.append(el("div", "item-reason", feature.attention_detail
       ? `${feature.attention_reason}: ${feature.attention_detail}` : feature.attention_reason));
   }
+  li.append(statusDot(feature.needs_attention ? "attention" : feature.status), text);
+  if (feature.agent) li.append(el("span", "chip", feature.agent));
   li.addEventListener("click", () =>
     navigate(href ?? `#/f/${encodeURIComponent(feature.feature_id)}`));
   return li;
@@ -324,9 +334,13 @@ let lastProjectsSignature = null;
 function renderHome() {
   const all = features();
   const attention = all.filter((f) => f.needs_attention);
-  $("status-meta").textContent =
-    `${attention.length} need${attention.length === 1 ? "s" : ""} attention · updated ` +
-    new Date(lastOk).toLocaleTimeString();
+  const running = all.filter((f) => f.status !== "stopped").length;
+  $("stats").hidden = all.length === 0;
+  $("stat-attention").textContent = attention.length;
+  $("stat-attention").parentElement.classList.toggle("zero", attention.length === 0);
+  $("stat-running").textContent = running;
+  $("stat-stopped").textContent = all.length - running;
+  $("status-meta").textContent = `Updated ${new Date(lastOk).toLocaleTimeString()}`;
 
   // Needs-attention rows jump straight to the session to answer in.
   $("attention-heading").hidden = attention.length === 0;
@@ -438,7 +452,11 @@ function renderFeature(id) {
     const li = el("li", "with-remove");
     const text = el("div", "grow");
     text.append(el("div", "item-title", session.label || session.kind));
-    text.append(el("div", "item-sub", session.live ? session.kind : `${session.kind} · not running`));
+    // The kind only adds something when the label doesn't already say it.
+    const kind = (session.label || "").toLowerCase() === session.kind ? null : session.kind;
+    text.append(el("div", "item-sub", [kind, session.live ? "running" : "not running"]
+      .filter(Boolean).join(" · ")));
+    li.append(statusDot(session.live ? "live" : "stopped"));
     const remove = el("button", "remove", "×");
     remove.setAttribute("aria-label", `Remove ${session.label}`);
     remove.addEventListener("click", (e) => {
@@ -512,7 +530,10 @@ function renderDiff(diff) {
       file.old_path && file.old_path !== file.path ? `${file.old_path} → ${file.path}` : file.path);
     const stat = el("span", "diff-stat");
     stat.append(el("span", "add", `+${file.additions}`), " ", el("span", "del", `−${file.deletions}`));
-    summary.append(el("span", "diff-status", file.status), path, stat);
+    const status = el("span", `diff-status ${file.status}`, file.status.charAt(0).toUpperCase());
+    status.title = file.status;
+    status.setAttribute("aria-label", file.status);
+    summary.append(status, path, stat);
     details.append(summary);
     details.addEventListener("toggle", () => {
       if (!details.open || details.querySelector(".diff-body")) return;

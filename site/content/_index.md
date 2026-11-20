@@ -12,6 +12,19 @@ hero_image_alt = "AMF dashboard showing a project with four concurrent Claude ag
 
 agents = ["Claude Code", "Codex", "OpenCode", "Pi"]
 
+[extra.remote]
+eyebrow = "AMF Remote"
+title = "Your agents, in your pocket"
+body = "Agents stop to ask questions. AMF Remote is a Progressive Web App, served by the amf binary itself, that lets you answer them from your phone while they keep running on your computer. Scan a QR code, add it to your home screen, and get a notification when an agent needs you."
+image = "images/remote/showcase.png"
+image_alt = "AMF Remote on a phone: the attention dashboard, a live agent session waiting on a permission question, a feature's diff, and its TODO list"
+points = [
+  "Features waiting on you are pinned to the top, with the agent's question. Tap one to open that session.",
+  "Reply in a readable terminal view with quick keys, or switch to a full xterm.js terminal.",
+  "Review diffs, manage TODOs, start an agent on a TODO, and insert prompts from your library.",
+  "Installable, opens offline, and uses end-to-end encrypted Web Push. No app store, no relay, no Firebase.",
+]
+
 [[extra.features]]
 title = "One dashboard, many agents"
 body = "Run several coding-agent sessions side by side and see at a glance which ones need attention."

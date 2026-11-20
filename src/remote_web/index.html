@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#161b22">
+  <meta name="theme-color" content="#12161b" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="description" content="Run and answer your AMF coding agents from your phone.">
   <title>AMF Remote</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon-192.png">
@@ -13,6 +15,7 @@
 <body>
   <header>
     <button id="back" class="icon" aria-label="Back" hidden>&#8249;</button>
+    <img class="brand" src="/icon-192.png" alt="" width="28" height="28">
     <h1 id="title">AMF Remote</h1>
     <span id="conn" class="conn" hidden></span>
     <button id="unpair" class="link" hidden>Unpair</button>
@@ -21,11 +24,17 @@
   <main id="main">
     <!-- Pairing: shown when this browser holds no device token. -->
     <section id="view-pairing" class="view" hidden>
-      <p class="muted">
-        On the desktop, start the remote server (<kbd>Ctrl+Space C</kbd>), open
-        the pairing dialog (<kbd>Ctrl+Space Q</kbd>) and scan its QR code, or
-        type the 6-digit code here.
-      </p>
+      <div class="pair-hero">
+        <img src="/icon-192.png" alt="" width="72" height="72">
+        <h2>Pair with AMF</h2>
+        <p class="muted">Your agents keep running on your computer. This phone
+          watches them, answers them and starts new ones.</p>
+      </div>
+      <ol class="steps">
+        <li><span>On the desktop, start the remote server with <kbd>Ctrl+Space C</kbd>.</span></li>
+        <li><span>Open the pairing dialog with <kbd>Ctrl+Space Q</kbd>.</span></li>
+        <li><span>Scan its QR code, or type the 6-digit code below.</span></li>
+      </ol>
       <form id="pair-form" class="form">
         <label>Pairing code
           <input id="code" inputmode="numeric" autocomplete="one-time-code"
@@ -46,10 +55,15 @@
         <button id="push-enable" hidden>Turn on notifications</button>
         <button id="push-test" class="secondary" hidden>Send test</button>
       </div>
+      <div id="stats" class="stats" hidden>
+        <div class="stat attention"><strong id="stat-attention">0</strong><span>need you</span></div>
+        <div class="stat running"><strong id="stat-running">0</strong><span>running</span></div>
+        <div class="stat"><strong id="stat-stopped">0</strong><span>stopped</span></div>
+      </div>
       <p id="status-meta" class="muted"></p>
       <h2 id="attention-heading" hidden>Needs attention</h2>
       <ul id="attention" class="list"></ul>
-      <div class="row-between">
+      <div class="row-between section-head">
         <h2>Features</h2>
         <button id="new-feature" class="secondary small">+ New</button>
       </div>
@@ -59,7 +73,7 @@
 
     <!-- One feature: lifecycle and sessions. -->
     <section id="view-feature" class="view" hidden>
-      <div class="card">
+      <div class="card feature-card">
         <div id="feature-project" class="muted small-text"></div>
         <div id="feature-branch" class="mono small-text"></div>
         <div id="feature-summary" class="small-text" hidden></div>
@@ -87,8 +101,10 @@
         <button class="secondary" data-add="pi">Pi</button>
       </div>
       <p id="feature-message" class="muted" role="status"></p>
-      <h2>Danger zone</h2>
-      <button id="feature-delete" class="danger small">Delete feature…</button>
+      <div class="danger-zone">
+        <h2>Danger zone</h2>
+        <button id="feature-delete" class="danger small">Delete feature…</button>
+      </div>
     </section>
 
     <!-- A feature's changes against its base branch. -->

@@ -37,6 +37,24 @@
   </div>
 </section>
 
+{% if section.extra.remote %}
+{% set remote = section.extra.remote %}
+<section class="remote">
+  <p class="eyebrow">{{ remote.eyebrow }}</p>
+  <h2>{{ remote.title }}</h2>
+  <p class="remote-body">{{ remote.body }}</p>
+  <img class="remote-image" src="{{ get_url(path=remote.image) }}" alt="{{ remote.image_alt }}" loading="lazy">
+  <ul class="remote-points">
+    {% for point in remote.points %}
+    <li>{{ point }}</li>
+    {% endfor %}
+  </ul>
+  <p class="remote-actions">
+    <a class="button button-primary" href="{{ get_url(path="docs/remote/") }}">Set up AMF Remote</a>
+  </p>
+</section>
+{% endif %}
+
 <section class="agents">
   <h2>Works with the agent you already use</h2>
   <ul class="agent-list">

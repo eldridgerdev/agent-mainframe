@@ -48,6 +48,10 @@ is also what switches the interview's AI passes from writing blind to
 reading the repository: with nothing attached they run with no tool
 access at all.
 
+The plan review, like AMF's terminal Markdown viewer, renders basic Mermaid
+flowcharts and sequence diagrams as text diagrams. Press `d` to switch between
+a diagram and its source.
+
 To let the interview read a ticket the brief links to (Asana, Linear, Jira,
 and so on), configure an MCP server for it. See
 [Issue trackers in plan interviews](@/docs/configuration.md#issue-trackers-in-plan-interviews).

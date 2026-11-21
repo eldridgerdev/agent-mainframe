@@ -1,6 +1,6 @@
 +++
 title = "Reviewing Changes and PR Feedback"
-description = "Final diff review and working through pull-request comments."
+description = "Final diff review, pull-request feedback, the PR Workspace, reviewing others' PRs, and asking questions during review."
 weight = 50
 +++
 
@@ -35,6 +35,30 @@ still need a verdict before Final Review finishes without asking.
   <figcaption>Final Review's file tree, with per-file status and risk flags at a glance.</figcaption>
 </figure>
 
+## Review a pull request in the PR Workspace
+
+The PR Workspace is the main place to review a pull request and run AMF's AI
+review. From the dashboard, press `G`, or press `Ctrl+Space`, then `G` from the
+dashboard or an embedded session. Select a pull request once to open its
+files, GitHub feedback and AI findings in one shared workspace. When opened
+from a feature or its session, the picker selects that branch's PR and labels
+it `current feature`. The older standalone PR Triage / Review screens stay
+available through `Ctrl+Space`, then `U`.
+
+Use `1` for Files, `2` for Threads and `3` for AI findings. Selecting feedback
+opens its file and line in the diff alongside the discussion. `Tab` changes
+pane focus, `j` / `k` navigate or scroll the focused pane, and `z` expands it.
+Wide terminals show three panes; narrower ones collapse the navigator into a
+drawer, then show only the focused pane.
+
+`A` starts an AI review; you can keep reading files while it runs, and a
+spinner shows its stage and elapsed time. `Ctrl+X` stops it and keeps existing
+findings and your drafts. `p` previews your human review and `W` previews kept
+AI findings; posting still asks for confirmation. `F5` reopens the PR at fresh
+revisions, saving your draft first. `Esc` or `q` closes the workspace and
+saves your draft. Press `?` for the workspace's full key list. The PR
+Workspace is currently terminal-only.
+
 ## Work through pull-request feedback
 
 With an authenticated `gh` and a GitHub remote, a feature whose branch has a
@@ -43,8 +67,9 @@ embedded session's header, refreshed every few minutes in the background.
 Once that PR is merged or closed without merging, the badge switches to
 `[PR #N merged]` / `[PR #N closed]` instead of disappearing.
 
-Select a feature and press `G` to open PR Triage. You can inspect review
-threads, send an individual fix prompt or, with `B`, a batched one covering
+Open the feature's pull request in the PR Workspace (`G`) and press `2` for
+Threads, or use the older standalone PR Triage screen (`Ctrl+Space`, then
+`U`). You can inspect review threads, send an individual fix prompt or, with `B`, a batched one covering
 several comments in a single agent run, reply, and mark threads done.
 Press `W` to have AMF run its own review of the PR diff. GitHub actions are
 presented for confirmation before AMF writes to the pull request.
@@ -88,3 +113,43 @@ requests, then press `Enter`. Press `g` in the lookback dialog to switch
 between the project's `.amf/review-memory.md` and the cross-project memory
 at `~/.config/amf/review-memory.md`; project memory is the default. This
 requires authenticated `gh` and an available Claude CLI.
+
+## Review a teammate's pull request
+
+The PR Workspace (`G`) is the usual way to review someone else's pull request:
+pick it, review in Files (`1`), and press `p` to preview and post. The
+standalone review screen is still available: press `Ctrl+Space`, then `U` on a
+project row, or on a feature and then `Tab`.
+The **Review** tab lists every open pull request in the repository, including
+your own and drafts. It needs an authenticated `gh`; `r` retries the list.
+
+Press `Enter` to open a pull request in the same diff viewer as the final
+review. No agent is started and no feature is needed. AMF fetches the pull
+request into private refs and reads files from git objects, so your checked-out
+branch, uncommitted changes and stash are never touched.
+
+Approve or reject files and leave line comments, ranges and suggested changes.
+`Esc` pauses and saves your draft; `Enter` on the same pull request resumes it.
+If the pull request gained commits meanwhile, AMF flags only the files whose
+changes differ and keeps every comment.
+
+Press `q` to submit as **Comment**, **Approve** or **Request changes**, with a
+summary written with `e`. If the pull request moved on since you opened it, AMF
+won't post; press `o` to reopen it at the new commit with your draft intact.
+
+## Ask questions during review
+
+Press `Q` in Final Review, the PR Workspace (`G`) or AI PR review (`W`) to ask about
+the code under review. `Ctrl+S` sends the question and `Ctrl+H` changes the
+harness. As with AMF's other AI calls, a notice first shows the prompt that
+will run and lets you view or edit it. The AI can read repository code beyond
+the selected lines, including unchanged helpers. PR questions need a clean
+local checkout at the reviewed PR head; otherwise AMF explains the mismatch.
+
+After an answer, `e` asks a follow-up, `r` retries, `[` / `]` browse the
+conversation and `j` / `k` scroll. `Esc` returns to the same review position,
+and a running question continues in the background; `Ctrl+X` cancels it.
+
+Press `i` to turn the answer into an inline comment draft at the selected line,
+or `g` for a general review comment. Edit the text, then `Ctrl+S` opens the
+usual comment editor. Nothing is posted until you submit the review.

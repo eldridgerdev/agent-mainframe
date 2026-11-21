@@ -17,6 +17,14 @@ weight = 20
    full path, or press `Ctrl+B` to browse; `Ctrl+U` clears a field). The
    directory may be a git repository or an ordinary folder. A plain folder gets a warning and a `Ctrl+G` shortcut to run `git init`, and shows a `[no git]` tag; worktrees, diffs, issues and PRs need git.
 
+   To clone a repository instead, fill the optional URL field with an HTTPS
+   or SSH git URL. The destination defaults to a folder named after the
+   repository under your projects root (`~/code`, changed with
+   `projects.projects_root` in `~/.config/amf/config.json`). AMF checks git,
+   the URL, the destination and access to the remote first, and explains any
+   failure with commands to fix it. Canceling or a failed clone removes the
+   directory AMF created.
+
 4. Press `n` to create a feature. The form has one row per choice: name,
    worktree, agent, permission mode (Vibeless asks before every edit or
    command, Vibe edits without asking, SuperVibe never asks), the guided plan

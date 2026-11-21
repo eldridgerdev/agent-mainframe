@@ -32,16 +32,29 @@ Write each command's full output to a log file, then read the file. Never
 pipe a long-running command into `grep`, `head` or `tail`: in this shell
 `grep` is a wrapper that can hang at the end of a pipe, and output-shortening
 wrappers can swallow the lines you need. The exit code is the pass/fail
-signal:
+signal.
+
+Use a fixed log path under the git-ignored `target/` directory, one per
+command (`target/amf-check-fmt.log`, `target/amf-check-clippy.log`,
+`target/amf-check-test.log`). Write the path out in every Bash call: shell
+variables do not carry over between calls, and the Grep tool needs the
+literal path. For example:
 
 ```bash
-LOG="$(mktemp -t amf-check.XXXXXX.log)"
-cargo test --workspace --locked >"$LOG" 2>&1; echo "exit $?"
-grep -nE '^test result|FAILED|panicked|^error' "$LOG"
+mkdir -p target
+cargo test --workspace --locked >target/amf-check-test.log 2>&1; echo "exit $?"
 ```
 
-Search the log with the Grep tool or with `grep` given the file path, never
-on stdin.
+Then search it with the Grep tool, or with `grep` given the file path, never
+on stdin:
+
+```bash
+grep -nE '^test result|FAILED|panicked|^error|^warning' target/amf-check-test.log
+```
+
+`cargo fmt --check` reports failures as `Diff in <path>:<line>` blocks, not
+`error` lines, so search its log for `^Diff in`, or read the log in full
+since it is short.
 
 Report in this shape and nothing else:
 

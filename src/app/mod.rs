@@ -1069,6 +1069,9 @@ pub struct App {
     /// `build_agent_sidebar_data` is rebuilt up to ~20x/sec in Viewing mode.
     pub active_todos_sidebar_cache: HashMap<String, String>,
     pub(crate) learning_runs: learning::runtime::LearningRuns,
+    /// Design Review packet preparation: the active packet, its staff runs
+    /// and their result channels (`app/design_review/packet.rs`).
+    pub(crate) design_review_packet: design_review::packet::PacketRuntime,
     sidebar_runtime: sidebar_runtime::SidebarRuntime,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,

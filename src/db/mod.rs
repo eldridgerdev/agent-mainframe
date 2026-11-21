@@ -987,6 +987,51 @@ impl AmfDb {
         design_review::list_usage(&self.conn, feature_id)
     }
 
+    /// The cached packet section for exactly these inputs.
+    pub fn design_review_artifact(
+        &self,
+        feature_id: &str,
+        section: &str,
+        input_hash: &str,
+    ) -> Result<Option<design_review::Artifact>> {
+        design_review::artifact(&self.conn, feature_id, section, input_hash)
+    }
+
+    pub fn design_review_artifact_by_id(&self, id: i64) -> Result<Option<design_review::Artifact>> {
+        design_review::artifact_by_id(&self.conn, id)
+    }
+
+    pub fn insert_design_review_artifact(
+        &self,
+        artifact: &design_review::NewArtifact<'_>,
+    ) -> Result<i64> {
+        design_review::insert_artifact(&self.conn, artifact)
+    }
+
+    /// Append one Design Review ledger row; returns its id.
+    pub fn insert_design_review_usage(
+        &self,
+        row: &crate::token_cost::ledger::LedgerRow,
+        feature_id: &str,
+        project_id: &str,
+    ) -> Result<i64> {
+        design_review::insert_usage(&self.conn, row, feature_id, project_id)
+    }
+
+    pub fn list_design_review_usage(
+        &self,
+        feature_id: &str,
+    ) -> Result<Vec<design_review::UsageRecord>> {
+        design_review::list_usage_records(&self.conn, feature_id)
+    }
+
+    pub fn design_review_usage_record(
+        &self,
+        id: i64,
+    ) -> Result<Option<design_review::UsageRecord>> {
+        design_review::usage(&self.conn, id)
+    }
+
     /// Drop a deleted project's Design Review history. Feature deletion keeps
     /// it: accepted decisions are project memory.
     pub fn delete_design_review_for_project(&self, project_id: &str) -> Result<()> {

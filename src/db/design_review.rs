@@ -14,10 +14,14 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::design_review::outbox::OutboxCursor;
 use crate::design_review::record::DecisionRecord;
+use crate::token_cost::cost::TokenCounts;
+use crate::token_cost::ledger::{Agent, LedgerRow, Phase, Provenance, Task};
+use crate::token_cost::pricing::{LongPromptTier, ModelRates};
 
 /// Every Design Review table, for project-wide cleanup.
 const TABLES: [&str; 7] = [
@@ -438,6 +442,110 @@ pub fn append_turn(conn: &Connection, turn: &DesignReviewTurn) -> Result<()> {
     Ok(())
 }
 
+/// One cached packet section (`design_review_artifacts`). `section` is a
+/// `token_cost::ledger::Task` string (`brief`, `architecture`, `key-flow`,
+/// `fit`, `unexplained`, `plan-drift`); `format` is `markdown`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub id: i64,
+    pub feature_id: String,
+    pub project_id: String,
+    pub section: String,
+    pub input_hash: String,
+    pub format: String,
+    pub body: String,
+    /// The `design_review_usage` row that produced the body.
+    pub usage_id: Option<i64>,
+    pub created_at: String,
+}
+
+/// A section to cache; the id and timestamp are assigned on insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewArtifact<'a> {
+    pub feature_id: &'a str,
+    pub project_id: &'a str,
+    pub section: &'a str,
+    pub input_hash: &'a str,
+    pub format: &'a str,
+    pub body: &'a str,
+    pub usage_id: Option<i64>,
+}
+
+const ARTIFACT_COLUMNS: &str =
+    "id, feature_id, project_id, section, input_hash, format, body, usage_id, created_at";
+
+fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
+    Ok(Artifact {
+        id: row.get(0)?,
+        feature_id: row.get(1)?,
+        project_id: row.get(2)?,
+        section: row.get(3)?,
+        input_hash: row.get(4)?,
+        format: row.get(5)?,
+        body: row.get(6)?,
+        usage_id: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+/// Cache an artifact. When one with the same feature, section and hash is
+/// already stored (two preparations raced), that row is kept and its id is
+/// returned: the content is the same by construction.
+pub fn insert_artifact(conn: &Connection, artifact: &NewArtifact<'_>) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO design_review_artifacts
+            (feature_id, project_id, section, input_hash, format, body, usage_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+         ON CONFLICT(feature_id, section, input_hash) DO NOTHING",
+        params![
+            artifact.feature_id,
+            artifact.project_id,
+            artifact.section,
+            artifact.input_hash,
+            artifact.format,
+            artifact.body,
+            artifact.usage_id,
+        ],
+    )?;
+    let id = conn.query_row(
+        "SELECT id FROM design_review_artifacts
+         WHERE feature_id = ?1 AND section = ?2 AND input_hash = ?3",
+        params![artifact.feature_id, artifact.section, artifact.input_hash],
+        |row| row.get(0),
+    )?;
+    Ok(id)
+}
+
+/// The artifact for exactly these inputs, if one is cached.
+pub fn artifact(
+    conn: &Connection,
+    feature_id: &str,
+    section: &str,
+    input_hash: &str,
+) -> Result<Option<Artifact>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {ARTIFACT_COLUMNS} FROM design_review_artifacts
+                 WHERE feature_id = ?1 AND section = ?2 AND input_hash = ?3"
+            ),
+            params![feature_id, section, input_hash],
+            artifact_from_row,
+        )
+        .optional()?)
+}
+
+/// One cached packet section by row id, with its input hash and usage link.
+pub fn artifact_by_id(conn: &Connection, id: i64) -> Result<Option<Artifact>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {ARTIFACT_COLUMNS} FROM design_review_artifacts WHERE id = ?1"),
+            params![id],
+            artifact_from_row,
+        )
+        .optional()?)
+}
+
 /// A cached packet section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesignReviewArtifact {
@@ -519,6 +627,194 @@ pub fn list_usage(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// One stored ledger row with its ids.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRecord {
+    pub id: i64,
+    pub feature_id: String,
+    pub project_id: String,
+    pub row: LedgerRow,
+}
+
+fn rates_json(rates: &ModelRates) -> String {
+    serde_json::json!({
+        "input": rates.input,
+        "output": rates.output,
+        "reasoning": rates.reasoning,
+        "cache_read": rates.cache_read,
+        "cache_write_5m": rates.cache_write_5m,
+        "cache_write_1h": rates.cache_write_1h,
+        "long_prompt": rates.long_prompt.map(|tier| serde_json::json!({
+            "threshold_tokens": tier.threshold_tokens,
+            "multiplier": tier.multiplier,
+        })),
+        "assumed": rates.assumed,
+    })
+    .to_string()
+}
+
+/// Rates stored on a row; a missing or unreadable value reads as all-zero,
+/// assumed rates rather than failing the whole listing.
+fn parse_rates(text: Option<&str>) -> ModelRates {
+    let value: serde_json::Value = text
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let rate = |key: &str| value.get(key).and_then(serde_json::Value::as_f64);
+    ModelRates {
+        input: rate("input").unwrap_or(0.0),
+        output: rate("output").unwrap_or(0.0),
+        reasoning: rate("reasoning").unwrap_or(0.0),
+        cache_read: rate("cache_read").unwrap_or(0.0),
+        cache_write_5m: rate("cache_write_5m").unwrap_or(0.0),
+        cache_write_1h: rate("cache_write_1h").unwrap_or(0.0),
+        long_prompt: value.get("long_prompt").and_then(|tier| {
+            Some(LongPromptTier {
+                threshold_tokens: tier.get("threshold_tokens")?.as_u64()?,
+                multiplier: tier.get("multiplier")?.as_f64()?,
+            })
+        }),
+        assumed: value
+            .get("assumed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    }
+}
+
+fn opt_i64(value: Option<u64>) -> Option<i64> {
+    value.map(|v| i64::try_from(v).unwrap_or(i64::MAX))
+}
+
+fn opt_u64(value: Option<i64>) -> Option<u64> {
+    value.map(|v| v.max(0) as u64)
+}
+
+/// Append one ledger row. Rows are never updated. Returns its id.
+pub fn insert_usage(
+    conn: &Connection,
+    row: &LedgerRow,
+    feature_id: &str,
+    project_id: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO design_review_usage (
+            feature_id, project_id, phase, task, agent, harness, model, reasoning,
+            round, item, input, output, cache_read, cache_write_5m, cache_write_1h,
+            reasoning_tokens, effective_tokens, cost_usd, rates, provenance,
+            price_assumed, cache_hit, saved_usd, duration_ms, started_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                   ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+        params![
+            feature_id,
+            project_id,
+            row.phase.as_str(),
+            row.task.as_str(),
+            row.agent.as_str(),
+            row.harness,
+            row.model,
+            row.reasoning,
+            i64::from(row.round),
+            row.agenda_item,
+            opt_i64(row.counts.input),
+            opt_i64(row.counts.output),
+            opt_i64(row.counts.cache_read),
+            opt_i64(row.counts.cache_write_5m),
+            opt_i64(row.counts.cache_write_1h),
+            opt_i64(row.counts.reasoning),
+            opt_i64(row.effective_tokens),
+            row.cost_usd,
+            rates_json(&row.rates_applied),
+            row.provenance.as_str(),
+            row.price_assumed,
+            row.cache_hit,
+            row.saved_usd,
+            opt_i64(row.duration_ms),
+            row.started_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+const USAGE_COLUMNS: &str = "id, feature_id, project_id, phase, task, agent, harness, model,
+    reasoning, round, item, input, output, cache_read, cache_write_5m, cache_write_1h,
+    reasoning_tokens, effective_tokens, cost_usd, rates, provenance, price_assumed,
+    cache_hit, saved_usd, duration_ms, started_at";
+
+fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
+    let text = |idx: usize, value: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Text,
+            format!("unknown ledger value {value:?}").into(),
+        )
+    };
+    let phase: String = row.get(3)?;
+    let task: String = row.get(4)?;
+    let agent: String = row.get(5)?;
+    let provenance: String = row.get(20)?;
+    let started_at: String = row.get(25)?;
+    let rates: Option<String> = row.get(19)?;
+    Ok(UsageRecord {
+        id: row.get(0)?,
+        feature_id: row.get(1)?,
+        project_id: row.get(2)?,
+        row: LedgerRow {
+            phase: Phase::parse(&phase).ok_or_else(|| text(3, phase.clone()))?,
+            task: Task::parse(&task).ok_or_else(|| text(4, task.clone()))?,
+            agent: Agent::parse(&agent).ok_or_else(|| text(5, agent.clone()))?,
+            harness: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            model: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            reasoning: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            round: row
+                .get::<_, Option<i64>>(9)?
+                .map_or(0, |r| u32::try_from(r.max(0)).unwrap_or(u32::MAX)),
+            agenda_item: row.get(10)?,
+            counts: TokenCounts {
+                input: opt_u64(row.get(11)?),
+                output: opt_u64(row.get(12)?),
+                cache_read: opt_u64(row.get(13)?),
+                cache_write_5m: opt_u64(row.get(14)?),
+                cache_write_1h: opt_u64(row.get(15)?),
+                reasoning: opt_u64(row.get(16)?),
+            },
+            effective_tokens: opt_u64(row.get(17)?),
+            cost_usd: row.get::<_, Option<f64>>(18)?.unwrap_or(0.0),
+            rates_applied: parse_rates(rates.as_deref()),
+            provenance: Provenance::parse(&provenance)
+                .ok_or_else(|| text(20, provenance.clone()))?,
+            price_assumed: row.get(21)?,
+            cache_hit: row.get(22)?,
+            saved_usd: row.get(23)?,
+            duration_ms: opt_u64(row.get(24)?),
+            started_at: DateTime::parse_from_rfc3339(&started_at)
+                .map(|t| t.with_timezone(&Utc))
+                .map_err(|_| text(25, started_at.clone()))?,
+        },
+    })
+}
+
+/// A feature's ledger in insertion order.
+pub fn list_usage_records(conn: &Connection, feature_id: &str) -> Result<Vec<UsageRecord>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {USAGE_COLUMNS} FROM design_review_usage
+         WHERE feature_id = ?1 ORDER BY id ASC"
+    ))?;
+    let rows = stmt
+        .query_map(params![feature_id], usage_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// One ledger row by id.
+pub fn usage(conn: &Connection, id: i64) -> Result<Option<UsageRecord>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {USAGE_COLUMNS} FROM design_review_usage WHERE id = ?1"),
+            params![id],
+            usage_from_row,
+        )
+        .optional()?)
 }
 
 /// Remove every Design Review row of a deleted project.
@@ -658,6 +954,142 @@ mod tests {
             db.design_review_outbox_cursor("f").unwrap(),
             cursor(240, "bb")
         );
+    }
+
+    fn new_artifact<'a>(section: &'a str, hash: &'a str, body: &'a str) -> NewArtifact<'a> {
+        NewArtifact {
+            feature_id: "f",
+            project_id: "p",
+            section,
+            input_hash: hash,
+            format: "markdown",
+            body,
+            usage_id: Some(7),
+        }
+    }
+
+    #[test]
+    fn artifact_is_found_by_hash_and_a_duplicate_keeps_the_first() {
+        let (_tmp, db) = open_temp_db();
+        assert_eq!(db.design_review_artifact("f", "brief", "h1").unwrap(), None);
+        let id = db
+            .insert_design_review_artifact(&new_artifact("brief", "h1", "one"))
+            .unwrap();
+        let again = db
+            .insert_design_review_artifact(&new_artifact("brief", "h1", "other"))
+            .unwrap();
+        assert_eq!(id, again);
+        let got = db
+            .design_review_artifact("f", "brief", "h1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.id, id);
+        assert_eq!(got.body, "one");
+        assert_eq!(got.format, "markdown");
+        assert_eq!(got.usage_id, Some(7));
+        assert_eq!(got.project_id, "p");
+        assert_eq!(db.design_review_artifact("f", "fit", "h1").unwrap(), None);
+        assert_eq!(db.design_review_artifact("g", "brief", "h1").unwrap(), None);
+    }
+
+    #[test]
+    fn latest_artifact_is_the_newest_of_its_section() {
+        let (_tmp, db) = open_temp_db();
+        assert_eq!(
+            db.latest_design_review_artifact("f", "brief").unwrap(),
+            None
+        );
+        db.insert_design_review_artifact(&new_artifact("brief", "h1", "old"))
+            .unwrap();
+        db.insert_design_review_artifact(&new_artifact("fit", "h9", "fit"))
+            .unwrap();
+        db.insert_design_review_artifact(&new_artifact("brief", "h2", "new"))
+            .unwrap();
+        let latest = db
+            .latest_design_review_artifact("f", "brief")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.body, "new");
+        let full = db.design_review_artifact_by_id(latest.id).unwrap().unwrap();
+        assert_eq!(full.input_hash, "h2");
+    }
+
+    fn ledger_row(full: bool) -> LedgerRow {
+        use crate::token_cost::ledger::LedgerContext;
+        let ctx = LedgerContext {
+            phase: Phase::Prepare,
+            task: Task::KeyFlow,
+            agent: Agent::Cartographer,
+            harness: "claude".into(),
+            model: "haiku".into(),
+            reasoning: if full { "low".into() } else { String::new() },
+            round: 2,
+            agenda_item: full.then(|| "item-3".into()),
+        };
+        let counts = if full {
+            TokenCounts {
+                input: Some(1_200),
+                output: Some(300),
+                cache_read: Some(5_000),
+                cache_write_5m: Some(40),
+                cache_write_1h: Some(10),
+                reasoning: Some(0),
+            }
+        } else {
+            TokenCounts::default()
+        };
+        let started = DateTime::parse_from_rfc3339("2026-11-16T10:00:00.250Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut row = LedgerRow::from_counts(
+            ctx,
+            counts,
+            if full {
+                Provenance::Measured
+            } else {
+                Provenance::Estimated
+            },
+            full.then_some(1_500),
+            started,
+            &crate::token_tracking::TokenPricingConfig::default(),
+        );
+        if full {
+            row.cache_hit = true;
+            row.saved_usd = Some(0.0125);
+            row.price_assumed = true;
+        }
+        row
+    }
+
+    #[test]
+    fn usage_rows_round_trip_every_column() {
+        let (_tmp, db) = open_temp_db();
+        let full = ledger_row(true);
+        let empty = ledger_row(false);
+        assert!(full.rates_applied.long_prompt.is_some(), "haiku has a tier");
+        let a = db.insert_design_review_usage(&full, "f", "p").unwrap();
+        let b = db.insert_design_review_usage(&empty, "f", "p").unwrap();
+        db.insert_design_review_usage(&full, "other", "p").unwrap();
+        assert!(b > a);
+
+        let rows = db.list_design_review_usage("f").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, a);
+        assert_eq!(rows[0].feature_id, "f");
+        assert_eq!(rows[0].project_id, "p");
+        assert_eq!(rows[0].row, full);
+        assert_eq!(rows[1].row, empty);
+        assert!(rows[1].row.counts.is_all_unavailable());
+        assert_eq!(rows[1].row.agenda_item, None);
+        assert_eq!(rows[1].row.duration_ms, None);
+        assert_eq!(rows[1].row.saved_usd, None);
+        assert_eq!(rows[1].row.effective_tokens, None);
+
+        assert_eq!(
+            db.design_review_usage_record(b).unwrap().unwrap().row,
+            empty
+        );
+        assert_eq!(db.design_review_usage_record(9_999).unwrap(), None);
     }
 
     #[test]

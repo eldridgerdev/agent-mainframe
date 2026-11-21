@@ -771,8 +771,8 @@ uses the same ledger to check this table against a real feature.
       copied into the prompt
 - [ ] Any renderer gap found here goes out as its own PR, not in this work
 - [x] Mechanical unexplained-change detectors
-- [ ] Artifact cache keyed by input hash
-- [ ] A ledger row for every staff run, including cache hits and savings
+- [x] Artifact cache keyed by input hash
+- [x] A ledger row for every staff run, including cache hits and savings
 
 ### Phase 3 — Review room
 

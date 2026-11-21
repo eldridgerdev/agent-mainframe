@@ -143,7 +143,7 @@ pub(crate) const DASHBOARD_KEYS: &[(&str, &str, &str)] = &[
         "W",
         "AI Review for this feature (experimental)",
     ),
-    (AREA_REVIEW, "G", "Split PR Workspace (experimental)"),
+    (AREA_REVIEW, "G", "Split PR Workspace"),
     (
         AREA_REVIEW,
         "K",

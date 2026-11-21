@@ -1,4 +1,4 @@
-//! Experimental navigation shell over the existing PR engines.
+//! Navigation shell over the existing PR engines.
 //!
 //! AppMode stays the handler/worker boundary. Exactly one engine is installed
 //! there; inactive engines are owned by this visit, never cloned into a second

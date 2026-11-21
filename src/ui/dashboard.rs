@@ -25,7 +25,7 @@ pub(crate) const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("r", "Refresh statuses"),
     ("C", "AMF Remote server on / off"),
     ("Q", "Pair a phone (QR)"),
-    ("G", "PR Workspace (experimental)"),
+    ("G", "PR Workspace"),
     ("U", "PR Triage / Review (legacy)"),
 ];
 

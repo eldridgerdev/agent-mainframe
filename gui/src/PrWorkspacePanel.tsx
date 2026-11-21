@@ -3,7 +3,7 @@ import { asGuiError, type FeatureTarget, type GuiError } from "./api";
 import GithubProblemNotice from "./GithubProblemNotice";
 import { Hunk } from "./DiffPanel";
 import PrReviewPanel from "./PrReviewPanel";
-import { ExperimentalBadge, Icon, Spinner } from "./ui";
+import { Icon, Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import type { PrFixHandoff } from "./prTriageApi";
 import { workspaceFiles, type WorkspaceFiles } from "./prWorkspaceApi";
@@ -34,7 +34,7 @@ function ReadOnlyFiles({ workflowId }: { workflowId: string }) {
   </div>;
 }
 
-/** Experimental three-pane PR workspace. The legacy PR Triage modal remains a separate route. */
+/** Three-pane PR workspace. The legacy PR Triage modal remains a separate route. */
 export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, onStatusChange, onHandoff, onOpenPrReview }: { target: FeatureTarget; onClose: () => void; onReturnToFeature: () => void; onStatusChange: (status: PrWorkspaceStatus) => void; onHandoff?: (handoff: PrFixHandoff) => void; onOpenPrReview?: (projectId: string) => void }) {
   const aiLifecycle = useRef<AiLifecycle | null>(null);
   const workspace = usePrWorkspace({ target, onClose, onOpenPrReview, ai: aiLifecycle });
@@ -56,7 +56,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
 
   return <section className="pr-workspace-page" aria-label="PR workspace">
     <header className="pr-workspace-page-header">
-      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><ExperimentalBadge title="New and still changing. Your GitHub data is not affected." /></div>
+      <div className="pr-workspace-page-kicker"><span>Feature workspace</span></div>
       <div className="pr-workspace-page-title-row">
         <div><h1>PR workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place. Review comments and Write a review do the same jobs one at a time.</p></div>
         <div className="pr-workspace-page-actions">

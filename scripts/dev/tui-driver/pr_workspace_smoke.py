@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the experimental PR workspace in a private TUI with offline GitHub."""
+"""Exercise the PR workspace in a private TUI with offline GitHub."""
 
 import argparse
 import importlib.util

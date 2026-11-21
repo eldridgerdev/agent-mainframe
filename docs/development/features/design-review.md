@@ -291,8 +291,11 @@ or `q` returns to the session view. The room creates no session row.
   (pending or re-review) items with nothing to send refuse with a toast.
 - **Labels.** `brief::build_brief` numbers changes `C1..` and questions
   `Q1..` in agenda order and keeps a label an item already carries, so
-  a second finish of the same round does not renumber. They are stored in
-  `design_review_items.label`, which also holds the agenda's `d4` labels.
+  a second finish of the same round does not renumber. Labels held by the
+  round's items outside the brief (accepted, in re-review) are reserved, so a
+  new item never takes one and a reply's label names one item. They are
+  stored in `design_review_items.label`, which also holds the agenda's `d4`
+  labels.
   `merge_agenda` keeps a stored `C<n>`/`Q<n>` label across re-derivation
   (`brief::is_review_label`); nothing reads the `d<n>` value, since the brief
   derives its tag from the item's decision.
@@ -337,8 +340,9 @@ or `q` returns to the session view. The room creates no session row.
   `review:<reply uid>`, `seq = 0` (the CLI numbers `d<N>` from the outbox, so
   the review's records stay out of that sequence), and returns the question
   to pending. `derive_agenda` skips `review`-source decisions: they are memory,
-  not review items. An unknown label, or a kind that does not fit it, is
-  logged and skipped.
+  not review items. An unknown label, a kind that does not fit it, or a
+  reply whose item's round is already approved is logged and skipped, so an
+  approved review stays read-only.
 - **Supersedes.** Ingest marks the agent decision numbered by a later record's
   `supersedes` (`d4`, `D4` or `4`, below the record's own `seq`) as
   `superseded`; the next agenda derivation retires its item.

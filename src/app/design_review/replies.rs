@@ -11,6 +11,7 @@ use crate::design_review::brief::{RequestKind, parse_label};
 use crate::design_review::record::{ReplyKind, ReplyRecord, TITLE_CAP, WHY_CAP, truncate_chars};
 
 use super::actions::ROLE_REVIEWER;
+use super::room::VERDICT_APPROVED;
 
 /// The role of the developer's own turns.
 pub const ROLE_DEVELOPER: &str = "developer";
@@ -24,6 +25,8 @@ pub(super) enum ReplyOutcome {
     UnknownLabel,
     /// The reply kind does not fit the label (`--answer` on a change).
     Mismatch,
+    /// The item's round is approved, so the review is read-only.
+    Approved,
 }
 
 fn thread_text(kind: ReplyKind, text: &str) -> String {
@@ -61,6 +64,9 @@ pub(super) fn apply_reply(
     );
     if !fits {
         return Ok(ReplyOutcome::Mismatch);
+    }
+    if db.design_review_round_verdict(&item.round_id)?.as_deref() == Some(VERDICT_APPROVED) {
+        return Ok(ReplyOutcome::Approved);
     }
 
     let now = crate::db::learning::now_timestamp();

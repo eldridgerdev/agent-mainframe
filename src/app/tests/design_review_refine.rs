@@ -500,6 +500,66 @@ fn a_reply_for_an_unknown_label_is_skipped() {
 }
 
 #[test]
+fn a_reply_after_approval_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let (db_file, mut app, _pasted) = finished_with_two_changes(&dir);
+    let path = outbox::outbox_path(dir.path());
+    outbox::append(&path, &reply("r1", "C1", ReplyKind::Done, "now a table")).unwrap();
+    outbox::append(&path, &reply("r2", "C2", ReplyKind::Done, "split")).unwrap();
+    ingest(&mut app);
+    open(&mut app);
+    accept_all(&mut app);
+    press(&mut app, KeyCode::Char('f'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(room(&app).verdict.as_deref(), Some("approved"));
+
+    outbox::append(&path, &reply("r3", "C1", ReplyKind::Pushback, "late")).unwrap();
+    ingest(&mut app);
+    open(&mut app);
+    assert_eq!(item(&app, "d1 decision 1").state, "accepted");
+    assert_eq!(
+        item(&app, "d1 decision 1").reply.as_deref(),
+        Some("now a table")
+    );
+    let turns: i64 = sql(
+        &db_file,
+        "SELECT COUNT(*) FROM design_review_turns WHERE role = 'developer'",
+        |r| r.get(0),
+    );
+    assert_eq!(turns, 2);
+}
+
+#[test]
+fn a_second_finish_does_not_reuse_a_label_held_by_an_accepted_item() {
+    let dir = TempDir::new().unwrap();
+    let (db_file, mut app, _pasted) = finished_with_two_changes(&dir);
+    let path = outbox::outbox_path(dir.path());
+    outbox::append(&path, &reply("r1", "C1", ReplyKind::Done, "now a table")).unwrap();
+    outbox::append(&path, &reply("r2", "C2", ReplyKind::Pushback, "too big")).unwrap();
+    ingest(&mut app);
+    open(&mut app);
+    select(&mut app, "d1 decision 1");
+    press(&mut app, KeyCode::Char('a'));
+    select(&mut app, "d2 decision 2");
+    press(&mut app, KeyCode::Char('c'));
+    type_text(&mut app, "still too big");
+    press(&mut app, KeyCode::Enter);
+    request_change(&mut app, "Plan drift", "explain the drift");
+    send_brief(&mut app);
+    open(&mut app);
+
+    assert_eq!(item(&app, "d1 decision 1").label.as_deref(), Some("C1"));
+    assert_eq!(item(&app, "d2 decision 2").label.as_deref(), Some("C2"));
+    assert_eq!(item(&app, "Plan drift").label.as_deref(), Some("C3"));
+    let c1: i64 = sql(
+        &db_file,
+        "SELECT COUNT(*) FROM design_review_items WHERE label = 'C1'",
+        |r| r.get(0),
+    );
+    assert_eq!(c1, 1);
+}
+
+#[test]
 fn a_later_record_supersedes_the_one_it_names() {
     let dir = TempDir::new().unwrap();
     let (db_file, mut app, _pasted) = setup(&dir);

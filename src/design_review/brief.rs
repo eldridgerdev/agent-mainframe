@@ -130,12 +130,19 @@ fn counted(n: usize, one: &str, many: &str) -> String {
 /// Label every input and render the brief. Changes come first, then
 /// questions, each in the order given. An input keeps its existing label
 /// when that is a valid label of its kind and unused; the rest take the
-/// lowest free number.
-pub fn build_brief(round: i64, inputs: &[BriefInput]) -> Brief {
+/// lowest free number. `reserved` holds the labels of the round's other
+/// items, the ones not in this brief, which stay theirs, so a reply's label
+/// names one item.
+pub fn build_brief(round: i64, inputs: &[BriefInput], reserved: &[String]) -> Brief {
     let mut labelled: Vec<(&BriefInput, String)> = Vec::new();
     for kind in [RequestKind::Change, RequestKind::Question] {
         let group: Vec<&BriefInput> = inputs.iter().filter(|i| i.kind == kind).collect();
-        let mut taken: Vec<u32> = Vec::new();
+        let mut taken: Vec<u32> = reserved
+            .iter()
+            .filter_map(|label| parse_label(label))
+            .filter(|(_, k)| *k == kind)
+            .map(|(label, _)| number_of(&label))
+            .collect();
         let mut keep: Vec<Option<u32>> = Vec::new();
         for input in &group {
             let existing = input
@@ -279,7 +286,7 @@ mod tests {
 
     #[test]
     fn renders_the_plan_shape_exactly() {
-        let brief = build_brief(1, &fixture());
+        let brief = build_brief(1, &fixture(), &[]);
         assert_eq!(
             brief.text,
             "Design review round 1: 2 changes, 1 question.\n\
@@ -306,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_single_change_uses_its_label_for_both_examples() {
-        let brief = build_brief(2, &fixture()[..1]);
+        let brief = build_brief(2, &fixture()[..1], &[]);
         assert!(
             brief
                 .text
@@ -319,7 +326,7 @@ mod tests {
 
     #[test]
     fn questions_only_skip_the_change_examples() {
-        let brief = build_brief(1, &fixture()[1..2]);
+        let brief = build_brief(1, &fixture()[1..2], &[]);
         assert!(brief.text.contains("0 changes, 1 question."));
         assert!(!brief.text.contains("--done"));
         assert!(brief.text.contains("amf review reply Q1 --answer"));
@@ -331,7 +338,7 @@ mod tests {
         inputs[2].existing_label = Some("C1".into());
         inputs[0].existing_label = Some("d4".into());
         inputs[1].existing_label = Some("C1".into()); // wrong kind
-        let brief = build_brief(1, &inputs);
+        let brief = build_brief(1, &inputs, &[]);
         let label = |id: &str| {
             brief
                 .labels
@@ -343,6 +350,23 @@ mod tests {
         assert_eq!(label("i3"), "C1");
         assert_eq!(label("i1"), "C2");
         assert_eq!(label("i2"), "Q1");
+    }
+
+    #[test]
+    fn labels_held_by_the_rounds_other_items_are_not_reused() {
+        // C1 was accepted and Q1 answered; C2 is change-requested again.
+        let mut inputs = fixture();
+        inputs[2].existing_label = Some("C2".into());
+        let reserved = ["C1".to_string(), "Q1".to_string()];
+        let brief = build_brief(2, &inputs, &reserved);
+        assert_eq!(
+            brief.labels,
+            [
+                ("i1".to_string(), "C3".to_string()),
+                ("i3".to_string(), "C2".to_string()),
+                ("i2".to_string(), "Q2".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -395,18 +419,18 @@ mod tests {
     }
 
     fn padded(extra_bytes: usize) -> Brief {
-        let base = build_brief(3, &fixture()[..1]);
+        let base = build_brief(3, &fixture()[..1], &[]);
         let mut inputs = fixture()[..1].to_vec();
         inputs[0].text.push(' ');
         inputs[0].text.push_str(&"x".repeat(extra_bytes - 1));
-        let brief = build_brief(3, &inputs);
+        let brief = build_brief(3, &inputs, &[]);
         assert_eq!(brief.text.len(), base.text.len() + extra_bytes);
         brief
     }
 
     #[test]
     fn under_two_thousand_tokens_is_inline() {
-        let base = build_brief(3, &fixture()[..1]).text.len();
+        let base = build_brief(3, &fixture()[..1], &[]).text.len();
         // 4 bytes per token: 7_996 bytes is 1_999 tokens.
         let brief = padded(7_996 - base);
         assert_eq!(brief.estimated_tokens(), 1_999);
@@ -417,7 +441,7 @@ mod tests {
 
     #[test]
     fn two_thousand_tokens_goes_to_a_file_and_the_paste_points_at_it() {
-        let base = build_brief(3, &fixture()[..1]).text.len();
+        let base = build_brief(3, &fixture()[..1], &[]).text.len();
         let brief = padded(8_000 - base);
         assert_eq!(brief.estimated_tokens(), 2_000);
         let delivery = deliver(&brief, "/w/.amf/design-review/round-3.md");

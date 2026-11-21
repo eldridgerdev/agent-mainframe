@@ -126,7 +126,14 @@ impl App {
             });
         }
 
-        let brief = build_brief(room.round, &inputs);
+        // Labels held by the round's items outside this brief stay theirs.
+        let reserved: Vec<String> = room
+            .items
+            .iter()
+            .filter(|item| !inputs.iter().any(|input| input.item_id == item.id))
+            .filter_map(|item| item.label.clone())
+            .collect();
+        let brief = build_brief(room.round, &inputs, &reserved);
         let source = self.feature_indices_for_workdir(&room.workdir);
         let rows = self.review_destination_rows(source, false);
         Ok(FinishState {
@@ -240,6 +247,11 @@ impl App {
         }
 
         let Some(db) = self.db.as_ref() else {
+            self.log_error(
+                "design-review",
+                "cannot save the verdict: no database".to_string(),
+            );
+            self.push_toast_error("Could not save the verdict to the database; nothing was sent");
             return;
         };
         let now = crate::db::learning::now_timestamp();

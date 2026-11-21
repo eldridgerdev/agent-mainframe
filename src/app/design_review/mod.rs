@@ -128,6 +128,10 @@ impl App {
                         )),
                         Ok(replies::ReplyOutcome::Mismatch) => skipped
                             .push(format!("reply {} does not fit {}", reply.uid, reply.label)),
+                        Ok(replies::ReplyOutcome::Approved) => skipped.push(format!(
+                            "reply {} came after {} was approved",
+                            reply.uid, reply.label
+                        )),
                         Err(err) => failures.push(format!("{}: {err}", reply.uid)),
                     }
                 }

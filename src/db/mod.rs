@@ -982,6 +982,10 @@ impl AmfDb {
         design_review::find_item_by_label(&self.conn, feature_id, label)
     }
 
+    pub fn design_review_round_verdict(&self, round_id: &str) -> Result<Option<String>> {
+        design_review::round_verdict(&self.conn, round_id)
+    }
+
     pub fn design_review_turn_exists(&self, turn_id: &str) -> Result<bool> {
         design_review::turn_exists(&self.conn, turn_id)
     }

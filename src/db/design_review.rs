@@ -414,6 +414,19 @@ pub fn find_item_by_label(
         .optional()?)
 }
 
+/// The verdict of the round with this id, `None` while it is open or when
+/// no such round exists.
+pub fn round_verdict(conn: &Connection, round_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT verdict FROM design_review_rounds WHERE id = ?1",
+            params![round_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// Whether a thread turn with this id exists (replies use their outbox uid).
 pub fn turn_exists(conn: &Connection, turn_id: &str) -> Result<bool> {
     Ok(conn

@@ -21,7 +21,7 @@ const VALID_DIAGRAM: &str = "```mermaid\nflowchart TD\n    A[Caller] --> B[Store
 const INVALID_DIAGRAM: &str = "```mermaid\nnot a diagram at all\n```";
 const RETRY_MARK: &str = "rejected by the renderer";
 
-fn git(dir: &Path, args: &[&str]) {
+pub(super) fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -41,7 +41,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repo on `my-feat` with one commit over `main`: a new module and a new
 /// dependency.
-fn repo() -> TempDir {
+pub(super) fn repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
     git(p, &["init", "-q", "-b", "main"]);

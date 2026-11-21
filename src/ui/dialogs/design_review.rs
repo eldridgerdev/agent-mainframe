@@ -13,7 +13,9 @@ use ratatui::{
 };
 
 use super::super::dashboard::centered_rect;
-use crate::app::design_review::room::{DesignReviewRoom, InputKind, RoomTab, header_label};
+use crate::app::design_review::room::{
+    DesignReviewRoom, InputKind, RoomTab, header_label, section_badge,
+};
 use crate::design_review::agenda::ItemState;
 use crate::design_review::usage::{self, CALL_COLUMNS, COLUMNS};
 use crate::theme::Theme;
@@ -181,13 +183,21 @@ fn draw_agenda(frame: &mut Frame, area: Rect, room: &mut DesignReviewRoom, theme
         .map(|(index, item)| {
             let state = ItemState::parse(&item.state);
             let stale = item.stale.tag();
-            let body = truncate(&item.title, width.saturating_sub(3 + stale.chars().count()));
+            let badge = room
+                .section_state(item)
+                .and_then(section_badge)
+                .unwrap_or("");
+            let body = truncate(
+                &item.title,
+                width.saturating_sub(3 + stale.chars().count() + badge.chars().count()),
+            );
             let mut line = Line::from(vec![
                 Span::styled(
                     format!("{} ", state.glyph()),
                     Style::default().fg(state_color(state, theme)),
                 ),
                 Span::styled(body, text_style(theme)),
+                Span::styled(badge, muted(theme)),
                 Span::styled(stale, Style::default().fg(theme.warning.to_color())),
             ]);
             if index == room.selected {
@@ -259,13 +269,18 @@ fn thread_lines<'a>(room: &DesignReviewRoom, theme: &Theme) -> Vec<Line<'a>> {
                 format!("Record ({})", turn.level.as_deref().unwrap_or("L0")),
                 theme.info.to_color(),
             ),
-            other => (
-                match turn.level.as_deref() {
+            other => {
+                let mut speaker = match turn.level.as_deref() {
                     Some(level) => format!("{other} ({level})"),
                     None => other.to_string(),
-                },
-                theme.secondary.to_color(),
-            ),
+                };
+                match turn.status.as_str() {
+                    "pending" => speaker.push_str(" · answering…"),
+                    "failed" => speaker.push_str(" · failed"),
+                    _ => {}
+                }
+                (speaker, theme.secondary.to_color())
+            }
         };
         lines.push(Line::from(Span::styled(
             speaker,
@@ -347,6 +362,21 @@ fn key_hint<'a>(key: &'a str, label: &'a str, theme: &Theme) -> [Span<'a>; 2] {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &Theme) {
+    if let Some(confirm) = &room.confirm {
+        let mut spans = vec![Span::styled(
+            format!(" {} ", confirm.summary),
+            Style::default().fg(theme.warning.to_color()),
+        )];
+        spans.extend(key_hint("y/Enter", "run", theme));
+        spans.extend(key_hint("Esc", "cancel", theme));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().bg(theme.effective_header_bg())),
+            area,
+        );
+        return;
+    }
     let hints: Vec<(&str, &str)> = if room.input.is_some() {
         vec![("Enter", "send"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
     } else if room.tab == RoomTab::Usage {
@@ -374,6 +404,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &T
             ("n", "note"),
             ("c", "request change"),
             ("s", "ask"),
+            ("1/2", "ask presenter"),
             ("o", "open files"),
             ("Tab", "usage"),
             ("?", "help"),
@@ -427,6 +458,15 @@ fn draw_help(frame: &mut Frame, theme: &Theme) {
         entry("n", "Accept with a note"),
         entry("c", "Request a change"),
         entry("s", "Ask a question (answered from the decision's record)"),
+        entry(
+            "1",
+            "Escalate the latest question to the presenter, no tools (L1)",
+        ),
+        entry(
+            "2",
+            "Escalate it to the presenter's read-only deep dive (L2)",
+        ),
+        entry("", "Both show the estimated cost first; y or Enter runs it"),
         entry("o / Enter", "Open the item's files in the diff viewer"),
         entry("Tab / u", "Open the Usage tab"),
         entry("Esc / q", "Close the room"),
@@ -680,6 +720,9 @@ mod tests {
             help_open: false,
             usage: Default::default(),
             cost_total: "—".into(),
+            packet: Default::default(),
+            confirm: None,
+            snapshot: Default::default(),
         }
     }
 
@@ -777,5 +820,49 @@ mod tests {
         room.help_open = true;
         let screen = render(&mut room, 120, 40);
         assert!(screen.contains("Group by phase"), "{screen}");
+    }
+
+    #[test]
+    fn section_items_show_their_packet_state() {
+        use crate::app::design_review::packet::{PacketStatus, SectionState};
+        let mut room = blank_room();
+        room.items[0].state = "pending".into();
+        room.packet = PacketStatus {
+            sections: vec![("brief", SectionState::Running)],
+        };
+        let screen = render(&mut room, 120, 36);
+        assert!(screen.contains("○ Brief preparing…"), "{screen}");
+        room.packet.sections[0].1 = SectionState::Failed("boom".into());
+        assert!(render(&mut room, 120, 36).contains("Brief failed"));
+        room.packet.sections[0].1 = SectionState::Skipped("no model".into());
+        assert!(render(&mut room, 120, 36).contains("Brief skipped"));
+        room.packet.sections[0].1 = SectionState::Done;
+        let screen = render(&mut room, 120, 36);
+        assert!(!screen.contains("Brief preparing") && !screen.contains("Brief failed"));
+    }
+
+    #[test]
+    fn the_footer_shows_the_escalation_estimate_and_its_confirm_key() {
+        use crate::app::design_review::presenter::{Escalation, LadderLevel};
+        let mut room = blank_room();
+        room.confirm = Some(Escalation {
+            level: LadderLevel::L1,
+            item_id: "i1".into(),
+            staff: crate::design_packet::staff::StaffModel {
+                harness: crate::project::AgentKind::Claude,
+                model: "sonnet".into(),
+                reasoning: None,
+            },
+            prompt: "p".into(),
+            summary: "Ask the presenter (L1): est. $0.01".into(),
+        });
+        let screen = render(&mut room, 140, 36);
+        assert!(
+            screen.contains("Ask the presenter (L1): est. $0.01"),
+            "{screen}"
+        );
+        assert!(screen.contains("y/Enter run"), "{screen}");
+        room.confirm = None;
+        assert!(render(&mut room, 160, 36).contains("ask presenter"));
     }
 }

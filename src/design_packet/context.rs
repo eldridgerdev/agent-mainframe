@@ -342,6 +342,74 @@ pub fn plan_drift_context(inputs: &PacketInputs) -> (String, u64) {
     b.finish()
 }
 
+/// What the presenter (question ladder L1/L2) is given for one question.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PresenterInputs<'a> {
+    /// The reviewer's question, verbatim.
+    pub question: &'a str,
+    /// The agenda item's title (`d4 Outbox file`, `Brief`, a detector hit).
+    pub item_title: &'a str,
+    /// The decision record as Markdown, when the item has one.
+    pub record: Option<&'a str>,
+    /// Titles of the other recorded decisions (`d3 [data] Title`).
+    pub neighbours: &'a [String],
+    /// The item's linked paths; hunks are taken from `files` under them.
+    pub item_paths: &'a [String],
+    /// The room's diff snapshot.
+    pub files: &'a [DiffFile],
+    /// The relevant packet section (the item's own, or the brief).
+    pub packet_excerpt: Option<&'a str>,
+}
+
+/// Presenter context for one question. Priority: the question, the item and
+/// its record, neighbouring decision titles, the packet excerpt, then the
+/// item's linked hunks (smallest first). `deep` budgets for the L2 seed cap
+/// (`PRESENTER_DEEP_CAP`), otherwise the L1 cap (`PRESENTER_CAP`). Where no
+/// record exists the context says so, so the model can answer "not
+/// recorded".
+pub fn presenter_context(inputs: &PresenterInputs, deep: bool) -> (String, u64) {
+    let cap = if deep {
+        StaffRole::Presenter.total_cap()
+    } else {
+        StaffRole::Presenter.input_cap()
+    };
+    let mut b = Budget::new(cap);
+    b.section("Question", lines(inputs.question.trim()), "question lines");
+    b.section(
+        "Agenda item",
+        vec![inputs.item_title.to_owned()],
+        "item lines",
+    );
+    let record = inputs
+        .record
+        .map(lines)
+        .unwrap_or_else(|| vec!["No decision is recorded for this item.".to_owned()]);
+    b.section("Decision record", record, "record lines");
+    b.section(
+        "Neighbouring decisions",
+        inputs.neighbours.to_vec(),
+        "decisions",
+    );
+    b.section(
+        "Packet excerpt",
+        lines(inputs.packet_excerpt.unwrap_or("")),
+        "packet lines",
+    );
+    let linked: Vec<DiffFile> = inputs
+        .files
+        .iter()
+        .filter(|f| {
+            inputs
+                .item_paths
+                .iter()
+                .any(|p| paths_intersect(p, &f.path))
+        })
+        .cloned()
+        .collect();
+    b.section("Linked hunks", hunk_items(&linked), "file diffs");
+    b.finish()
+}
+
 /// Stable cache key for one staff output: SHA-256 over the section name, the
 /// built context, the template text actually used (so an edited override
 /// invalidates it), the rendered renderer limits (empty for prompts without
@@ -380,7 +448,9 @@ pub fn input_hash(
 mod tests {
     use super::*;
     use crate::design_packet::detectors::DetectorKind;
-    use crate::design_packet::staff::{CARTOGRAPHER_SEED_CAP, SCRIBE_CAP};
+    use crate::design_packet::staff::{
+        CARTOGRAPHER_SEED_CAP, PRESENTER_CAP, PRESENTER_DEEP_CAP, SCRIBE_CAP,
+    };
     use crate::headless::ReasoningLevel;
     use crate::project::AgentKind;
     use crate::prompts::PromptId;
@@ -671,6 +741,8 @@ mod tests {
             PromptId::DesignFit,
             PromptId::DesignUnexplained,
             PromptId::DesignPlanDrift,
+            PromptId::DesignPresenter,
+            PromptId::DesignPresenterDeep,
         ] {
             for harness in [
                 AgentKind::Claude,
@@ -713,5 +785,77 @@ mod tests {
         assert!(text.contains("configuration changed: build.rs"));
         let (fit, _) = fit_context(&inputs);
         assert!(fit.contains("gained 1 dependency") && fit.contains("build.rs"));
+    }
+
+    #[test]
+    fn presenter_context_stays_under_both_caps_and_keeps_the_question() {
+        let b = big();
+        let neighbours: Vec<String> = (0..2_000).map(|i| format!("d{i} [data] title")).collect();
+        let paths = vec!["src".to_owned()];
+        let question = "Why a queue and not a channel?";
+        let record = "Why: append-only\n".repeat(2_000);
+        for (deep, cap) in [(false, PRESENTER_CAP), (true, PRESENTER_DEEP_CAP)] {
+            let inputs = PresenterInputs {
+                question,
+                item_title: "d4 Outbox file",
+                record: Some(&record),
+                neighbours: &neighbours,
+                item_paths: &paths,
+                files: &b.files,
+                packet_excerpt: Some(&b.brief),
+            };
+            let (text, tokens) = presenter_context(&inputs, deep);
+            assert!(
+                tokens + PROMPT_RESERVE_TOKENS <= cap,
+                "deep={deep}: {tokens}"
+            );
+            assert!(text.starts_with("## Question\nWhy a queue"), "{deep}");
+            assert!(text.contains("d4 Outbox file") && text.contains("omitted"));
+        }
+        let deep = presenter_context(
+            &PresenterInputs {
+                question,
+                files: &b.files,
+                item_paths: &paths,
+                ..Default::default()
+            },
+            true,
+        );
+        let shallow = presenter_context(
+            &PresenterInputs {
+                question,
+                files: &b.files,
+                item_paths: &paths,
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(deep.1 > shallow.1, "L2 gets the larger seed");
+    }
+
+    #[test]
+    fn presenter_context_links_only_the_items_hunks_and_marks_a_missing_record() {
+        let files = [
+            file("src/a.rs", DiffFileStatus::Modified, 1, "@@\n+linked\n"),
+            file("src/b.rs", DiffFileStatus::Modified, 1, "@@\n+unlinked\n"),
+        ];
+        let paths = vec!["src/a.rs".to_owned()];
+        let neighbours = vec!["d2 [data] Other".to_owned()];
+        let (text, _) = presenter_context(
+            &PresenterInputs {
+                question: "What does a.rs do?",
+                item_title: "Cargo.toml gained a dependency",
+                record: None,
+                neighbours: &neighbours,
+                item_paths: &paths,
+                files: &files,
+                packet_excerpt: Some("- brief bullet"),
+            },
+            false,
+        );
+        assert!(text.contains("+linked") && !text.contains("+unlinked"));
+        assert!(text.contains("No decision is recorded for this item."));
+        assert!(text.contains("d2 [data] Other") && text.contains("- brief bullet"));
+        assert!(!text.contains("omitted"));
     }
 }

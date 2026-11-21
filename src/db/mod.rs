@@ -971,6 +971,20 @@ impl AmfDb {
         design_review::append_turn(&self.conn, turn)
     }
 
+    pub fn complete_design_review_turn(
+        &self,
+        turn_id: &str,
+        body: &str,
+        status: &str,
+        usage_id: Option<i64>,
+    ) -> Result<bool> {
+        design_review::complete_turn(&self.conn, turn_id, body, status, usage_id)
+    }
+
+    pub fn design_review_item_exists(&self, item_id: &str) -> Result<bool> {
+        design_review::item_exists(&self.conn, item_id)
+    }
+
     /// The newest packet section artifact (by id) of `section`.
     pub fn latest_design_review_artifact(
         &self,

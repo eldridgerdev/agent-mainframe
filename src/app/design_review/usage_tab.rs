@@ -16,8 +16,9 @@ impl App {
             return;
         };
         match db.design_review_usage(&room.feature_id) {
-            Ok(rows) => {
+            Ok(mut rows) => {
                 room.cost_total = usage::header_total(&rows);
+                super::room::label_usage_items(&mut rows, &room.items);
                 room.usage.rows = rows;
                 let groups = room.usage.table().groups.len();
                 room.usage.selected = room.usage.selected.min(groups.saturating_sub(1));

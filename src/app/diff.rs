@@ -138,6 +138,8 @@ impl App {
         };
         if state.return_to.is_some() {
             self.exit_pr_review(state);
+            // The packet may have moved on while the viewer was open.
+            self.design_review_sync_packet();
             return;
         }
         self.mode = AppMode::Viewing(state.from_view);

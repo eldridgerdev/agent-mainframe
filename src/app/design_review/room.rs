@@ -20,6 +20,8 @@ use crate::design_review::agenda::{
 use crate::design_review::usage::{self, Grouping, UsageRow};
 use crate::design_review::{DESIGN_REVIEW_CLAUDE_ONLY, design_review_unavailable_reason};
 
+use super::packet::{PacketStatus, SectionState};
+use super::presenter::Escalation;
 use super::snapshot::{RoomSnapshot, load_room_snapshot};
 use crate::app::{App, AppMode, ViewState};
 
@@ -129,6 +131,14 @@ pub struct DesignReviewRoom {
     pub usage: UsageTabState,
     /// The header's one-line cost total.
     pub cost_total: String,
+    /// The packet's section states, copied from the runtime on each poll so
+    /// the renderer reads no runtime or database.
+    pub packet: PacketStatus,
+    /// A priced presenter escalation waiting for its confirm key.
+    pub confirm: Option<Escalation>,
+    /// The git snapshot the room opened with: re-deriving the agenda and the
+    /// presenter's linked hunks read it.
+    pub(crate) snapshot: RoomSnapshot,
 }
 
 impl DesignReviewRoom {
@@ -139,6 +149,12 @@ impl DesignReviewRoom {
     pub fn decision_for(&self, item: &DesignReviewItem) -> Option<&DesignDecision> {
         let uid = item.ref_key.as_deref()?;
         self.decisions.iter().find(|d| d.uid == uid)
+    }
+
+    /// The packet state of the selected item's section, if it is one.
+    pub fn section_state(&self, item: &DesignReviewItem) -> Option<&SectionState> {
+        let section = ItemKind::parse(&item.kind)?.section_key()?;
+        self.packet.state(section)
     }
 
     /// Reset everything derived from the selected item's content.
@@ -174,6 +190,42 @@ fn summaries(decisions: &[DesignDecision]) -> Vec<DecisionSummary> {
             paths: d.paths.clone(),
         })
         .collect()
+}
+
+/// The agenda's suffix for a packet section that has no settled artifact
+/// yet: preparing, failed or skipped. `None` once it is ready.
+pub fn section_badge(state: &SectionState) -> Option<&'static str> {
+    match state {
+        SectionState::Running => Some(" preparing…"),
+        SectionState::Failed(_) => Some(" failed"),
+        SectionState::Skipped(_) => Some(" skipped"),
+        SectionState::Cached | SectionState::Done => None,
+    }
+}
+
+/// What a section with no stored artifact shows, given its packet state.
+fn unprepared_text(state: Option<&SectionState>) -> String {
+    match state {
+        Some(SectionState::Running) => format!("{NOT_PREPARED}. The packet is being prepared…"),
+        Some(SectionState::Failed(reason)) => {
+            format!("{NOT_PREPARED}: preparation failed.\n\n{reason}")
+        }
+        Some(SectionState::Skipped(reason)) => format!("{NOT_PREPARED}: skipped.\n\n{reason}"),
+        _ => NOT_PREPARED.to_string(),
+    }
+}
+
+/// Show agenda item titles, not ids, in the Usage tab's item column.
+pub(crate) fn label_usage_items(rows: &mut [UsageRow], items: &[DesignReviewItem]) {
+    for row in rows {
+        if let Some(item) = row
+            .item
+            .as_deref()
+            .and_then(|id| items.iter().find(|i| i.id == id))
+        {
+            row.item = Some(item.title.clone());
+        }
+    }
 }
 
 /// Derive the agenda for a round and persist it, keeping every stored item's
@@ -240,11 +292,19 @@ pub(crate) fn derive_and_store_agenda(
 }
 
 impl App {
-    /// Phase 2b's packet builder fills this: it prepares the packet sections
-    /// for `round` of the feature at (`pi`, `fi`) and writes them to
-    /// `design_review_artifacts`. The room calls it on open and shows whatever
-    /// artifacts are stored, so it is a no-op until that builder exists.
-    pub(crate) fn request_design_review_packet(&mut self, _pi: usize, _fi: usize, _round: i64) {}
+    /// Prepare the packet sections for `round` of the feature at (`pi`,
+    /// `fi`) in the background ([`App::prepare_design_review_packet`]). The
+    /// room calls it on open; [`App::design_review_sync_packet`] follows the
+    /// progress from the poll path.
+    pub(crate) fn request_design_review_packet(&mut self, pi: usize, fi: usize, round: i64) {
+        match u32::try_from(round) {
+            Ok(round) => self.prepare_design_review_packet(pi, fi, round),
+            Err(_) => self.log_warn(
+                "design-review",
+                format!("round {round} is out of range; packet not prepared"),
+            ),
+        }
+    }
 
     /// Leader `y` from a session view: read the viewed feature's git snapshot
     /// in the background; [`App::poll_design_review_opening`] opens the room
@@ -402,7 +462,7 @@ impl App {
                 db.design_review_usage(&feature_id)?,
             ))
         });
-        let (items, decisions, usage_rows) = match loaded {
+        let (items, decisions, mut usage_rows) = match loaded {
             Ok(loaded) => loaded,
             Err(err) => {
                 self.log_error("design-review", format!("cannot build agenda: {err:#}"));
@@ -414,6 +474,8 @@ impl App {
         };
 
         let cost_total = usage::header_total(&usage_rows);
+        label_usage_items(&mut usage_rows, &items);
+        let packet = self.design_review_packet_status(&feature_id);
         let mut room = DesignReviewRoom {
             from_view,
             feature_id,
@@ -440,6 +502,9 @@ impl App {
                 ..UsageTabState::new()
             },
             cost_total,
+            packet,
+            confirm: None,
+            snapshot,
         };
         // Resume at the first item still waiting on the reviewer.
         room.selected = room
@@ -481,12 +546,93 @@ impl App {
         Ok(round)
     }
 
-    /// Close the room and return to the session view it came from.
+    /// Close the room and return to the session view it came from. The
+    /// packet stops being tracked (runs in flight still reach the ledger);
+    /// presenter answers in flight are still stored.
     pub fn close_design_review(&mut self) {
         let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
         match mode {
-            AppMode::DesignReview(room) => self.mode = AppMode::Viewing(room.from_view),
+            AppMode::DesignReview(room) => {
+                self.cancel_design_review_packet(&room.feature_id);
+                self.mode = AppMode::Viewing(room.from_view);
+            }
             other => self.mode = other,
+        }
+    }
+
+    /// Copy the packet's section states into the open room. When a section
+    /// changes state, the selected item reloads if it is that section, and
+    /// an `unexplained` section turning ready re-derives the agenda so its
+    /// item appears. Called from the poll path; the renderer reads only the
+    /// copy.
+    pub(crate) fn design_review_sync_packet(&mut self) {
+        let AppMode::DesignReview(room) = &self.mode else {
+            return;
+        };
+        let status = self.design_review_packet_status(&room.feature_id);
+        if status == room.packet {
+            return;
+        }
+        let changed: Vec<&'static str> = status
+            .sections
+            .iter()
+            .filter(|(key, state)| room.packet.state(key) != Some(state))
+            .map(|(key, _)| *key)
+            .collect();
+        let ready = |key: &str| {
+            matches!(
+                status.state(key),
+                Some(SectionState::Done | SectionState::Cached)
+            )
+        };
+        let unexplained_ready = changed.contains(&"unexplained") && ready("unexplained");
+        let selected_changed = room
+            .selected_item()
+            .and_then(|item| ItemKind::parse(&item.kind)?.section_key())
+            .is_some_and(|key| changed.contains(&key));
+        if let Some(room) = self.design_review_room_mut() {
+            room.packet = status;
+        }
+        let mut reload = selected_changed;
+        if unexplained_ready {
+            reload |= self.design_review_rederive_agenda();
+        }
+        if reload {
+            self.design_review_load_selected();
+        }
+    }
+
+    /// Re-derive and store the open room's agenda, keeping the selection on
+    /// the same item. Returns whether the selected item changed.
+    fn design_review_rederive_agenda(&mut self) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return false;
+        };
+        let AppMode::DesignReview(room) = &mut self.mode else {
+            return false;
+        };
+        let derived = db
+            .design_review_latest_round(&room.feature_id)
+            .and_then(|round| {
+                let round = round.ok_or_else(|| anyhow::anyhow!("no round"))?;
+                derive_and_store_agenda(db, &round, &room.snapshot)
+            });
+        match derived {
+            Ok(items) => {
+                let selected_id = room.selected_item().map(|i| i.id.clone());
+                room.items = items;
+                let position = selected_id
+                    .and_then(|id| room.items.iter().position(|i| i.id == id))
+                    .unwrap_or(0);
+                let moved = position != room.selected;
+                room.selected = position.min(room.items.len().saturating_sub(1));
+                moved
+            }
+            Err(err) => {
+                let message = format!("cannot refresh the agenda: {err:#}");
+                self.log_warn("design-review", message);
+                false
+            }
         }
     }
 
@@ -545,7 +691,7 @@ impl App {
                     match db.latest_design_review_artifact(&room.feature_id, section) {
                         Ok(Some(artifact)) if artifact.format == "markdown" => artifact.body,
                         Ok(Some(artifact)) => format!("```\n{}\n```", artifact.body),
-                        Ok(None) => NOT_PREPARED.to_string(),
+                        Ok(None) => unprepared_text(room.packet.state(section)),
                         Err(err) => {
                             errors.push(format!("cannot read {section} artifact: {err}"));
                             NOT_PREPARED.to_string()

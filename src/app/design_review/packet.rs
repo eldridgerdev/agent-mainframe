@@ -21,6 +21,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 
 use super::packet_inputs::{self, GatheredInputs};
+use super::presenter::PresenterJob;
 use crate::app::App;
 use crate::db::design_review::NewArtifact;
 use crate::design_packet::context::{self, DecisionSummary, PacketInputs};
@@ -93,6 +94,7 @@ impl PacketStatus {
     }
 
     /// True when every section has finished one way or another.
+    #[cfg(test)]
     pub fn is_settled(&self) -> bool {
         self.sections.iter().all(|(_, state)| state.is_settled())
     }
@@ -123,7 +125,7 @@ pub(crate) fn section_spec(task: Task) -> SectionSpec {
     }
 }
 
-fn agent_for(role: StaffRole) -> Agent {
+pub(super) fn agent_for(role: StaffRole) -> Agent {
     match role {
         StaffRole::Scribe => Agent::Scribe,
         StaffRole::Cartographer => Agent::Cartographer,
@@ -156,7 +158,7 @@ pub(crate) fn diagram_body(outcome: DiagramOutcome) -> String {
 
 /// The reasoning level a harness will actually be sent (see
 /// `headless::reasoning_args`): an unsupported level is dropped.
-fn effective_reasoning(staff: &StaffModel) -> Option<ReasoningLevel> {
+pub(super) fn effective_reasoning(staff: &StaffModel) -> Option<ReasoningLevel> {
     staff
         .reasoning
         .filter(|level| ReasoningLevel::supported_for(&staff.harness).contains(level))
@@ -208,7 +210,13 @@ fn headless_runner() -> StaffRunFn {
             text,
             usage: Some(usage),
         })
-        .map_err(|err| format!("{} failed: {err}", call.harness.display_name()))
+        .map_err(|err| {
+            format!(
+                "{} failed ({}): {err}",
+                call.harness.display_name(),
+                call.task.as_str()
+            )
+        })
     })
 }
 
@@ -230,11 +238,85 @@ struct StaffJob {
     first_response: Option<String>,
 }
 
-struct StaffOutcome {
-    job: StaffJob,
-    result: Result<StaffReply, String>,
-    started_at: DateTime<Utc>,
-    duration_ms: u64,
+/// A finished staff run: the job that asked for it and what came back.
+pub(crate) struct Finished<J> {
+    pub job: J,
+    pub result: Result<StaffReply, String>,
+    pub started_at: DateTime<Utc>,
+    pub duration_ms: u64,
+}
+
+type StaffOutcome = Finished<StaffJob>;
+
+/// Run one staff call on its own thread through `runner` and send the
+/// outcome to `tx`. The packet's sections and the presenter's answers share
+/// it, so every staff run goes through the same runner (and its headless
+/// lease) and is timed the same way.
+pub(super) fn spawn_staff_run<J: Send + 'static>(
+    runner: &StaffRunFn,
+    tx: &Sender<Finished<J>>,
+    job: J,
+    call: for<'a> fn(&'a J) -> StaffCall<'a>,
+) {
+    let runner = Arc::clone(runner);
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let started_at = Utc::now();
+        let clock = Instant::now();
+        let result = runner(&call(&job));
+        let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let _ = tx.send(Finished {
+            job,
+            result,
+            started_at,
+            duration_ms,
+        });
+    });
+}
+
+fn packet_call(job: &StaffJob) -> StaffCall<'_> {
+    StaffCall {
+        task: job.task,
+        harness: &job.staff.harness,
+        model: &job.staff.model,
+        reasoning: effective_reasoning(&job.staff),
+        read_only: job.role == StaffRole::Cartographer,
+        workdir: &job.workdir,
+        prompt: &job.prompt,
+    }
+}
+
+/// The ledger row for one finished staff run: measured counts when the
+/// harness reported usage, bytes/4 estimates when it reported nothing, and
+/// every count unavailable for a failed call.
+pub(super) fn staff_usage_row<J>(
+    ctx: LedgerContext,
+    harness: &AgentKind,
+    prompt: &str,
+    finished: &Finished<J>,
+    pricing: &crate::token_tracking::TokenPricingConfig,
+) -> LedgerRow {
+    let (counts, provenance) = match &finished.result {
+        Ok(reply) => packet_inputs::counts_for_run(
+            harness,
+            reply.usage.as_ref(),
+            prompt,
+            reply.text.as_str(),
+        ),
+        // Nothing is known about a failed call: every count unavailable.
+        Err(_) => (
+            Default::default(),
+            crate::token_cost::ledger::Provenance::Estimated,
+        ),
+    };
+    LedgerRow::from_counts(
+        ctx,
+        counts,
+        provenance,
+        Some(finished.duration_ms),
+        finished.started_at,
+        pricing,
+    )
 }
 
 struct ActivePacket {
@@ -262,10 +344,6 @@ impl ActivePacket {
         }
     }
 
-    fn state(&self, task: Task) -> Option<&SectionState> {
-        self.states.iter().find(|(t, _)| *t == task).map(|(_, s)| s)
-    }
-
     fn fail_unsettled(&mut self, reason: &str) {
         for (_, state) in &mut self.states {
             if !state.is_settled() {
@@ -288,13 +366,19 @@ pub(crate) struct PacketRuntime {
     /// Runs of superseded packets still to report, so their spend reaches
     /// the ledger.
     stale_in_flight: usize,
-    runner: StaffRunFn,
+    pub(super) runner: StaffRunFn,
+    /// Presenter answers (question ladder L1/L2) in flight. They are not
+    /// tied to the active packet: an answer is kept after the room closes.
+    pub(super) presenter_tx: Sender<Finished<PresenterJob>>,
+    presenter_rx: Receiver<Finished<PresenterJob>>,
+    pub(super) presenter_in_flight: usize,
 }
 
 impl Default for PacketRuntime {
     fn default() -> Self {
         let (gather_tx, gather_rx) = channel();
         let (results_tx, results_rx) = channel();
+        let (presenter_tx, presenter_rx) = channel();
         Self {
             next_request: 0,
             active: None,
@@ -304,6 +388,9 @@ impl Default for PacketRuntime {
             results_rx,
             stale_in_flight: 0,
             runner: headless_runner(),
+            presenter_tx,
+            presenter_rx,
+            presenter_in_flight: 0,
         }
     }
 }
@@ -312,10 +399,17 @@ impl PacketRuntime {
     /// True while anything is left for `poll_design_review_bg` to collect.
     pub(crate) fn pending(&self) -> bool {
         self.stale_in_flight > 0
+            || self.presenter_in_flight > 0
             || self
                 .active
                 .as_ref()
                 .is_some_and(|p| p.gathering || p.in_flight > 0 || !p.queue.is_empty())
+    }
+
+    /// A fresh request id, shared by packets and presenter runs.
+    pub(super) fn next_request_id(&mut self) -> u64 {
+        self.next_request += 1;
+        self.next_request
     }
 
     fn supersede(&mut self) {
@@ -389,8 +483,7 @@ impl App {
 
         let runtime = &mut self.design_review_packet;
         runtime.supersede();
-        runtime.next_request += 1;
-        let request = runtime.next_request;
+        let request = runtime.next_request_id();
         runtime.active = Some(ActivePacket {
             request,
             feature_id: feature_id.clone(),
@@ -476,6 +569,12 @@ impl App {
             changed |= self.finish_staff_run(outcome);
         }
         changed |= self.start_queued_staff_runs();
+        while let Ok(outcome) = self.design_review_packet.presenter_rx.try_recv() {
+            changed |= self.finish_presenter_run(outcome);
+        }
+        if changed {
+            self.design_review_sync_packet();
+        }
         changed
     }
 
@@ -661,29 +760,7 @@ impl App {
             };
             packet.in_flight += 1;
             started = true;
-            let runner = Arc::clone(&runtime.runner);
-            let tx = runtime.results_tx.clone();
-            std::thread::spawn(move || {
-                let started_at = Utc::now();
-                let clock = Instant::now();
-                let call = StaffCall {
-                    task: job.task,
-                    harness: &job.staff.harness,
-                    model: &job.staff.model,
-                    reasoning: effective_reasoning(&job.staff),
-                    read_only: job.role == StaffRole::Cartographer,
-                    workdir: &job.workdir,
-                    prompt: &job.prompt,
-                };
-                let result = runner(&call);
-                let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let _ = tx.send(StaffOutcome {
-                    job,
-                    result,
-                    started_at,
-                    duration_ms,
-                });
-            });
+            spawn_staff_run(&runtime.runner, &runtime.results_tx, job, packet_call);
         }
         started
     }
@@ -691,34 +768,19 @@ impl App {
     /// Record a finished run and, unless it is stale, turn it into an
     /// artifact, a retry or a failure. Returns whether the status changed.
     fn finish_staff_run(&mut self, outcome: StaffOutcome) -> bool {
-        let StaffOutcome {
-            job,
-            result,
-            started_at,
-            duration_ms,
-        } = outcome;
-        let reply_text = result.as_ref().map(|r| r.text.as_str()).unwrap_or("");
-        let (counts, provenance) = match &result {
-            Ok(reply) => packet_inputs::counts_for_run(
-                &job.staff.harness,
-                reply.usage.as_ref(),
-                &job.prompt,
-                reply_text,
+        let row = staff_usage_row(
+            ledger_context(
+                outcome.job.task,
+                outcome.job.role,
+                &outcome.job.staff,
+                outcome.job.round,
             ),
-            // Nothing is known about a failed call: every count unavailable.
-            Err(_) => (
-                Default::default(),
-                crate::token_cost::ledger::Provenance::Estimated,
-            ),
-        };
-        let row = LedgerRow::from_counts(
-            ledger_context(job.task, job.role, &job.staff, job.round),
-            counts,
-            provenance,
-            Some(duration_ms),
-            started_at,
+            &outcome.job.staff.harness,
+            &outcome.job.prompt,
+            &outcome,
             &self.config.token_pricing,
         );
+        let Finished { job, result, .. } = outcome;
         let usage_id = self.record_design_review_usage(&row, &job.feature_id, &job.project_id);
 
         let Some(mut packet) = self
@@ -809,7 +871,7 @@ impl App {
         }
     }
 
-    fn record_design_review_usage(
+    pub(super) fn record_design_review_usage(
         &mut self,
         row: &LedgerRow,
         feature_id: &str,

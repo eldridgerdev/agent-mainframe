@@ -3,12 +3,14 @@
 // page). API routes are never cached — status is live or nothing.
 "use strict";
 
-// v6: drops any tunnel error page an earlier worker cached as the shell.
-const CACHE = "amf-remote-v6";
+// v7: adds the maskable icon to the shell. (v6 dropped any tunnel error
+// page an earlier worker cached as the shell.)
+const CACHE = "amf-remote-v7";
 // How long a page load waits on AMF before an installed app opens from its
 // cached shell instead.
 const NETWORK_TIMEOUT_MS = 4000;
-const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
+const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png",
+  "/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

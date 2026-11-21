@@ -5,6 +5,11 @@ your computer. It is a web app (a PWA) that AMF serves itself: there is nothing
 to install from an app store, and the phone always runs the version that
 matches the AMF it talks to.
 
+![AMF Remote on a phone: the attention dashboard, a live agent session, a feature's diff, and its TODO list](screenshots/remote-app/showcase.png)
+
+How the app is built, and how to recapture these screenshots, is in
+[`src/remote_web/README.md`](../src/remote_web/README.md).
+
 From the phone you can:
 
 - see every feature, and which ones need you (the same list as the desk's `i`

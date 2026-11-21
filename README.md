@@ -39,9 +39,22 @@ See [choosing an interface and upgrading](docs/interfaces.md) and the
 - Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and
   workspace presets.
 - Supports ordinary directories as well as git repositories.
+- Follows you away from the desk: [AMF Remote](#amf-remote-your-agents-on-your-phone)
+  is an installable phone app for answering agents, reviewing changes and
+  starting work.
 
 The desktop GUI also [views PR and agent-validation screenshots](docs/gui-screenshots.md)
 with source and producing-session attribution.
+
+## AMF Remote: your agents on your phone
+
+Answer your agents from your phone while they keep running on your computer.
+AMF Remote is an installable Progressive Web App that the `amf` binary serves
+itself, with push notifications when an agent needs you. See
+[what it does and how it's built](src/remote_web/README.md), or
+[set it up](docs/remote-control.md).
+
+![AMF Remote on a phone: the attention dashboard, a live agent session waiting on a permission question, a feature's diff, and its TODO list](docs/screenshots/remote-app/showcase.png)
 
 ## Requirements
 

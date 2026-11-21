@@ -651,6 +651,11 @@ const WEB_ASSETS: &[WebAsset] = &[
         content_type: "image/png",
         body: include_bytes!("remote_web/icon-512.png"),
     },
+    WebAsset {
+        path: "/icon-maskable-512.png",
+        content_type: "image/png",
+        body: include_bytes!("remote_web/icon-maskable-512.png"),
+    },
 ];
 
 /// Unauthenticated routes serving the PWA shell. The shell holds no data —

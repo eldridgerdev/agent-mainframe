@@ -907,6 +907,9 @@ pub struct ReviewHarnessPickState {
     /// Harnesses offered to the reviewer (the project's enabled harnesses).
     pub harnesses: Vec<crate::project::AgentKind>,
     pub selected: usize,
+    /// The text to paste instead of the standard feedback prompt (Design
+    /// Review's refinement brief).
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone)]

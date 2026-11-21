@@ -73,6 +73,8 @@ pub enum ItemAction {
     Note,
     RequestChange,
     Ask,
+    /// The developer replied (`done` or `pushback`) to a requested change.
+    DeveloperReplied,
     /// A question was answered, so the item goes back to `back_to`, the
     /// state it had when the question was asked (`pending` or `re-review`).
     /// The caller keeps that state while the question is open.
@@ -95,9 +97,11 @@ pub fn transition(state: ItemState, action: ItemAction) -> Result<ItemState, &'s
             Err("A question can only return to pending or re-review")
         }
         (QuestionOpen, _) => Err("A question is still open on this item"),
+        (ChangeRequested, DeveloperReplied) => Ok(ReReview),
         (ChangeRequested, _) => {
             Err("Waiting for the developer's reply; the item returns for re-review")
         }
+        (_, DeveloperReplied) => Err("No change is waiting on the developer"),
         (_, Answered { .. }) => Err("No question is open on this item"),
     }
 }
@@ -203,7 +207,7 @@ pub fn derive_agenda(inputs: &AgendaInputs) -> Vec<AgendaDraft> {
     let live: Vec<&DesignDecision> = inputs
         .decisions
         .iter()
-        .filter(|d| d.status != "superseded")
+        .filter(|d| d.status != "superseded" && d.source != "review")
         .collect();
 
     let mut out = vec![
@@ -461,7 +465,12 @@ pub fn merge_agenda(
             existing_id,
             kind: draft.kind.as_str().to_string(),
             ref_key: Some(draft.ref_key.clone()),
-            label: draft.label.clone(),
+            // A `C1`/`Q1` label from a brief is the developer's handle for the
+            // item, so a re-derivation must not overwrite it with `d4`.
+            label: hit
+                .and_then(|(_, e)| e.label.clone())
+                .filter(|l| super::brief::is_review_label(l))
+                .or_else(|| draft.label.clone()),
             title: draft.title.clone(),
             paths: draft.paths.clone(),
             state,
@@ -729,6 +738,10 @@ mod tests {
         assert!(transition(ChangeRequested, Accept).is_err());
         assert!(transition(Accepted, Ask).is_err());
         assert!(transition(Pending, answered(Pending)).is_err());
+        assert_eq!(transition(ChangeRequested, DeveloperReplied), Ok(ReReview));
+        for state in [Pending, QuestionOpen, ReReview, Accepted] {
+            assert!(transition(state, DeveloperReplied).is_err(), "{state:?}");
+        }
         for state in [Pending, QuestionOpen, ChangeRequested, ReReview, Accepted] {
             assert_eq!(ItemState::parse(state.as_str()), state);
         }

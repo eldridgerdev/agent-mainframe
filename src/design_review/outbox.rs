@@ -33,7 +33,7 @@ fn owner_path(checkout_root: &Path) -> PathBuf {
 
 /// Create the outbox directory with its own `*` `.gitignore`, so the outbox
 /// stays out of commits even where `.amf/` is not ignored.
-fn ensure_dir(dir: &Path) -> Result<()> {
+pub fn ensure_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
@@ -184,13 +184,15 @@ fn fingerprint(file: &mut std::fs::File, offset: u64) -> io::Result<Option<Strin
     }
 }
 
-/// Every decision already in the outbox, in file order.
+/// Every decision already in the outbox, in file order. Reply lines are not
+/// decisions, so they never count toward a decision's `seq`.
 pub fn decisions(path: &Path) -> io::Result<Vec<DecisionRecord>> {
     Ok(read_from(path, &OutboxCursor::default())?
         .lines
         .into_iter()
-        .map(|line| match line {
-            OutboxLine::Decision(record) => record,
+        .filter_map(|line| match line {
+            OutboxLine::Decision(record) => Some(record),
+            OutboxLine::Reply(_) => None,
         })
         .collect())
 }

@@ -103,6 +103,45 @@ impl App {
         }
         let source = self.review_source_indices();
 
+        let rows = self.review_destination_rows(source, true);
+
+        // Pre-highlight whatever the viewer is currently pointed at, so opening
+        // the picker and pressing Enter is a no-op rather than a silent reset.
+        let selected = if let AppMode::DiffViewer(state) = &self.mode {
+            rows.iter()
+                .position(|row| match (row, state.fix_target) {
+                    (ReviewDestinationRow::ExistingLive(_), FixTarget::ExistingLive) => true,
+                    (ReviewDestinationRow::Dedicated(a), FixTarget::DedicatedReview) => {
+                        state.review_harness.as_ref() == Some(a)
+                    }
+                    (
+                        ReviewDestinationRow::ExistingFeature { feature_id, .. },
+                        FixTarget::ExistingFeature,
+                    ) => state.fix_target_feature_id.as_deref() == Some(feature_id.as_str()),
+                    (ReviewDestinationRow::NewFeature, FixTarget::NewFeature) => true,
+                    _ => false,
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.destination_pick = Some(ReviewDestinationPickState { rows, selected });
+        }
+    }
+
+    /// The destination rows for a review of the feature at `source`: its live
+    /// session, a dedicated session per harness the machine enables (or the
+    /// project's preferred agent when none are configured), every other
+    /// feature, and, when `with_new_feature`, a new companion feature. The
+    /// new-feature row opens an overlay of the diff viewer, so a caller
+    /// outside the viewer (the Design Review room) leaves it out.
+    pub(crate) fn review_destination_rows(
+        &self,
+        source: Option<(usize, usize)>,
+        with_new_feature: bool,
+    ) -> Vec<ReviewDestinationRow> {
         // The dedicated-session harness list, same source as
         // `ReviewHarnessPick` uses: the machine's enabled harnesses, or the
         // reviewed project's preferred agent when none are configured.
@@ -140,32 +179,10 @@ impl App {
         let mut rows = vec![ReviewDestinationRow::ExistingLive(live_label)];
         rows.extend(agents.into_iter().map(ReviewDestinationRow::Dedicated));
         rows.extend(other_features);
-        rows.push(ReviewDestinationRow::NewFeature);
-
-        // Pre-highlight whatever the viewer is currently pointed at, so opening
-        // the picker and pressing Enter is a no-op rather than a silent reset.
-        let selected = if let AppMode::DiffViewer(state) = &self.mode {
-            rows.iter()
-                .position(|row| match (row, state.fix_target) {
-                    (ReviewDestinationRow::ExistingLive(_), FixTarget::ExistingLive) => true,
-                    (ReviewDestinationRow::Dedicated(a), FixTarget::DedicatedReview) => {
-                        state.review_harness.as_ref() == Some(a)
-                    }
-                    (
-                        ReviewDestinationRow::ExistingFeature { feature_id, .. },
-                        FixTarget::ExistingFeature,
-                    ) => state.fix_target_feature_id.as_deref() == Some(feature_id.as_str()),
-                    (ReviewDestinationRow::NewFeature, FixTarget::NewFeature) => true,
-                    _ => false,
-                })
-                .unwrap_or(0)
-        } else {
-            0
-        };
-
-        if let AppMode::DiffViewer(state) = &mut self.mode {
-            state.destination_pick = Some(ReviewDestinationPickState { rows, selected });
+        if with_new_feature {
+            rows.push(ReviewDestinationRow::NewFeature);
         }
+        rows
     }
 
     /// Whether the destination picker is open (so key handling routes to it

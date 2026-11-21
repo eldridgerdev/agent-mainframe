@@ -16,6 +16,9 @@ pub const ROLE_REVIEWER: &str = "reviewer";
 /// The role of an L0 answer: the stored record, quoted.
 pub const ROLE_RECORD: &str = "record";
 
+/// Why an approved review refuses every action.
+const READ_ONLY: &str = "This review is approved and read-only";
+
 /// An answer from the question ladder.
 struct LadderAnswer {
     role: &'static str,
@@ -59,11 +62,15 @@ impl App {
             if room.tab != RoomTab::Agenda {
                 return;
             }
-            match room.selected_item() {
-                None => Some("Nothing selected".to_string()),
-                Some(item) => transition(ItemState::parse(&item.state), action_for(kind))
-                    .err()
-                    .map(str::to_string),
+            if room.read_only() {
+                Some(READ_ONLY.to_string())
+            } else {
+                match room.selected_item() {
+                    None => Some("Nothing selected".to_string()),
+                    Some(item) => transition(ItemState::parse(&item.state), action_for(kind))
+                        .err()
+                        .map(str::to_string),
+                }
             }
         };
         match refusal {
@@ -128,6 +135,10 @@ impl App {
     /// Apply `action` to the selected item and persist it. Returns whether
     /// it was applied; a refusal or a failed write is toasted.
     fn design_review_apply(&mut self, action: ItemAction, text: Option<String>) -> bool {
+        if matches!(&self.mode, AppMode::DesignReview(room) if room.read_only()) {
+            self.push_toast_warning(READ_ONLY);
+            return false;
+        }
         let prepared = match &self.mode {
             AppMode::DesignReview(room) => room.selected_item().map(|item| {
                 let next = transition(ItemState::parse(&item.state), action);

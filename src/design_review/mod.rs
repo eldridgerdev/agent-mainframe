@@ -7,12 +7,14 @@
 //!   AMF ingests by byte offset.
 //! - [`agenda`] and [`usage`]: the review room's agenda derivation and item
 //!   state machine, and the Usage tab's ledger aggregation.
-//! - [`capture`]: `amf decision add`, which runs outside the TUI, never opens
+//! - [`brief`]: the refinement brief a finished round sends the developer.
+//! - [`capture`]: `amf decision add` and `amf review reply`, which run outside the TUI, never opens
 //!   `amf.db`, and derives the mechanical fields from git.
 //!
 //! App glue (turn-end ingest into `amf.db`) lives in `src/app/design_review/`.
 
 pub mod agenda;
+pub mod brief;
 pub mod capture;
 pub mod outbox;
 pub mod record;

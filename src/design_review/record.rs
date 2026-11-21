@@ -13,6 +13,8 @@ pub const WHY_CAP: usize = 400;
 pub const REJECTED_ITEM_CAP: usize = 160;
 pub const REJECTED_MAX: usize = 3;
 pub const ASK_CAP: usize = 200;
+/// A developer's reply (`amf review reply`).
+pub const REPLY_CAP: usize = 400;
 /// `--supersedes` names an earlier record (`d4`); anything longer is noise.
 pub const SUPERSEDES_CAP: usize = 32;
 pub const PATHS_CAP: usize = 40;
@@ -146,12 +148,61 @@ pub struct DecisionRecord {
     pub ts: String,
 }
 
-/// One line of `outbox.jsonl`, tagged by `type` so later phases can add
-/// `"reply"` lines (`amf review reply`) beside decisions.
+/// The sequence number a `--supersedes` value names: `d4`, `D4` or `4`.
+pub fn parse_decision_ref(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let digits = text.strip_prefix(['d', 'D']).unwrap_or(text);
+    if digits.is_empty() || digits.len() > 9 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|n| *n > 0)
+}
+
+/// How the developer answers one brief item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplyKind {
+    /// A change item was done.
+    Done,
+    /// A change item was declined, with the reason.
+    Pushback,
+    /// A question item was answered.
+    Answer,
+}
+
+impl ReplyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplyKind::Done => "done",
+            ReplyKind::Pushback => "pushback",
+            ReplyKind::Answer => "answer",
+        }
+    }
+}
+
+/// A developer's reply to one brief item, as written to the outbox. The CLI
+/// does not know the round, so ingest matches the newest round that has
+/// `label`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplyRecord {
+    pub uid: String,
+    /// `C<n>` or `Q<n>`, upper case.
+    pub label: String,
+    pub kind: ReplyKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// RFC 3339.
+    pub ts: String,
+}
+
+/// One line of `outbox.jsonl`, tagged by `type`: decisions
+/// (`amf decision add`) and replies (`amf review reply`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum OutboxLine {
     Decision(DecisionRecord),
+    Reply(ReplyRecord),
 }
 
 #[cfg(test)]
@@ -243,6 +294,32 @@ mod tests {
         assert!(json.starts_with(r#"{"type":"decision","#), "{json}");
         assert!(json.contains(r#""kind":"tradeoff""#));
         assert!(!json.contains("dirty"), "{json}");
+        assert_eq!(serde_json::from_str::<OutboxLine>(&json).unwrap(), line);
+    }
+
+    #[test]
+    fn decision_refs_parse_with_or_without_the_d() {
+        assert_eq!(parse_decision_ref("d4"), Some(4));
+        assert_eq!(parse_decision_ref(" D12 "), Some(12));
+        assert_eq!(parse_decision_ref("7"), Some(7));
+        for bad in ["", "d", "d0", "x4", "d4x", "d-1"] {
+            assert_eq!(parse_decision_ref(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn reply_line_round_trips_with_a_lowercase_kind() {
+        let line = OutboxLine::Reply(ReplyRecord {
+            uid: "r1".into(),
+            label: "C1".into(),
+            kind: ReplyKind::Pushback,
+            text: "not worth it".into(),
+            session_id: None,
+            ts: "2026-11-13T00:00:00Z".into(),
+        });
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.starts_with(r#"{"type":"reply","#), "{json}");
+        assert!(json.contains(r#""kind":"pushback""#));
         assert_eq!(serde_json::from_str::<OutboxLine>(&json).unwrap(), line);
     }
 }

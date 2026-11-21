@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use ratatui::text::Line;
 
+use crate::app::ReviewDestinationPickState;
 use crate::db::AmfDb;
 use crate::db::design_review::{
     DesignDecision, DesignReviewItem, DesignReviewRound, DesignReviewTurn,
@@ -17,6 +18,7 @@ use crate::design_packet::detectors;
 use crate::design_review::agenda::{
     self, AgendaInputs, ItemKind, ItemState, NOT_PREPARED, StoredItem, derive_agenda, merge_agenda,
 };
+use crate::design_review::brief::Brief;
 use crate::design_review::usage::{self, Grouping, UsageRow};
 use crate::design_review::{DESIGN_REVIEW_CLAUDE_ONLY, design_review_unavailable_reason};
 
@@ -48,6 +50,31 @@ impl InputKind {
             InputKind::Ask => "Question (Enter asks)",
         }
     }
+}
+
+/// A round's verdict once approved: the room is then read-only.
+pub const VERDICT_APPROVED: &str = "approved";
+/// A round's verdict once its brief went to the developer.
+pub const VERDICT_CHANGES_REQUESTED: &str = "changes-requested";
+
+/// Where finishing the round has got to (`f`).
+#[derive(Debug, Clone)]
+pub enum FinishStage {
+    /// Choosing where the brief goes (the Final Review destination rows).
+    Destination(ReviewDestinationPickState),
+    /// Confirming the dispatch to the chosen destination.
+    ConfirmSend(ReviewDestinationPickState),
+    /// Confirming approval.
+    ConfirmApprove,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinishState {
+    pub stage: FinishStage,
+    /// The brief for a changes-requested finish; `None` when approving.
+    pub brief: Option<Brief>,
+    /// Open decisions approval will mark accepted.
+    pub open_decisions: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +136,11 @@ pub struct DesignReviewRoom {
     pub feature_name: String,
     pub workdir: PathBuf,
     pub round: i64,
+    pub round_id: String,
+    /// The round's verdict, once finished.
+    pub verdict: Option<String>,
+    /// The finish flow, while it is open.
+    pub finish: Option<FinishState>,
     pub items: Vec<DesignReviewItem>,
     pub selected: usize,
     pub list_scroll: usize,
@@ -132,6 +164,11 @@ pub struct DesignReviewRoom {
 }
 
 impl DesignReviewRoom {
+    /// An approved review is shown, not changed.
+    pub fn read_only(&self) -> bool {
+        self.verdict.as_deref() == Some(VERDICT_APPROVED)
+    }
+
     pub fn selected_item(&self) -> Option<&DesignReviewItem> {
         self.items.get(self.selected)
     }
@@ -225,6 +262,8 @@ pub(crate) fn derive_and_store_agenda(
                 paths: plan.paths.clone(),
                 state: plan.state.as_str().to_string(),
                 stale: plan.stale,
+                reply_kind: None,
+                reply: None,
                 created_at: now.clone(),
                 updated_at: now.clone(),
             };
@@ -421,6 +460,9 @@ impl App {
             feature_name,
             workdir,
             round: round.round,
+            round_id: round.id.clone(),
+            verdict: round.verdict.clone(),
+            finish: None,
             items,
             selected: 0,
             list_scroll: 0,

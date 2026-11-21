@@ -13,7 +13,10 @@ use ratatui::{
 };
 
 use super::super::dashboard::centered_rect;
-use crate::app::design_review::room::{DesignReviewRoom, InputKind, RoomTab, header_label};
+use crate::app::design_review::finish::verdict_label;
+use crate::app::design_review::room::{
+    DesignReviewRoom, FinishStage, InputKind, RoomTab, header_label,
+};
 use crate::design_review::agenda::ItemState;
 use crate::design_review::usage::{self, CALL_COLUMNS, COLUMNS};
 use crate::theme::Theme;
@@ -54,9 +57,104 @@ pub fn draw_design_review(frame: &mut Frame, room: &mut DesignReviewRoom, theme:
         next += 1;
     }
     draw_footer(frame, chunks[next], room, theme);
+    if room.finish.is_some() {
+        draw_finish(frame, room, theme);
+    }
     if room.help_open {
         draw_help(frame, theme);
     }
+}
+
+/// The finish flow's modal: destination rows, or a confirmation line.
+fn draw_finish(frame: &mut Frame, room: &DesignReviewRoom, theme: &Theme) {
+    let Some(finish) = &room.finish else {
+        return;
+    };
+    let area = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, area);
+    let hint = |text: &str| Line::from(Span::styled(text.to_string(), muted(theme)));
+    let (title, lines) = match &finish.stage {
+        FinishStage::Destination(pick) => {
+            let mut lines = Vec::new();
+            if let Some(brief) = &finish.brief {
+                lines.push(Line::from(Span::styled(
+                    brief.text.lines().next().unwrap_or_default().to_string(),
+                    text_style(theme),
+                )));
+                lines.push(Line::raw(""));
+            }
+            lines.push(hint("Where should the brief go?"));
+            for (index, row) in pick.rows.iter().enumerate() {
+                let marker = if index == pick.selected { "▶ " } else { "  " };
+                let mut line = Line::from(Span::styled(
+                    format!("{marker}{}", row.label()),
+                    text_style(theme),
+                ));
+                if index == pick.selected {
+                    line = line.style(
+                        Style::default()
+                            .bg(theme.selection.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+                lines.push(line);
+            }
+            lines.push(Line::raw(""));
+            lines.push(hint("j/k choose · Enter next · Esc cancel"));
+            (" Send changes ", lines)
+        }
+        FinishStage::ConfirmSend(pick) => {
+            let destination = pick
+                .rows
+                .get(pick.selected)
+                .map(|row| row.label())
+                .unwrap_or_default();
+            let mut lines = vec![Line::from(Span::styled(
+                format!("Send the brief to: {destination}"),
+                text_style(theme),
+            ))];
+            if let Some(brief) = &finish.brief {
+                lines.push(Line::raw(""));
+                lines.extend(
+                    brief
+                        .text
+                        .lines()
+                        .map(|l| Line::from(Span::styled(l.to_string(), text_style(theme)))),
+                );
+                lines.push(Line::raw(""));
+                lines.push(hint(&format!(
+                    "about {} tokens; a brief of 2000 or more goes through a file",
+                    brief.estimated_tokens()
+                )));
+            }
+            lines.push(hint("Enter send · Esc back"));
+            (" Confirm ", lines)
+        }
+        FinishStage::ConfirmApprove => (
+            " Approve ",
+            vec![
+                Line::from(Span::styled(
+                    "Every item is accepted. Approve this design?",
+                    text_style(theme),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "{} open decision(s) will be marked accepted.",
+                        finish.open_decisions
+                    ),
+                    text_style(theme),
+                )),
+                Line::raw(""),
+                hint("Enter approve · Esc cancel"),
+            ],
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(pane_block(title.to_string(), theme))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn text_style(theme: &Theme) -> Style {
@@ -96,6 +194,18 @@ fn draw_header(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &T
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  ·  Round {}", room.round), text_style(theme)),
+        Span::styled(
+            verdict_label(room.verdict.as_deref())
+                .map(|label| format!("  ·  {label}"))
+                .unwrap_or_default(),
+            Style::default()
+                .fg(if room.read_only() {
+                    theme.success.to_color()
+                } else {
+                    theme.warning.to_color()
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!("  ·  {} (u: usage)", room.cost_total),
             text_style(theme),
@@ -255,6 +365,7 @@ fn thread_lines<'a>(room: &DesignReviewRoom, theme: &Theme) -> Vec<Line<'a>> {
     for turn in &room.turns {
         let (speaker, color) = match turn.role.as_str() {
             "reviewer" => ("You".to_string(), theme.primary.to_color()),
+            "developer" => ("Developer".to_string(), theme.success.to_color()),
             "record" => (
                 format!("Record ({})", turn.level.as_deref().unwrap_or("L0")),
                 theme.info.to_color(),
@@ -349,6 +460,16 @@ fn key_hint<'a>(key: &'a str, label: &'a str, theme: &Theme) -> [Span<'a>; 2] {
 fn draw_footer(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &Theme) {
     let hints: Vec<(&str, &str)> = if room.input.is_some() {
         vec![("Enter", "send"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
+    } else if room.finish.is_some() {
+        vec![("j/k", "choose"), ("Enter", "next"), ("Esc", "back")]
+    } else if room.read_only() && room.tab == RoomTab::Agenda {
+        vec![
+            ("j/k", "move"),
+            ("o", "open files"),
+            ("Tab", "usage"),
+            ("?", "help"),
+            ("Esc", "close"),
+        ]
     } else if room.tab == RoomTab::Usage {
         if room.usage.drill.is_some() {
             vec![
@@ -374,6 +495,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, room: &DesignReviewRoom, theme: &T
             ("n", "note"),
             ("c", "request change"),
             ("s", "ask"),
+            ("f", "finish"),
             ("o", "open files"),
             ("Tab", "usage"),
             ("?", "help"),
@@ -427,6 +549,7 @@ fn draw_help(frame: &mut Frame, theme: &Theme) {
         entry("n", "Accept with a note"),
         entry("c", "Request a change"),
         entry("s", "Ask a question (answered from the decision's record)"),
+        entry("f", "Finish: send changes to the developer, or approve"),
         entry("o / Enter", "Open the item's files in the diff viewer"),
         entry("Tab / u", "Open the Usage tab"),
         entry("Esc / q", "Close the room"),
@@ -627,6 +750,8 @@ mod tests {
                 paths: vec![],
                 state: state.into(),
                 stale,
+                reply_kind: None,
+                reply: None,
                 created_at: "t".into(),
                 updated_at: "t".into(),
             }
@@ -648,6 +773,9 @@ mod tests {
             feature_name: "feat".into(),
             workdir: std::path::PathBuf::from("/tmp"),
             round: 1,
+            round_id: "r".into(),
+            verdict: None,
+            finish: None,
             items: vec![
                 item(0, "brief", "Brief", "accepted", Staleness::Current),
                 item(

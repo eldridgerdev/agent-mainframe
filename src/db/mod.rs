@@ -960,6 +960,55 @@ impl AmfDb {
         design_review::set_item_state(&self.conn, item_id, state, now)
     }
 
+    pub fn set_design_review_item_label(&self, item_id: &str, label: &str) -> Result<()> {
+        design_review::set_item_label(&self.conn, item_id, label)
+    }
+
+    pub fn set_design_review_item_reply(
+        &self,
+        item_id: &str,
+        kind: &str,
+        reply: &str,
+        now: &str,
+    ) -> Result<()> {
+        design_review::set_item_reply(&self.conn, item_id, kind, reply, now)
+    }
+
+    pub fn design_review_item_by_label(
+        &self,
+        feature_id: &str,
+        label: &str,
+    ) -> Result<Option<design_review::DesignReviewItem>> {
+        design_review::find_item_by_label(&self.conn, feature_id, label)
+    }
+
+    pub fn design_review_round_verdict(&self, round_id: &str) -> Result<Option<String>> {
+        design_review::round_verdict(&self.conn, round_id)
+    }
+
+    pub fn design_review_turn_exists(&self, turn_id: &str) -> Result<bool> {
+        design_review::turn_exists(&self.conn, turn_id)
+    }
+
+    pub fn mark_design_decision_superseded(&self, feature_id: &str, seq: i64) -> Result<bool> {
+        design_review::mark_decision_superseded(&self.conn, feature_id, seq)
+    }
+
+    pub fn accept_open_design_decisions(&self, feature_id: &str) -> Result<usize> {
+        design_review::accept_open_decisions(&self.conn, feature_id)
+    }
+
+    pub fn finish_design_review_round(
+        &self,
+        round_id: &str,
+        verdict: &str,
+        brief: Option<&str>,
+        destination: Option<&str>,
+        now: &str,
+    ) -> Result<()> {
+        design_review::finish_round(&self.conn, round_id, verdict, brief, destination, now)
+    }
+
     pub fn design_review_turns(
         &self,
         item_id: &str,

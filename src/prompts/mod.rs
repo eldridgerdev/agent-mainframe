@@ -112,11 +112,17 @@ pub enum PromptId {
     DesignUnexplained,
     /// Design Review packet: scribe compares `AMF_PLAN.md` with the brief.
     DesignPlanDrift,
+    /// Design Review question ladder L1: the presenter answers a reviewer's
+    /// question from the record, linked hunks and packet (no tools).
+    DesignPresenter,
+    /// Design Review question ladder L2: the presenter's deep dive, which may
+    /// explore the repository read-only.
+    DesignPresenterDeep,
 }
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 31] = [
+    pub const ALL: [PromptId; 33] = [
         PromptId::ModelAnalysis,
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
@@ -148,6 +154,8 @@ impl PromptId {
         PromptId::DesignFit,
         PromptId::DesignUnexplained,
         PromptId::DesignPlanDrift,
+        PromptId::DesignPresenter,
+        PromptId::DesignPresenterDeep,
     ];
 
     /// The stable string key. Used verbatim as the SQLite `prompt_id` and the
@@ -185,6 +193,8 @@ impl PromptId {
             PromptId::DesignFit => "design_review.fit",
             PromptId::DesignUnexplained => "design_review.unexplained",
             PromptId::DesignPlanDrift => "design_review.plan_drift",
+            PromptId::DesignPresenter => "design_review.presenter",
+            PromptId::DesignPresenterDeep => "design_review.presenter_deep",
         }
     }
 
@@ -249,7 +259,7 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 31] = [
+static SPECS: [PromptSpec; 33] = [
     PromptSpec {
         id: PromptId::ModelAnalysis,
         title: "Implementation model advice",
@@ -545,6 +555,22 @@ static SPECS: [PromptSpec; 31] = [
         default_template: defaults::DESIGN_PLAN_DRIFT,
         harness_variants: NO_HARNESS_VARIANTS,
     },
+    PromptSpec {
+        id: PromptId::DesignPresenter,
+        title: "Design Review: presenter answer (L1)",
+        summary: "Presenter answers a reviewer's question from the record, hunks and packet, no tools.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_PRESENTER,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::DesignPresenterDeep,
+        title: "Design Review: presenter deep dive (L2)",
+        summary: "Presenter answers a reviewer's question, exploring the repository read-only.",
+        placeholders: &["context"],
+        default_template: defaults::DESIGN_PRESENTER_DEEP,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
 ];
 
 #[cfg(test)]
@@ -611,6 +637,11 @@ mod tests {
             (PromptId::DesignFit, "design_review.fit"),
             (PromptId::DesignUnexplained, "design_review.unexplained"),
             (PromptId::DesignPlanDrift, "design_review.plan_drift"),
+            (PromptId::DesignPresenter, "design_review.presenter"),
+            (
+                PromptId::DesignPresenterDeep,
+                "design_review.presenter_deep",
+            ),
         ] {
             assert_eq!(id.as_str(), key);
             assert_eq!(PromptId::from_key(key), Some(id));

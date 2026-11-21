@@ -212,7 +212,11 @@ fn a_section_without_an_artifact_says_not_prepared_and_a_stored_one_renders() {
     let (db_file, mut app) = setup(&dir);
     open(&mut app);
     assert_eq!(room(&app).selected_item().unwrap().title, "Brief");
-    assert_eq!(room(&app).content, "Not prepared yet");
+    assert!(
+        room(&app).content.starts_with("Not prepared yet"),
+        "{}",
+        room(&app).content
+    );
 
     let conn = rusqlite::Connection::open(db_file.path()).unwrap();
     for (hash, body) in [

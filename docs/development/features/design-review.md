@@ -7,9 +7,9 @@ phases are in [the plan](../../backlog/design-review-plan.md).
 Design Review has two halves. The **Decision Log** (Phase 1, built) has the
 agent record the choices a reviewer would question while it works. The
 **review room** lays those records out as an agenda, beside the **packet**
-(Phase 2, built) that staff models prepare. Phase 3 built the room shell
-(agenda, content, thread, Usage tab); wiring the room to the packet, the
-question ladder above L0 and refinement (Phase 4) come later.
+(Phase 2, built) that staff models prepare. Phase 3 built the room (agenda,
+content, thread, Usage tab), wired it to the packet and added the question
+ladder's L0-L2; refinement and L3 (Phase 4) come later.
 
 ```text
 src/design_review/          # pure, no App
@@ -27,6 +27,7 @@ src/app/design_review/      # App glue
 ├── packet_inputs.rs # background git gather, ledger token counts
 ├── room.rs      # AppMode::DesignReview state, open/close, agenda storage
 ├── actions.rs   # accept / note / request change / ask, open files
+├── presenter.rs # question ladder L1/L2: estimate, confirm, run, fill turn
 ├── usage_tab.rs # ledger reload, grouping, drill-down, copy
 └── snapshot.rs  # base/head commit, diff fingerprint, changed files
 src/handlers/design_review.rs, src/ui/dialogs/design_review.rs  # keys, draw
@@ -182,7 +183,7 @@ section with `AmfDb::latest_design_review_artifact(feature_id, section)`.
   request id. Preparing again (any round or feature) or
   `cancel_design_review_packet` supersedes it; a result with another id
   still writes its ledger row (the spend happened) but never becomes an
-  artifact or changes the status. Superseded runs are not killed; they
+  artifact or changes the status. Closing the review room cancels. Superseded runs are not killed; they
   finish and release their leases.
 - **Failures** log `log_warn("design-review", ..)`, leave
   `SectionState::Failed(reason)` and no artifact, so the next preparation
@@ -219,8 +220,10 @@ or `q` returns to the session view. The room creates no session row.
   opens the room when it arrives, and only if the reviewer is still viewing
   that feature. Opening then ingests the outbox, finds or creates
   round 1 (`design_review_rounds`: base and head commit, diff fingerprint),
-  call `request_design_review_packet(pi, fi, round)` (a no-op that Phase 2b
-  fills), then derive and store the agenda.
+  calls `request_design_review_packet(pi, fi, round)`, which converts the
+  round to `u32` (an out-of-range round logs and prepares nothing) and calls
+  `prepare_design_review_packet`, then derives and stores the agenda. The
+  room keeps the snapshot for re-deriving the agenda and for the presenter.
 - **Agenda derivation is pure** (`agenda::derive_agenda`): brief,
   architecture, key flow, fit, each non-superseded decision (`d<seq> <title>`),
   the `unexplained` artifact (only when stored), each uncovered detector hit,
@@ -249,24 +252,71 @@ or `q` returns to the session view. The room creates no session row.
   first, as one transaction; the room's copy changes only after the commit.
   The room resumes at the first item that `awaits_reviewer` (pending or
   re-review).
-- **Threads** are `design_review_turns` (`reviewer`, `record`; the ladder's
-  presenter and developer roles are later). Note, request-change and ask text
-  is a reviewer turn.
-- **Ask is L0 only** (`actions::answer_question`): it quotes the decision's
+- **Threads** are `design_review_turns` (`reviewer`, `record`, `presenter`;
+  the developer role is Phase 4). Note, request-change and ask text is a
+  reviewer turn.
+- **Ask answers at L0** (`actions::answer_question`): it quotes the decision's
   stored why and rejected options as a `record` turn at level `L0`, or says no
-  decision is recorded. L1 and L2 branch from that function once the staff
-  runner is merged.
+  decision is recorded. The presenter levels are below.
 - **Content** is Markdown through the shared renderer with Mermaid: a packet
   section shows the newest `design_review_artifacts` row for its key by id
-  (`latest_design_review_artifact`) and reads "Not prepared yet" when there is
-  none; a decision, ask or detector hit is rendered from its record. Content
-  and thread are re-read on every selection.
+  (`latest_design_review_artifact`) and, when there is none, "Not prepared
+  yet" with its packet state: being prepared, failed with the reason, or
+  skipped with the reason. A decision, ask or detector hit is rendered from
+  its record. Content and thread are re-read on every selection.
+- **Packet in the room.** Closing the room calls
+  `cancel_design_review_packet` (runs in flight still reach the ledger).
+  `poll_design_review_bg` ends with `design_review_sync_packet`, which copies
+  `design_review_packet_status` into `room.packet` (the renderer reads only
+  that copy, never the runtime or the database). When a section changes
+  state, the selected item reloads if it is that section, so an arriving
+  artifact replaces "Not prepared yet"; an `unexplained` section turning
+  Done or Cached re-derives and stores the agenda, keeping the selection by
+  item id, so its item appears. Returning from the diff viewer syncs too.
+  Section items carry a suffix while not ready: ` preparing…`, ` failed`,
+  ` skipped` (`room::section_badge`).
 - **Open files** (`o`/Enter) opens the ordinary diff viewer on the item's first
   path (`DiffViewerState::focus_path`, which also matches a directory) with
   `return_to` set to the room, so closing the viewer lands back in it.
+- **Question ladder L1/L2** (`presenter.rs`). From an item whose thread has
+  an answered question (`latest_question`: the last reviewer turn followed by
+  a turn with a level, so notes and change requests are never escalated),
+  `1` escalates it to the presenter with no tools (L1,
+  `design_review.presenter`, 8K cap) and `2` to its read-only deep dive (L2,
+  `design_review.presenter_deep`, 24K seed). `1` and `2` were free in the
+  room. The prompt is built first: `design_packet::context::presenter_context`
+  budgets the question, item title, decision record (or "No decision is
+  recorded"), the other decisions' titles, the item's own packet section (the
+  brief for non-section items) and the item's linked hunks from the room's
+  snapshot, in that priority. The footer then shows
+  `estimate_line`: level, model, harness, tools, prompt tokens, an assumed
+  reply (600 L1, 1,000 L2) and the estimated dollars at the presenter
+  model's `token_cost` rates (`price assumed` for an unknown model, `plus
+  what it reads` for L2). `y` or Enter launches; Esc, `n` or `q` drops it;
+  other keys wait. No presenter model, an over-cap prompt (only with an
+  override), no question or an answer already pending refuse with a toast.
+- **Presenter runs reuse the packet's machinery.** `packet::spawn_staff_run`
+  (shared with section runs) runs the call through `PacketRuntime`'s runner,
+  so the same `HeadlessRunner::run_with_usage` and headless lease apply and
+  tests use the same fake; results come back on the runtime's presenter
+  channel and `pending()` counts them, so `cli.rs` keeps polling. Each run
+  takes a request id from the packet counter. Launching writes a `presenter`
+  turn at its level with `status = 'pending'`; the outcome writes one ledger
+  row (`staff_usage_row`: phase `discuss`, task `question-L1`/`question-L2`,
+  agent `presenter`, item = agenda item id, the room's round) and fills the
+  turn (`complete_design_review_turn`) with `done` and an attribution line
+  ("Answered by the presenter (model on harness, tools), not the
+  developer."), or `failed` and a one-line reason of at most 160 chars, and
+  the row's `usage_id`. Presenter runs are not tied to the active packet:
+  the answer is stored after the room closes (it was paid for). It is
+  dropped, its turn left pending, only when the item no longer exists; the
+  ledger row is written either way. Both templates tell the model to write
+  "not recorded" rather than invent a motive.
 - **Usage tab** (`Tab` or `u`): aggregation is pure
   (`design_review::usage`). Groupings cycle with `g` (phase, task, agent, model,
-  item, round); `In` is input plus cache read plus cache write; `Eff` is shown
+  item, round; the item column shows the agenda item's title when the item
+  is in the open round, else its id); `In` is input plus cache read plus
+  cache write; `Eff` is shown
   only for a group with one model (`-` otherwise, and never for the total);
   `~` marks estimated rows, `*` an assumed price, `-` an unavailable figure.
   The footer is `Premium $x · Staff $y · Saved by cache $z (n sections

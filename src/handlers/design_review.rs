@@ -1,10 +1,11 @@
 //! Key handling for the Design Review room. Layers swallow keys in the order
-//! help, text prompt, then the active tab, so a stray `q` cannot close the
-//! room while a note is half typed.
+//! help, text prompt, escalation confirm, then the active tab, so a stray `q`
+//! cannot close the room while a note is half typed.
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::design_review::presenter::LadderLevel;
 use crate::app::design_review::room::{InputKind, RoomTab};
 use crate::app::{App, AppMode};
 
@@ -12,10 +13,11 @@ use crate::app::{App, AppMode};
 const PAGE_STEP: isize = 10;
 
 pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    let (help_open, typing, tab, drilled) = match &app.mode {
+    let (help_open, typing, confirming, tab, drilled) = match &app.mode {
         AppMode::DesignReview(room) => (
             room.help_open,
             room.input.is_some(),
+            room.confirm.is_some(),
             room.tab,
             room.usage.drill.is_some(),
         ),
@@ -34,6 +36,18 @@ pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     if typing {
         handle_input_key(app, key);
+        return Ok(());
+    }
+
+    // A priced escalation: one key runs it, Esc/n/q drops it, the rest wait.
+    if confirming {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => app.design_review_confirm_escalation(),
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                app.design_review_cancel_escalation()
+            }
+            _ => {}
+        }
         return Ok(());
     }
 
@@ -69,6 +83,12 @@ pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.design_review_begin_input(InputKind::RequestChange)
         }
         (RoomTab::Agenda, KeyCode::Char('s')) => app.design_review_begin_input(InputKind::Ask),
+        (RoomTab::Agenda, KeyCode::Char('1')) => {
+            app.design_review_begin_escalation(LadderLevel::L1)
+        }
+        (RoomTab::Agenda, KeyCode::Char('2')) => {
+            app.design_review_begin_escalation(LadderLevel::L2)
+        }
         (RoomTab::Agenda, KeyCode::Char('o') | KeyCode::Enter) => app.design_review_open_files(),
 
         (RoomTab::Usage, KeyCode::Esc) => {

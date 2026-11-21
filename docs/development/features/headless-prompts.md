@@ -37,7 +37,7 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 31 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 33 stable ids
   (`model_analysis.recommend`,
   `plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`/`.quick_round`/`.quick_synthesis`,
@@ -49,14 +49,16 @@ and `AMF_PLAN.md` for the design decisions.
   `session.summary`, and the batched-review set
   `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`, and the Design
   Review packet set `design_review.brief`/`.architecture`/`.key_flow`/`.fit`/
-  `.unexplained`/`.plan_drift`, each with one `{{context}}` token, the two
-  diagram ones also `{{renderer_limits}}` from `src/mermaid.rs`). `defaults.rs`
+  `.unexplained`/`.plan_drift` and the question ladder's
+  `design_review.presenter`/`.presenter_deep` (L1 no tools, L2 read-only),
+  each with one `{{context}}` token, the two diagram ones also
+  `{{renderer_limits}}` from `src/mermaid.rs`). `defaults.rs`
   holds the built-in text. The 8
   plan-interview templates keep a single `{{interview_input}}` token carrying
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins the six
   full-mode ones to the `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 23 use granular tokens.
+  can't be `concat!`-ed); the other 25 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop

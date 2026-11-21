@@ -781,8 +781,9 @@ uses the same ledger to check this table against a real feature.
 - [x] Agenda derivation and item states, including the "possibly stale"
       marker
 - [x] Pick a free entry key from the keymap
-- [ ] Persisted threads; ladder levels L0–L2 (threads and L0 done; L1–L2
-      wait for the staff-run branch)
+- [x] Persisted threads; ladder levels L0–L2
+- [x] Room wired to the packet: preparation on open, cancel on close,
+      section states, artifacts refresh as they arrive
 - [x] Open linked files in the diff viewer
 - [x] Usage tab: six groupings, drill-down to calls, premium and staff
       split, provenance markers, copy as Markdown

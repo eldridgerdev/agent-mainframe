@@ -24,10 +24,10 @@ struct LadderAnswer {
 }
 
 /// The question ladder (plan section 4): a question is answered at the lowest
-/// level that can answer it. Only L0, the lookup of the stored record, exists
-/// here; the presenter levels (L1, L2) branch from this function once the
-/// staff runner is merged. A decision's record is quoted as is; an item
-/// with no record says so rather than inventing a motive.
+/// level that can answer it. Ask answers at L0, the lookup of the stored
+/// record; the reviewer escalates the same question to the presenter (L1,
+/// L2) with `1`/`2` (`presenter.rs`). A decision's record is quoted as is;
+/// an item with no record says so rather than inventing a motive.
 fn answer_question(room: &DesignReviewRoom, item: &DesignReviewItem) -> LadderAnswer {
     let body = match room.decision_for(item) {
         Some(decision) => record_answer(decision),

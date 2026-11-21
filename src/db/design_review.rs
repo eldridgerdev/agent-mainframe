@@ -442,6 +442,35 @@ pub fn append_turn(conn: &Connection, turn: &DesignReviewTurn) -> Result<()> {
     Ok(())
 }
 
+/// Fill in a pending turn once its answer arrives: the body, the final
+/// status (`done` or `failed`) and the ledger row that paid for it. Returns
+/// false when the turn no longer exists.
+pub fn complete_turn(
+    conn: &Connection,
+    turn_id: &str,
+    body: &str,
+    status: &str,
+    usage_id: Option<i64>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE design_review_turns SET body = ?2, status = ?3, usage_id = ?4 WHERE id = ?1",
+        params![turn_id, body, status, usage_id],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Whether an agenda item still exists.
+pub fn item_exists(conn: &Connection, item_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM design_review_items WHERE id = ?1",
+            params![item_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// One cached packet section (`design_review_artifacts`). `section` is a
 /// `token_cost::ledger::Task` string (`brief`, `architecture`, `key-flow`,
 /// `fit`, `unexplained`, `plan-drift`); `format` is `markdown`.

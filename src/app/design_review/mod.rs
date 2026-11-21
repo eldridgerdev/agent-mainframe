@@ -14,9 +14,11 @@ mod packet_inputs;
 
 use crate::db::design_review::DesignDecision;
 use crate::design_review::outbox;
-use crate::design_review::record::OutboxLine;
+use crate::design_review::record::{OutboxLine, parse_decision_ref};
 
 pub(crate) mod actions;
+pub(crate) mod finish;
+mod replies;
 pub(crate) mod room;
 mod snapshot;
 pub(crate) mod usage_tab;
@@ -43,7 +45,7 @@ impl App {
             )
     }
 
-    /// Ingest new Decision Log lines from the feature's outbox into `amf.db`,
+    /// Ingest new Decision Log and reply lines from the feature's outbox into `amf.db`,
     /// resuming at the stored cursor. Idempotent by uid, so re-reading a line
     /// (a replaced outbox, a lost cursor write) never duplicates it. The
     /// outbox is per checkout, so it is read only while this feature owns it
@@ -95,7 +97,9 @@ impl App {
         };
 
         let mut inserted = 0;
+        let mut applied_replies = 0;
         let mut failures = Vec::new();
+        let mut skipped = Vec::new();
         for line in &lines {
             match line {
                 OutboxLine::Decision(record) => {
@@ -104,6 +108,27 @@ impl App {
                         Ok(true) => inserted += 1,
                         Ok(false) => {}
                         Err(err) => failures.push(format!("{}: {err}", record.uid)),
+                    }
+                    // A later record that names an earlier one replaces it.
+                    // Re-applied on a re-read, which is a no-op.
+                    if let Some(target) = record.supersedes.as_deref().and_then(parse_decision_ref)
+                        && target < i64::from(record.seq)
+                        && let Err(err) = db.mark_design_decision_superseded(&feature_id, target)
+                    {
+                        failures.push(format!("{} supersedes: {err}", record.uid));
+                    }
+                }
+                OutboxLine::Reply(reply) => {
+                    match replies::apply_reply(db, &project_id, &feature_id, reply) {
+                        Ok(replies::ReplyOutcome::Applied) => applied_replies += 1,
+                        Ok(replies::ReplyOutcome::Duplicate) => {}
+                        Ok(replies::ReplyOutcome::UnknownLabel) => skipped.push(format!(
+                            "reply {} names no item ({})",
+                            reply.uid, reply.label
+                        )),
+                        Ok(replies::ReplyOutcome::Mismatch) => skipped
+                            .push(format!("reply {} does not fit {}", reply.uid, reply.label)),
+                        Err(err) => failures.push(format!("{}: {err}", reply.uid)),
                     }
                 }
             }
@@ -136,6 +161,15 @@ impl App {
             self.log_warn(
                 "design-review",
                 format!("failed to store outbox offset for {feature_id}: {err}"),
+            );
+        }
+        for reason in skipped {
+            self.log_warn("design-review", format!("skipped {reason}"));
+        }
+        if applied_replies > 0 {
+            self.log_info(
+                "design-review",
+                format!("ingested {applied_replies} reply(ies) for feature {feature_id}"),
             );
         }
         if inserted > 0 {

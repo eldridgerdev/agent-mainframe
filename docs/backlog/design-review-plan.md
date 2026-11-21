@@ -790,12 +790,12 @@ uses the same ledger to check this table against a real feature.
 
 ### Phase 4 — Refinement
 
-- [ ] Brief builder and dispatch through `review_destination`
-- [ ] `amf review reply` and L3 escalation with a cost preview
+- [x] Brief builder and dispatch through `review_destination`
+- [x] `amf review reply` (L3 escalation with a cost preview still open)
 - [ ] Developer rows from the windowed transcript reader for an escalation
       or a refinement; estimated capture rows
 - [ ] Round two: incremental packet, delta agenda
-- [ ] Approval and decision status
+- [x] Approval and decision status
 
 ### Phase 5 — After dogfooding
 

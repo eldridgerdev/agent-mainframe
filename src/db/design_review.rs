@@ -265,7 +265,7 @@ pub fn insert_round(conn: &Connection, round: &DesignReviewRound) -> Result<()> 
     Ok(())
 }
 
-/// One `design_review_items` row (the reply columns are Phase 4's).
+/// One `design_review_items` row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesignReviewItem {
     pub id: String,
@@ -280,47 +280,56 @@ pub struct DesignReviewItem {
     pub paths: Vec<String>,
     pub state: String,
     pub stale: crate::design_review::agenda::Staleness,
+    /// The developer's latest reply kind (`done`, `pushback`, `answer`).
+    pub reply_kind: Option<String>,
+    pub reply: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
 /// A round's items in agenda order.
 pub fn list_items(conn: &Connection, round_id: &str) -> Result<Vec<DesignReviewItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, round_id, feature_id, project_id, position, kind, ref_key, label,
-                title, paths, state, stale, created_at, updated_at
-         FROM design_review_items WHERE round_id = ?1
-         ORDER BY position ASC, rowid ASC",
-    )?;
+    let sql = format!(
+        "SELECT {ITEM_COLUMNS} FROM design_review_items WHERE round_id = ?1
+         ORDER BY position ASC, rowid ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(params![round_id], |row| {
-            Ok(DesignReviewItem {
-                id: row.get(0)?,
-                round_id: row.get(1)?,
-                feature_id: row.get(2)?,
-                project_id: row.get(3)?,
-                position: row.get(4)?,
-                kind: row.get(5)?,
-                ref_key: row.get(6)?,
-                label: row.get(7)?,
-                title: row.get(8)?,
-                paths: parse_list(row.get(9)?),
-                state: row.get(10)?,
-                stale: crate::design_review::agenda::Staleness::from_i64(row.get(11)?),
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?
+        .query_map(params![round_id], item_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+const ITEM_COLUMNS: &str = "id, round_id, feature_id, project_id, position, kind, ref_key, label,
+                title, paths, state, stale, reply_kind, reply, created_at, updated_at";
+
+fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DesignReviewItem> {
+    Ok(DesignReviewItem {
+        id: row.get(0)?,
+        round_id: row.get(1)?,
+        feature_id: row.get(2)?,
+        project_id: row.get(3)?,
+        position: row.get(4)?,
+        kind: row.get(5)?,
+        ref_key: row.get(6)?,
+        label: row.get(7)?,
+        title: row.get(8)?,
+        paths: parse_list(row.get(9)?),
+        state: row.get(10)?,
+        stale: crate::design_review::agenda::Staleness::from_i64(row.get(11)?),
+        reply_kind: row.get(12)?,
+        reply: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
 }
 
 pub fn insert_item(conn: &Connection, item: &DesignReviewItem) -> Result<()> {
     conn.execute(
         "INSERT INTO design_review_items
             (id, round_id, feature_id, project_id, position, kind, ref_key, label,
-             title, paths, state, stale, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             title, paths, state, stale, reply_kind, reply, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             item.id,
             item.round_id,
@@ -334,6 +343,8 @@ pub fn insert_item(conn: &Connection, item: &DesignReviewItem) -> Result<()> {
             json_list(&item.paths),
             item.state,
             item.stale.as_i64(),
+            item.reply_kind,
+            item.reply,
             item.created_at,
             item.updated_at,
         ],
@@ -356,6 +367,101 @@ pub fn update_item_layout(conn: &Connection, item: &DesignReviewItem) -> Result<
             json_list(&item.paths),
             item.stale.as_i64(),
         ],
+    )?;
+    Ok(())
+}
+
+/// Store the brief's label on an item.
+pub fn set_item_label(conn: &Connection, item_id: &str, label: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE design_review_items SET label = ?2 WHERE id = ?1",
+        params![item_id, label],
+    )?;
+    Ok(())
+}
+
+/// Store the developer's latest reply on an item.
+pub fn set_item_reply(
+    conn: &Connection,
+    item_id: &str,
+    kind: &str,
+    reply: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE design_review_items SET reply_kind = ?2, reply = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![item_id, kind, reply, now],
+    )?;
+    Ok(())
+}
+
+/// The item carrying `label` in the feature's newest round that has one.
+pub fn find_item_by_label(
+    conn: &Connection,
+    feature_id: &str,
+    label: &str,
+) -> Result<Option<DesignReviewItem>> {
+    let sql = format!(
+        "SELECT {ITEM_COLUMNS} FROM design_review_items i
+         WHERE i.feature_id = ?1 AND i.label = ?2
+         ORDER BY (SELECT r.round FROM design_review_rounds r WHERE r.id = i.round_id) DESC,
+                  i.position ASC
+         LIMIT 1"
+    );
+    Ok(conn
+        .query_row(&sql, params![feature_id, label], item_from_row)
+        .optional()?)
+}
+
+/// Whether a thread turn with this id exists (replies use their outbox uid).
+pub fn turn_exists(conn: &Connection, turn_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM design_review_turns WHERE id = ?1",
+            params![turn_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Mark the feature's agent decision numbered `seq` as superseded. Returns
+/// whether a row changed.
+pub fn mark_decision_superseded(conn: &Connection, feature_id: &str, seq: i64) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE design_decisions SET status = 'superseded'
+         WHERE feature_id = ?1 AND seq = ?2 AND source = 'agent' AND status != 'superseded'",
+        params![feature_id, seq],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Approval: every open decision of the feature becomes accepted. Superseded
+/// ones are untouched. Returns how many changed.
+pub fn accept_open_decisions(conn: &Connection, feature_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE design_decisions SET status = 'accepted'
+         WHERE feature_id = ?1 AND status = 'open'",
+        params![feature_id],
+    )?)
+}
+
+/// Finish a round: its verdict, and for changes requested the brief and where
+/// it went.
+pub fn finish_round(
+    conn: &Connection,
+    round_id: &str,
+    verdict: &str,
+    brief: Option<&str>,
+    destination: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE design_review_rounds
+         SET verdict = ?2, brief = ?3, destination = ?4, finished_at = ?5
+         WHERE id = ?1",
+        params![round_id, verdict, brief, destination, now],
     )?;
     Ok(())
 }
@@ -878,6 +984,8 @@ mod tests {
             paths: vec![],
             state: "pending".into(),
             stale: Default::default(),
+            reply_kind: None,
+            reply: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         };

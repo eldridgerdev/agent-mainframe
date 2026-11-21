@@ -146,6 +146,40 @@ enum Commands {
         #[command(subcommand)]
         command: DecisionCommands,
     },
+    /// Design Review refinement: answer the items of a review brief. Writes
+    /// the checkout's outbox; needs no running AMF.
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ReviewCommands {
+    /// Reply to one brief item, e.g. `amf review reply C1 --done "added a timer"`.
+    /// Prints `<label> reply recorded`.
+    ///
+    /// Give exactly one of --done, --pushback (for a `C` item) or --answer
+    /// (for a `Q` item). Replies over 400 characters are truncated, never
+    /// rejected; the reply then ends in `(truncated)`.
+    #[command(group(
+        clap::ArgGroup::new("reply_kind")
+            .required(true)
+            .args(["done", "pushback", "answer"]),
+    ))]
+    Reply {
+        /// The item's label from the brief: `C<n>` or `Q<n>`.
+        label: String,
+        /// The change is made; say what changed.
+        #[arg(long)]
+        done: Option<String>,
+        /// The change is declined; say why not.
+        #[arg(long)]
+        pushback: Option<String>,
+        /// The question's answer.
+        #[arg(long)]
+        answer: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -582,6 +616,49 @@ fn run_decision_command(command: DecisionCommands) -> ! {
     }
 }
 
+/// `amf review …`: one line on stdout on success, one line on stderr and a
+/// non-zero exit on error, like `amf decision`.
+fn run_review_command(command: ReviewCommands) -> ! {
+    use crate::design_review::{capture, record::ReplyKind};
+    let ReviewCommands::Reply {
+        label,
+        done,
+        pushback,
+        answer,
+    } = command;
+    let (kind, text) = match (done, pushback, answer) {
+        (Some(text), None, None) => (ReplyKind::Done, text),
+        (None, Some(text), None) => (ReplyKind::Pushback, text),
+        (None, None, Some(text)) => (ReplyKind::Answer, text),
+        _ => {
+            eprintln!("amf review: give exactly one of --done, --pushback or --answer");
+            std::process::exit(2);
+        }
+    };
+    let result = std::env::current_dir()
+        .context("cannot read the current directory")
+        .and_then(|cwd| {
+            capture::reply_add(
+                &cwd,
+                &label,
+                kind,
+                &text,
+                std::env::var(capture::SESSION_ENV).ok(),
+            )
+        });
+    match result {
+        Ok(ack) => {
+            println!("{ack}");
+            std::process::exit(0);
+        }
+        Err(err) => {
+            let message = format!("{err:#}").replace('\n', " ");
+            eprintln!("amf review: {message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -756,6 +833,10 @@ pub fn run() -> Result<()> {
 
     if let Some(Commands::Decision { command }) = cli.command {
         run_decision_command(command);
+    }
+
+    if let Some(Commands::Review { command }) = cli.command {
+        run_review_command(command);
     }
 
     if let Some(Commands::SetStatus {
@@ -2544,7 +2625,7 @@ fn run_loop<B: Backend + io::Write>(
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Commands, DecisionCommands, cleanup_hooks_at, startup_loading_pending,
+        Cli, Commands, DecisionCommands, ReviewCommands, cleanup_hooks_at, startup_loading_pending,
         startup_sidebar_can_warm,
     };
     use clap::Parser;
@@ -2679,6 +2760,41 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "amf", "decision", "add", "--kind", "bogus", "--title", "t", "--why", "w"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn review_reply_cli_takes_exactly_one_reply_kind() {
+        let cli = Cli::try_parse_from(["amf", "review", "reply", "C1", "--done", "added"]).unwrap();
+        let Some(Commands::Review {
+            command:
+                ReviewCommands::Reply {
+                    label,
+                    done,
+                    pushback,
+                    answer,
+                },
+        }) = cli.command
+        else {
+            panic!("expected review reply");
+        };
+        assert_eq!(label, "C1");
+        assert_eq!(done.as_deref(), Some("added"));
+        assert_eq!((pushback, answer), (None, None));
+        assert!(Cli::try_parse_from(["amf", "review", "reply", "Q1", "--answer", "a"]).is_ok());
+        assert!(Cli::try_parse_from(["amf", "review", "reply", "C1"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "amf",
+                "review",
+                "reply",
+                "C1",
+                "--done",
+                "a",
+                "--pushback",
+                "b"
             ])
             .is_err()
         );

@@ -22,6 +22,12 @@ pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => return Ok(()),
     };
 
+    let finishing = matches!(&app.mode, AppMode::DesignReview(room) if room.finish.is_some());
+    if finishing && !help_open {
+        handle_finish_key(app, key);
+        return Ok(());
+    }
+
     if help_open {
         if matches!(
             key.code,
@@ -69,6 +75,7 @@ pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.design_review_begin_input(InputKind::RequestChange)
         }
         (RoomTab::Agenda, KeyCode::Char('s')) => app.design_review_begin_input(InputKind::Ask),
+        (RoomTab::Agenda, KeyCode::Char('f')) => app.design_review_begin_finish(),
         (RoomTab::Agenda, KeyCode::Char('o') | KeyCode::Enter) => app.design_review_open_files(),
 
         (RoomTab::Usage, KeyCode::Esc) => {
@@ -92,6 +99,17 @@ pub fn handle_design_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Keys while the finish flow (destination, confirmation) is open.
+fn handle_finish_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.design_review_finish_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.design_review_finish_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.design_review_finish_move(-1),
+        KeyCode::Enter => app.design_review_finish_confirm(),
+        _ => {}
+    }
 }
 
 fn handle_input_key(app: &mut App, key: KeyEvent) {

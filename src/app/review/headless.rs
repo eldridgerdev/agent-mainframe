@@ -713,6 +713,7 @@ impl App {
                 dispatch.fix_target,
                 dispatch.fix_target_feature_id,
                 dispatch.review_harness,
+                None,
             );
         }
         Ok(())
@@ -1067,13 +1068,18 @@ impl App {
     ///   into the reviewed feature (that would defeat the isolation guarantee).
     ///
     /// Sets `self.message` and `self.mode`.
-    pub(super) fn dispatch_review_feedback(
+    ///
+    /// `prompt_override` replaces the standard "address the feedback" prompt
+    /// (Design Review pastes its refinement brief this way); the routing is
+    /// the same.
+    pub(crate) fn dispatch_review_feedback(
         &mut self,
         from_view: ViewState,
         summary: String,
         fix_target: FixTarget,
         fix_target_feature_id: Option<String>,
         review_harness: Option<crate::project::AgentKind>,
+        prompt_override: Option<String>,
     ) {
         let source_indices = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
             if p.name != from_view.project_name {
@@ -1123,14 +1129,16 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        let prompt = source_indices
-            .map(|(spi, sfi)| {
-                super::feedback_prompt_for_checkouts(
-                    &self.store.projects[spi].features[sfi].workdir,
-                    &feature.workdir,
-                )
-            })
-            .unwrap_or_else(|| REVIEW_FEEDBACK_PROMPT.into());
+        let prompt = prompt_override.clone().unwrap_or_else(|| {
+            source_indices
+                .map(|(spi, sfi)| {
+                    super::feedback_prompt_for_checkouts(
+                        &self.store.projects[spi].features[sfi].workdir,
+                        &feature.workdir,
+                    )
+                })
+                .unwrap_or_else(|| REVIEW_FEEDBACK_PROMPT.into())
+        });
         let tmux_session = feature.tmux_session.clone();
         let target_window = crate::app::pr_review::fix_session_index(
             feature,
@@ -1202,6 +1210,7 @@ impl App {
                     from_view,
                     harnesses,
                     selected: 0,
+                    prompt: prompt_override,
                 });
             }
         }
@@ -1265,7 +1274,7 @@ impl App {
     /// Confirm the harness pick: create the dedicated review session under the
     /// chosen harness, paste the feedback prompt, and return to the feature view.
     pub fn review_harness_pick_select(&mut self) -> Result<()> {
-        let (pi, fi, harness, summary, from_view) = match &self.mode {
+        let (pi, fi, harness, summary, from_view, prompt) = match &self.mode {
             AppMode::ReviewHarnessPick(state) => {
                 let Some(harness) = state.harnesses.get(state.selected).cloned() else {
                     return Ok(());
@@ -1276,6 +1285,7 @@ impl App {
                     harness,
                     state.summary.clone(),
                     state.from_view.clone(),
+                    state.prompt.clone(),
                 )
             }
             _ => return Ok(()),
@@ -1308,7 +1318,10 @@ impl App {
                 feature.sessions[si].tmux_window.clone(),
             )
         };
-        let suffix = self.paste_review_prompt(&tmux_session, &window);
+        let suffix = match prompt {
+            Some(prompt) => self.paste_review_prompt_text(&tmux_session, &window, &prompt),
+            None => self.paste_review_prompt(&tmux_session, &window),
+        };
         self.message = Some(format!("{summary}{suffix} (dedicated review session)"));
         self.mode = AppMode::Viewing(from_view);
         Ok(())

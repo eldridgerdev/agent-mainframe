@@ -8,8 +8,9 @@ Design Review has two halves. The **Decision Log** (Phase 1, built) has the
 agent record the choices a reviewer would question while it works. The
 **review room** lays those records out as an agenda, beside the **packet**
 (Phase 2, built) that staff models prepare. Phase 3 built the room shell
-(agenda, content, thread, Usage tab); wiring the room to the packet, the
-question ladder above L0 and refinement (Phase 4) come later.
+(agenda, content, thread, Usage tab). Phase 4 added refinement: the brief,
+developer replies, re-review and approval. Wiring the room to the packet,
+the question ladder above L0 and round-two packet regeneration come later.
 
 ```text
 src/design_review/          # pure, no App
@@ -18,6 +19,7 @@ src/design_review/          # pure, no App
 ├── outbox.rs    # .amf/design-review/outbox.jsonl: append, read_from
 └── capture.rs   # `amf decision add` (git-derived head and paths)
 src/design_review/agenda.rs # pure: agenda derivation, merge, item states
+src/design_review/brief.rs  # pure: labels, brief text, inline-or-file delivery
 src/design_review/usage.rs  # pure: Usage tab aggregation and Markdown copy
 src/design_packet/          # pure: staff roles, context builders, input
                             # hash, Mermaid vetting, detectors
@@ -28,6 +30,8 @@ src/app/design_review/      # App glue
 ├── room.rs      # AppMode::DesignReview state, open/close, agenda storage
 ├── actions.rs   # accept / note / request change / ask, open files
 ├── usage_tab.rs # ledger reload, grouping, drill-down, copy
+├── finish.rs    # `f`: brief + destination + dispatch, or approval
+├── replies.rs   # ingest of `amf review reply` lines
 └── snapshot.rs  # base/head commit, diff fingerprint, changed files
 src/handlers/design_review.rs, src/ui/dialogs/design_review.rs  # keys, draw
 src/db/design_review.rs     # decisions, outbox offsets, room rows, artifacts,
@@ -244,8 +248,11 @@ or `q` returns to the session view. The room creates no session row.
   re-review go to accepted, request change goes to change-requested, ask goes
   to question-open and the answer (`Answered { back_to }`) returns it to the
   state it was asked from, pending or re-review; the caller keeps that state
-  while the question is open. Change-requested and accepted accept no action
-  until Phase 4 brings replies (`re-review`). Every action writes the database
+  while the question is open. `DeveloperReplied` takes change-requested to
+  re-review (for `done` and for `pushback` alike); from re-review the
+  reviewer accepts (accepted) or requests a change again (change-requested).
+  Change-requested accepts no reviewer action, since it waits on the
+  developer, and accepted accepts none. Every action writes the database
   first, as one transaction; the room's copy changes only after the commit.
   The room resumes at the first item that `awaits_reviewer` (pending or
   re-review).
@@ -275,3 +282,70 @@ or `q` returns to the session view. The room creates no session row.
   (`—` when the ledger has none). The Usage tab prices each call at its own
   model's rate, so it is the accurate figure and may disagree with the sidebar
   (#863); help and the tab say so.
+
+## Refinement (Phase 4)
+
+- **Finish (`f`).** Items in `change-requested` and `question-open` (off-agenda
+  items excepted) make the brief; the verdict is `changes-requested`. With
+  none and every item accepted, `f` confirms approval instead. Undecided
+  (pending or re-review) items with nothing to send refuse with a toast.
+- **Labels.** `brief::build_brief` numbers changes `C1..` and questions
+  `Q1..` in agenda order and keeps a label an item already carries, so
+  a second finish of the same round does not renumber. They are stored in
+  `design_review_items.label`, which also holds the agenda's `d4` labels.
+  `merge_agenda` keeps a stored `C<n>`/`Q<n>` label across re-derivation
+  (`brief::is_review_label`); nothing reads the `d<n>` value, since the brief
+  derives its tag from the item's decision.
+- **Brief shape** is plan section 5: a counts line, one line per item
+  (`C1 [d4 <title>] <request>`, `C2 [unexplained: <summary>] ...`,
+  `Q1 [d7] <question>`; the request is the item's newest reviewer turn, on one
+  line), then the reply instructions and the `--supersedes dN` line. Under
+  2_000 estimated tokens (`estimate_tokens_from_bytes`, so 7_996 bytes is
+  inline and 8_000 is not) the text is pasted; otherwise it is written to
+  `<workdir>/.amf/design-review/round-N.md` (beside the outbox, so the same
+  `*` `.gitignore` covers it) and the paste is the counts line plus an
+  absolute path to read.
+- **Dispatch reuses Final Review.** The room builds the destination rows with
+  `App::review_destination_rows` (extracted from
+  `open_review_destination_picker`, minus the new-feature row, whose setup is a
+  diff-viewer overlay) and pastes through `dispatch_review_feedback`, which
+  gained a `prompt_override` (and `ReviewHarnessPickState::prompt`, for the
+  "no dedicated session yet" harness pick). Routing, the submit setting
+  (`final_review_submit_prompt`) and the "fixes ready" watch are Final
+  Review's. Confirmation comes first; the labels, brief, destination
+  (`live`, `dedicated:<harness>`, `feature:<id>`), verdict and `finished_at` are
+  stored in one transaction before the paste, and a brief-file write failure
+  aborts before anything is stored. The dispatch returns to the session view.
+- **A round is not split yet.** Finishing again on the same round overwrites
+  the brief and keeps the labels. Round two (incremental packet, delta agenda)
+  is open.
+- **`amf review reply <LABEL> (--done|--pushback|--answer) <text>`** appends
+  `{"type":"reply","uid","label","kind","text","session_id","ts"}` to the
+  outbox, never opens `amf.db`, prints `C1 reply recorded` (plus
+  ` (truncated)` over 400 chars) or one error line with a non-zero exit (not
+  `C<n>`/`Q<n>`, or a kind that does not fit the label). The CLI does not know
+  the round, so the line carries none. `decision_add` counts decisions only, so
+  replies never shift `d<N>` numbers, and an outbox of decisions alone still
+  parses.
+- **Reply ingest** (`replies::apply_reply`, one transaction per reply) finds the
+  item by label in the newest round that has it, stores
+  `reply_kind`/`reply`, appends a `developer` turn whose id is the reply's
+  uid (that is the idempotency check: a re-read is a no-op, even after the
+  reviewer has moved the item on) and moves the item per the state machine.
+  An `answer` also inserts a decision with `source = 'review'`, kind
+  `tradeoff`, title the reviewer's question (80 chars), why the answer, uid
+  `review:<reply uid>`, `seq = 0` (the CLI numbers `d<N>` from the outbox, so
+  the review's records stay out of that sequence), and returns the question
+  to pending. `derive_agenda` skips `review`-source decisions: they are memory,
+  not review items. An unknown label, or a kind that does not fit it, is
+  logged and skipped.
+- **Supersedes.** Ingest marks the agent decision numbered by a later record's
+  `supersedes` (`d4`, `D4` or `4`, below the record's own `seq`) as
+  `superseded`; the next agenda derivation retires its item.
+- **Approval** sets the round's verdict `approved` and `finished_at` and marks
+  every `open` decision of the feature `accepted` (superseded ones are left),
+  in one transaction. The header shows the verdict; an approved room is
+  read-only (accept, note, change, ask and finish refuse with a toast) when it
+  is reopened. Decisions stay in `amf.db` as project memory.
+- **Still open:** L3 escalation with a cost preview, developer ledger rows,
+  round-two regeneration, ADR export.

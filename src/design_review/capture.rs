@@ -13,9 +13,11 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
+use super::brief::{RequestKind, parse_label};
 use super::outbox;
 use super::record::{
-    DIRTY_CAP, DecisionKind, DecisionRecord, DecisionText, OutboxLine, PATHS_CAP, apply_caps,
+    DIRTY_CAP, DecisionKind, DecisionRecord, DecisionText, OutboxLine, PATHS_CAP, REPLY_CAP,
+    ReplyKind, ReplyRecord, apply_caps, truncate_chars,
 };
 
 /// The only harness Design Review supports today
@@ -68,6 +70,52 @@ pub fn decision_add(
     };
     outbox::append(&path, &OutboxLine::Decision(record))?;
     Ok(ack(seq, truncated))
+}
+
+/// Record the developer's reply to one brief item for the checkout containing
+/// `cwd` and return the line to print, e.g. `C1 reply recorded` or
+/// `C1 reply recorded (truncated)`. Like [`decision_add`] it only appends to
+/// the outbox. The round is not recorded: ingest matches the newest round
+/// that has the label.
+pub fn reply_add(
+    cwd: &Path,
+    label: &str,
+    kind: ReplyKind,
+    text: &str,
+    session_id: Option<String>,
+) -> Result<String> {
+    let Some((label, label_kind)) = parse_label(label) else {
+        bail!("unknown label {label:?}: expected C<n> or Q<n>, as in the brief");
+    };
+    match (label_kind, kind) {
+        (RequestKind::Change, ReplyKind::Done | ReplyKind::Pushback)
+        | (RequestKind::Question, ReplyKind::Answer) => {}
+        (RequestKind::Change, ReplyKind::Answer) => {
+            bail!("{label} is a change: use --done or --pushback")
+        }
+        (RequestKind::Question, _) => bail!("{label} is a question: use --answer"),
+    }
+    let root = git(cwd, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .context("not inside a git checkout")?;
+    let (text, truncated) = truncate_chars(text, REPLY_CAP);
+    if text.is_empty() {
+        bail!("the reply must not be empty");
+    }
+    let record = ReplyRecord {
+        uid: uuid::Uuid::new_v4().to_string(),
+        label: label.clone(),
+        kind,
+        text,
+        session_id: session_id.filter(|id| !id.trim().is_empty()),
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    };
+    outbox::append(&outbox::outbox_path(&root), &OutboxLine::Reply(record))?;
+    Ok(if truncated {
+        format!("{label} reply recorded (truncated)")
+    } else {
+        format!("{label} reply recorded")
+    })
 }
 
 /// The one-line acknowledgement the agent sees.
@@ -512,5 +560,81 @@ mod tests {
         let dir = repo();
         assert!(decision_add(dir.path(), DecisionKind::Data, text("  "), None).is_err());
         assert!(!outbox::outbox_path(dir.path()).exists());
+    }
+
+    fn replies(root: &Path) -> Vec<ReplyRecord> {
+        outbox::read_from(&outbox::outbox_path(root), &outbox::OutboxCursor::default())
+            .unwrap()
+            .lines
+            .into_iter()
+            .filter_map(|line| match line {
+                OutboxLine::Reply(reply) => Some(reply),
+                OutboxLine::Decision(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reply_appends_a_line_and_acknowledges_in_one_line() {
+        let dir = repo();
+        let root = dir.path();
+        let ack = reply_add(
+            root,
+            "c1",
+            ReplyKind::Done,
+            " timer added ",
+            Some("s1".into()),
+        )
+        .unwrap();
+        assert_eq!(ack, "C1 reply recorded");
+        let ack = reply_add(root, "Q2", ReplyKind::Answer, "because", None).unwrap();
+        assert_eq!(ack, "Q2 reply recorded");
+        let got = replies(root);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].label, "C1");
+        assert_eq!(got[0].kind, ReplyKind::Done);
+        assert_eq!(got[0].text, "timer added");
+        assert_eq!(got[0].session_id.as_deref(), Some("s1"));
+        assert_eq!(got[1].kind, ReplyKind::Answer);
+    }
+
+    #[test]
+    fn long_replies_are_truncated_not_rejected() {
+        let dir = repo();
+        let ack = reply_add(
+            dir.path(),
+            "C3",
+            ReplyKind::Pushback,
+            &"w".repeat(REPLY_CAP + 50),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ack, "C3 reply recorded (truncated)");
+        assert_eq!(replies(dir.path())[0].text.chars().count(), REPLY_CAP);
+    }
+
+    #[test]
+    fn bad_labels_and_mismatched_kinds_are_errors_that_write_nothing() {
+        let dir = repo();
+        let root = dir.path();
+        for label in ["d4", "C", "X1", "C0", ""] {
+            let err = reply_add(root, label, ReplyKind::Done, "x", None).unwrap_err();
+            assert!(!format!("{err:#}").contains('\n'));
+            assert!(format!("{err:#}").contains("C<n> or Q<n>"), "{err:#}");
+        }
+        assert!(reply_add(root, "C1", ReplyKind::Answer, "x", None).is_err());
+        assert!(reply_add(root, "Q1", ReplyKind::Done, "x", None).is_err());
+        assert!(reply_add(root, "C1", ReplyKind::Done, "  ", None).is_err());
+        assert!(!outbox::outbox_path(root).exists());
+    }
+
+    #[test]
+    fn replies_do_not_count_toward_decision_numbers() {
+        let dir = repo();
+        let root = dir.path();
+        decision_add(root, DecisionKind::Data, text("one"), None).unwrap();
+        reply_add(root, "C1", ReplyKind::Done, "x", None).unwrap();
+        let ack = decision_add(root, DecisionKind::Data, text("two"), None).unwrap();
+        assert_eq!(ack, "d2 recorded");
     }
 }

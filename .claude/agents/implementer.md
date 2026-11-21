@@ -14,6 +14,11 @@ the scope.
   in the matching `src/app/tests/` suite.
 - Run the focused test command from the brief, then `cargo fmt`. Leave the
   full suite and Clippy to the caller unless the brief asks for them.
+- Run long commands (tests, Clippy, builds) with their output written to a
+  log file, `cmd >"$LOG" 2>&1; echo "exit $?"`, then search the file with
+  the Grep tool or `grep pattern "$LOG"`. Never pipe them into `grep`,
+  `head` or `tail`: `grep` here is a wrapper that can hang at the end of a
+  pipe, and output-shortening wrappers can swallow the result.
 - Do not commit, push, or change migrations, persistence formats or
   keybindings beyond what the brief states.
 

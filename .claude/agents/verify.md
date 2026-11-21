@@ -28,6 +28,21 @@ run `git rev-parse --show-toplevel` first and use absolute paths from it.
 Do not add `--test-threads=1` or `--ignored`, and do not re-run a failing
 test hoping it passes; say if a failure looks intermittent.
 
+Write each command's full output to a log file, then read the file. Never
+pipe a long-running command into `grep`, `head` or `tail`: in this shell
+`grep` is a wrapper that can hang at the end of a pipe, and output-shortening
+wrappers can swallow the lines you need. The exit code is the pass/fail
+signal:
+
+```bash
+LOG="$(mktemp -t amf-check.XXXXXX.log)"
+cargo test --workspace --locked >"$LOG" 2>&1; echo "exit $?"
+grep -nE '^test result|FAILED|panicked|^error' "$LOG"
+```
+
+Search the log with the Grep tool or with `grep` given the file path, never
+on stdin.
+
 Report in this shape and nothing else:
 
 - One line per command: passed or failed, with test counts when printed.

@@ -93,6 +93,11 @@ cd agent-mainframe
 cargo install --path . --locked
 ```
 
+## Desktop GUI (preview)
+
+Releases also include a work-in-progress desktop app, `amf-gui`, as separate
+downloads. See [Desktop GUI](@/docs/desktop-gui.md).
+
 ## Upgrade
 
 ```bash

@@ -14,9 +14,17 @@ and feature, creates isolated git worktrees when needed, and shows which
 agents are asking a question and which have finished work waiting to be
 reviewed.
 
-AMF also has a separately usable desktop interface, `amf-gui`. Both interfaces
-share projects, features and tmux sessions. Use `amf` in a terminal or over SSH;
-use the GUI for desktop navigation and the workflows it currently supports.
+AMF also has a desktop interface, `amf-gui`, which is a **work in progress**:
+it covers only some workflows, and its features and layout may change between
+releases. Both interfaces share projects, features and tmux sessions, so you
+can switch between them freely. Use `amf` in a terminal or over SSH; use the
+GUI for desktop navigation and the workflows it currently supports.
+
+A main reason the GUI exists is viewing images, which a terminal cannot show
+well: screenshots in PR descriptions and review comments render inline, and
+agents' visual-validation screenshots are collected per feature and session.
+See [viewing screenshots in the GUI](docs/gui-screenshots.md).
+
 See [choosing an interface and upgrading](docs/interfaces.md) and the
 [GUI installation guide](gui/README.md).
 
@@ -42,9 +50,6 @@ See [choosing an interface and upgrading](docs/interfaces.md) and the
   starting work.
 - Work in progress: a read-only Learning Mode for asking an agent about code
   you didn't write.
-
-The desktop GUI also [views PR and agent-validation screenshots](docs/gui-screenshots.md)
-with source and producing-session attribution.
 
 ## AMF Remote: your agents on your phone
 

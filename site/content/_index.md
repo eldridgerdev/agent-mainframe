@@ -46,6 +46,10 @@ title = "Understand code you didn't write"
 body = "Browse a repository read-only and ask an agent about any file, hunk, or line range, with answers kept per project."
 
 [[extra.features]]
+title = "Desktop GUI preview"
+body = "A work-in-progress desktop app shares the same projects and sessions, and shows what a terminal can't: screenshots in PR descriptions and agents' visual-validation images."
+
+[[extra.features]]
 title = "Reusable building blocks"
 body = "Reusable prompts, scoped TODO lists, themes, lifecycle hooks, and workspace presets carry across features and projects."
 +++

@@ -31,7 +31,7 @@ you the next step (`N`, `n` or `s`).
 | `N` / `n` | Create a project / feature |
 | `B` | Create several features at once in the selected project |
 | `s` | Add a session to a feature |
-| `c` | Start the selected feature |
+| `c` | Start the selected feature, or the selected stopped session |
 | `x` | Stop a feature or session (a stopped session stays listed) |
 | `r` | Rename a feature or session |
 | `d` | Delete a project, feature, or session |
@@ -40,7 +40,8 @@ you the next step (`N`, `n` or `s`).
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
 | `Z` | Generate a short AI summary of the selected feature's recent activity |
-| `G` | Open GitHub PR triage |
+| `G` | Open the PR Workspace to review a pull request |
+| `Ctrl+Space`, then `U` | Open the older standalone PR Triage / Review screens |
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
@@ -87,6 +88,8 @@ These controls belong to AMF:
 | `Ctrl+Space`, then `w` | Switch sessions |
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
+| `Ctrl+Space`, then `G` | Open the PR Workspace |
+| `Ctrl+Space`, then `U` | Open the older PR Triage / Review screens |
 | `Ctrl+Space`, then `p` | Open the prompt library |
 | `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
 | `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |

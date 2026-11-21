@@ -305,7 +305,6 @@ function statusDot(kind) {
 function featureItem(feature, { showProject, href }) {
   const li = el("li", "feature-row");
   if (feature.needs_attention) li.classList.add("attention");
-  if (feature.status !== "stopped") li.classList.add("running");
   const text = el("div", "grow");
   text.append(el("div", "item-title", feature.feature_name));
   const sub = [showProject ? feature.project_name : null, feature.status]
@@ -453,7 +452,7 @@ function renderFeature(id) {
     const text = el("div", "grow");
     text.append(el("div", "item-title", session.label || session.kind));
     // The kind only adds something when the label doesn't already say it.
-    const kind = (session.label || "").toLowerCase() === session.kind ? null : session.kind;
+    const kind = (session.label || session.kind).toLowerCase() === session.kind ? null : session.kind;
     text.append(el("div", "item-sub", [kind, session.live ? "running" : "not running"]
       .filter(Boolean).join(" · ")));
     li.append(statusDot(session.live ? "live" : "stopped"));
@@ -466,7 +465,6 @@ function renderFeature(id) {
     });
     li.append(text, remove);
     if (session.live) {
-      li.classList.add("running");
       li.addEventListener("click", () => navigate(`#/s/${encodeURIComponent(session.id)}`));
     } else {
       li.classList.add("disabled");

@@ -69,6 +69,7 @@ header {
   gap: 10px;
   min-height: 56px;
   padding: 8px 16px;
+  background: var(--surface);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -175,6 +176,7 @@ button.secondary {
 button.danger {
   background: var(--danger-soft);
   color: var(--danger);
+  border-color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 button.small { min-height: 36px; padding: 6px 12px; font-size: 14px; }
@@ -232,6 +234,7 @@ button.icon {
 }
 .list li:active { background: var(--surface-2); }
 .list li.attention {
+  border-color: var(--attention);
   border-color: color-mix(in srgb, var(--attention) 55%, transparent);
   background: linear-gradient(var(--attention-soft), var(--attention-soft)), var(--surface);
 }
@@ -543,8 +546,9 @@ button.icon {
   font: 12px/1.45 var(--mono);
 }
 .diff-body div { padding: 0 12px; white-space: pre; min-width: max-content; }
-.diff-body .a { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.diff-body .d { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+/* Plain soft tints first for browsers without color-mix(). */
+.diff-body .a { background: var(--accent-soft); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.diff-body .d { background: var(--danger-soft); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .diff-body .h { color: var(--muted); background: var(--surface-2); }
 
 .remove {

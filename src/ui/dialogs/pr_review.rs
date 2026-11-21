@@ -703,7 +703,7 @@ fn draw_review_list(
 ) {
     let area = frame.area();
     let block = if experimental {
-        pane_block(theme).title(" PR Workspace (experimental) · choose a PR ")
+        pane_block(theme).title(" PR Workspace · choose a PR ")
     } else {
         pane_block(theme).title(picker_tab_title(PickerTab::Review, theme))
     };

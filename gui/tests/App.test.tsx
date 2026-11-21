@@ -337,9 +337,9 @@ describe("feature header", () => {
     expect(labels("Plan")).toEqual(["Plan interview", "Quick Plan"]);
     expect(labels("Review")).toEqual(["Learning", "Final Review", "Screenshots"]);
     expect(labels("Pull request")).toEqual(["Review comments", "PR workspace"]);
-    // The hint describes the item without becoming part of its name.
+    // The PR workspace is no longer experimental, so it carries no hint.
     const workspace = within(tools).getByRole("menuitem", { name: "PR workspace" });
-    expect(document.getElementById(workspace.getAttribute("aria-describedby")!)?.textContent).toBe("Experimental");
+    expect(workspace.getAttribute("aria-describedby")).toBeNull();
     fireEvent.keyDown(tools, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
     const more = screen.getByRole("menu", { name: "More feature actions" });

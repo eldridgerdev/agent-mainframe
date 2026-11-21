@@ -1182,7 +1182,7 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
-    /// Experimental PR workspace. The active engine remains in `mode`; the
+    /// PR workspace. The active engine remains in `mode`; the
     /// other views are parked here so existing handlers keep their ownership.
     pub(crate) pr_workspace: Option<pr_workspace::PrWorkspace>,
     /// Memoized result of [`Self::ai_review_finding_fix_costs`], valid only

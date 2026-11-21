@@ -34,14 +34,14 @@ See [choosing an interface and upgrading](docs/interfaces.md) and the
   review workflows.
 - Renders basic [Mermaid flowcharts and sequences](docs/mermaid-mvp.md) in the
   terminal Markdown viewer and plan review, with a source toggle.
-- Explains code you didn't write: browse a repository read-only and ask an
-  agent about any file, hunk, or line range, with the answers kept per project.
 - Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and
   workspace presets.
 - Supports ordinary directories as well as git repositories.
 - Follows you away from the desk: [AMF Remote](#amf-remote-your-agents-on-your-phone)
   is an installable phone app for answering agents, reviewing changes and
   starting work.
+- Work in progress: a read-only Learning Mode for asking an agent about code
+  you didn't write.
 
 The desktop GUI also [views PR and agent-validation screenshots](docs/gui-screenshots.md)
 with source and producing-session attribution.
@@ -245,136 +245,26 @@ and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-inte
 
 ## Essential controls
 
-### Dashboard
+You don't need to memorize keys. AMF lists them in the app:
+
+- **`?`** on the dashboard shows every dashboard keybinding.
+- **`Ctrl+Space`** opens the leader menu, which lists the commands available
+  where you are. It works on the dashboard and inside a session.
+
+![The Ctrl+Space leader menu open over a Claude Code session, listing session, agent, review and plan commands](docs/screenshots/readme/leader-menu.png)
+
+The few keys worth knowing up front:
 
 | Key | Action |
 | --- | --- |
 | `j` / `k` or arrow keys | Move through projects, features, and sessions |
-| `h` / `l` | Collapse or expand the selected item |
-| `Enter` | Open the selected session or expand/collapse an item |
-| `N` / `n` | Create a project / feature |
-| `s` | Add a session to a feature |
-| `c` | Start the selected feature, or the selected stopped session |
-| `x` | Stop a feature or a single session. A stopped session stays listed (`■`) and stays stopped when its feature starts again |
-| `r` | Rename a feature or session |
-| `d` | Delete a project, feature, or session |
-| `/` | Search and jump |
-| `i` | Show agents needing attention: questions first, then finished work |
-| `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
-| `z` | Show dormant features: idle and unattended |
-| `G` | Open the split PR Workspace (experimental) |
-| `Ctrl+Space`, then `U` | Open the legacy PR Triage / Review workflow |
-| `W` | Run AMF's AI review of a PR diff |
-| `K` | Open Learning Mode: read the code and ask about it |
-| `L` | Open the prompt library |
-| `E` | Edit headless AI prompt templates (overrides) |
-| `T` | Choose a theme |
-| `A` | Manage installed agent harnesses |
-| `?` | Show all keybindings |
+| `Enter` | Open the selected session |
+| `Ctrl+Q` | Return to the dashboard from a session |
 | `q` / `Esc` | Quit |
 
-Search accepts every letter, including `j` and `k`. Use arrow keys or
-`Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.
-
-### Embedded session
-
-Most keys go directly to the active session. These controls belong to AMF:
-
-| Key | Action |
-| --- | --- |
-| `Ctrl+Q` | Return to the dashboard |
-| `Ctrl+Space` | Open the leader-command menu |
-| `Ctrl+Space`, then `w` | Switch sessions |
-| `Ctrl+Space`, then `i` | Jump to an agent needing attention |
-| `Ctrl+Space`, then `f` | Start final diff review |
-| `Ctrl+Space`, then `G` | Open PR Workspace (experimental split view) |
-| `Ctrl+Space`, then `U` | Open legacy PR Triage / Review |
-| `Ctrl+Space`, then `p` | Open the prompt library |
-| `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
-| `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
-| `Ctrl+Space`, then `?` | Show all leader commands |
+Inside a session, every other key goes to the agent.
 
 ## User workflows
-
-### Understand a codebase you didn't write
-
-Select a feature and press `K` to open Learning Mode. It is a read-only reader
-for the project's code with an agent attached: browse the files, point at the
-part you don't understand, and ask about it. **Nothing in Learning Mode changes
-your files.** The only key that can lead to an edit is `S`, which hands the
-answer to an ordinary agent session and says so.
-
-If you don't know where to start, you don't have to. On a project you have not
-asked anything about yet, the file list opens on a pinned **Start here** group:
-a ready-made question asking for a tour of the whole project, with the cursor
-already on it, followed by whichever of the README, the contribution guide, the
-entry point, and the manifest that project actually has. Press `t` at any time
-for starter questions ("Explain this line by line", "What would break if I
-deleted this?") that load into the prompt so you can edit them before asking.
-
-Below that group the project's files are a **folder tree**, so the list shows
-you the layout rather than a wall of paths. Folders open at the top level with
-the way down to the Start here files already unfolded, and each closed folder
-says how many files are inside it, so you can skip whole areas you have no
-business in yet.
-
-| Key | Moves you |
-| --- | --- |
-| `l` | Open the folder under the cursor, or step into an open one |
-| `h` | Close the folder, or step out to the one above |
-| `Z` | Open every folder in the project, or fold them all back |
-| `Enter` | The same, on a folder — and opens the file, on a file |
-
-Resting on a folder changes nothing about the question you have lined up;
-folders are only for finding files.
-
-Point at what you want to ask about with `f` (the whole file), `v` (start a line
-range), `P` (the whole project), or `x` (the change under the cursor, in
-branch-changes scope). Then ask one of two ways:
-
-| Key | Asks for |
-| --- | --- |
-| `e` | *Explain this to me* — a teaching answer; no change is proposed |
-| `c` | *Ask for a change* — a concrete proposal you can act on later |
-
-Asking never blocks: keep browsing and asking while earlier answers arrive, and
-the header counts what is still generating. Answers are written for a
-**newcomer** by default — terms defined on first use, ending with what to read
-next — and `L` switches to **familiar** for denser answers. `s` switches between
-all files in the project and only the files changed on this branch. `m` picks
-which agent answers, and is already set to one that works.
-
-Once an answer is on screen, five keys act on it:
-
-| Key | Action |
-| --- | --- |
-| `F` | Ask a follow-up; the agent keeps the question and answer you just read |
-| `D` | Ask again with the repository readable — slower, but it checks (except on Codex, see below) |
-| `i` | Re-file the entry as the other kind; the answer text is left alone |
-| `a` | Keep the answer as a to-do on this feature's TODO list |
-| `S` | Hand it to a live agent session, with the prompt filled in and unsent |
-
-`D` is worth knowing about: an ordinary answer only sees the code on screen, so
-it can name files or line numbers that don't exist. `D` re-asks the same
-question with the repository open and keeps both answers so you can read them
-against each other.
-
-Codex is the exception: it has no way to answer without reading the repository,
-so every Codex answer already read it — the row says *read the repo* from the
-start, and `D` tells you there is nothing deeper to ask for and points you at
-`F` instead. If you want the on-screen-only answer and the repository-checked
-answer side by side, ask with an agent that offers both (`m`).
-
-Questions and answers are kept per project, so reopening `K` brings back what
-you asked before, with follow-ups still under the question they continue. A
-question remembers the lines it was about, and the code moves on — so on the way
-in AMF checks each one against the project as it is now. An entry whose code has
-shifted is marked **moved** and the answer tells you where it went; one whose
-code is gone is marked **anchor lost**. Either way the question and the answer
-are kept exactly as they were: the point of the mark is that a stale line number
-should not read as an answer that was always wrong. Press `?` inside Learning
-Mode for the full key list; it opens by itself the first time you enter a
-project.
 
 ### Review changes before shipping
 
@@ -384,9 +274,42 @@ changes. When you finish, AMF writes the feedback and hands it to an agent.
 With an authenticated `gh` CLI, AMF can also post the feedback to the branch's
 pull request.
 
+![Final Review of a feature branch's README change, with a line comment attached to an added line](docs/screenshots/readme/final-review-line-comment.png)
+
 The optional AI co-reviewer that drafts line comments for the current file
 reviews an oversized file hunk group by hunk group rather than sending one
 truncated prompt; the status line reports if any group could not be reviewed.
+
+### Review a pull request in the PR Workspace
+
+The PR Workspace is the main place to review a pull request and run AMF's AI
+review. From the dashboard, press `G`, or press `Ctrl+Space`, then uppercase
+`G` from the dashboard or an embedded session. Pick a pull request to open its
+files, GitHub feedback, and AI findings side by side. When opened from a
+feature or its session, the picker preselects that branch's PR and labels it
+`current feature`. The label stays visible when you browse other PRs.
+
+![The PR Workspace on a real pull request after an AI review: findings on the left, the flagged code in the middle, and the finding's explanation on the right](docs/screenshots/readme/pr-workspace-ai-review.png)
+
+Use `1` for Files, `2` for Threads, and `3` for AI findings. Selecting feedback
+opens its file and line in the diff alongside the discussion. `Tab` changes
+pane focus; `j` / `k` navigate or scroll the focused pane; `z` expands that pane.
+Wide terminals show three panes. Below 125 columns the navigator becomes a
+drawer; below 85 columns only the focused pane is shown.
+
+`A` starts an AI review using the existing harness/model choices. You can read
+files while it runs. A spinner in the left navigator shows the current stage
+and elapsed time until the run finishes. Click `[Ctrl+X Cancel]` or press
+`Ctrl+X` to stop the AI review; existing findings and human drafts are kept.
+`p` previews your human review, while `W` in AI previews
+kept AI findings; both keep their explicit posting confirmations and
+authorship. Press `?` for the workspace's full key list.
+
+`F5` reopens the same PR at fresh revisions, saving your draft first. `Esc` or
+`q` closes the workspace and saves the human draft. If you visit a fix session,
+its leader+`P` return still works, and leader+`G` can return to the
+workspace's Files view. The PR Workspace is currently a TUI feature. The older
+standalone PR Triage / Review screens are still available through leader+`U`.
 
 ### Work through pull-request feedback
 
@@ -399,10 +322,11 @@ feature stays visually distinct from one that never had a PR. A branch
 without `gh`, without a GitHub remote, or without any PR shows no badge at
 all.
 
-Select a feature and press leader+`U` to open legacy PR Triage. You can inspect review
-threads, send an individual or batched fix prompt to an agent, reply, and mark
-threads done. Press `W` to have AMF run its own review of the PR diff. GitHub
-actions are presented for confirmation before AMF writes to the pull request.
+Open the feature's pull request in the PR Workspace and press `2` for Threads.
+You can inspect review threads, send an individual or batched fix prompt to an
+agent, reply, and mark threads done. The same actions work in the older
+standalone PR Triage screen (leader+`U`). GitHub actions are presented for
+confirmation before AMF writes to the pull request.
 When `f` or `B` targets a dedicated session, AMF lets you name it so multiple
 PR Triage agents can run simultaneously; leave the name blank to reuse the
 default `PR Triage` session.
@@ -423,13 +347,13 @@ post an editable reply, ask a follow-up (re-runs read-only with the prior answer
 as context), dismiss it, or keep it as a TODO.
 An unchanged AI-drafted reply discloses the harness, best-effort model,
 estimated tokens, and estimated cost of the session that wrote it. AMF's own
-AI review (`W`) carries the same attribution: once a run finishes, the pane
+AI review (`A` in the PR Workspace) carries the same attribution: once a run finishes, the pane
 shows which harness and model produced it and the run's token usage and
 estimated cost, and that line is included above the `— AI review via AMF`
 marker on the posted summary and every inline comment. A harness that reports
 no usage degrades to model-only attribution rather than showing a fake `$0.00`.
 
-When a PR diff is too large to review in one prompt, `W` splits it into
+When a PR diff is too large to review in one prompt, the AI review splits it into
 per-file batches, reviews each on its own (splitting an oversized file hunk by
 hunk), and combines the findings with a synthesis pass — the running screen
 shows the batch progress. Coverage stays complete: any slice that still will
@@ -442,8 +366,8 @@ branch commit by commit still gives the sharpest results — per-slice review
 cannot see across files.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
-If `G` opened the feature's pull request directly, press `g` from PR Triage to
-return to the picker first. Choose a lookback of 20, 50, 100, or all recent
+If the workspace opened the feature's pull request directly, press `g` in
+Threads to return to the picker first. Choose a lookback of 20, 50, 100, or all recent
 closed and merged pull requests with `j`/`k`, then press `Enter`. The default is
 50. Press `g` in the lookback dialog to switch between the project's
 `.amf/review-memory.md` and the cross-project memory at
@@ -453,42 +377,12 @@ does not use agent tokens; AMF then makes one agent pass to distill recurring
 findings and appends only new ones. You can press `Esc` while it runs to return
 to the picker without cancelling the background job.
 
-### Try the experimental PR workspace
-
-From the dashboard, press `G`, or press `Ctrl+Space`, then uppercase `G`
-from the dashboard or an embedded session. Select a pull request once to open
-its files, GitHub feedback, and AI findings in a shared workspace. The old PR
-Triage / Review workflow is available through leader+`U` for comparison. `W`
-retains the existing AI Review workflow. When opened from a feature or its
-session, the picker initially selects that branch's PR and labels it
-`current feature`. The label stays visible when you browse other PRs.
-
-Use `1` for Files, `2` for Threads, and `3` for AI findings. Selecting feedback
-opens its file and line in the diff alongside the discussion. `Tab` changes
-pane focus; `j` / `k` navigate or scroll the focused pane; `z` expands that pane.
-Wide terminals show three panes. Below 125 columns the navigator becomes a
-drawer; below 85 columns only the focused pane is shown.
-
-`A` starts an AI review using the existing harness/model choices. You can read
-files while it runs. A spinner in the left navigator shows the current stage
-and elapsed time until the run finishes. Click `[Ctrl+X Cancel]` or press
-`Ctrl+X` to stop the AI review; existing findings and human drafts are kept.
-`p` previews your human review, while `W` in AI previews
-kept AI findings; both keep the existing explicit posting confirmations and
-authorship. Triage's fix, investigation, reply, and resolution actions use the
-same engines as before. Editors and confirmation dialogs retain their existing
-controls. Press `?` for the workspace's full key list.
-
-`F5` reopens the same PR at fresh revisions, saving your draft first. `Esc` or
-`q` closes the workspace and saves the human draft. If you visit a fix session,
-its existing leader+`P` return still works, and leader+`G` can return to the
-workspace's Files view. This workflow is experimental and is currently a TUI
-feature.
-
 ### Review a teammate's pull request
 
-To review a pull request yourself, rather than triage the comments on your own,
-press leader+`U` on a project row, or press leader+`U` on a feature and then `Tab`. The
+The PR Workspace (`G`) is the usual way to review someone else's pull request:
+pick it, review in Files (`1`), and press `p` to preview and post. The
+standalone review screen described here is still available: press leader+`U`
+on a project row, or press leader+`U` on a feature and then `Tab`. The
 **Review** tab lists every open pull request in the repository, including your
 own and drafts, with its number, title, author, and branch (`owner:branch` for
 a fork). The list loads in the background; if `gh` isn't installed or signed
@@ -521,7 +415,7 @@ mode.
 
 ### Ask questions during review
 
-Press `Q` in Final Review, manual PR review (`G`), or AI PR review (`W`) to ask
+Press `Q` in Final Review, the PR Workspace (`G`), or AI PR review (`W`) to ask
 about the reviewed code. `Ctrl+S` sends a question (`Ctrl+Enter` also works in
 terminals that report it); `Ctrl+H` changes the harness. As with AMF's other
 AI calls, a notice first shows which prompt will run and lets you view or edit it
@@ -726,6 +620,19 @@ there is no local window for AMF to own, so it always reports a skip.
 
 Press `z` to list dormant features — idle *and* unattended — with per-row stop,
 close-editor, delete, and open.
+
+### Understand a codebase you didn't write (work in progress)
+
+> **Work in progress.** Learning Mode is usable but still changing, and its
+> keys and layout may move between releases.
+
+Select a feature and press `K` to open Learning Mode, a read-only code reader
+with an agent attached. Browse the project's files, point at a file, a line
+range or a change, and press `e` for an explanation or `c` for a proposed
+change. Nothing in Learning Mode edits your files; `S` hands an answer to an
+ordinary agent session if you want to act on it. Questions and answers are kept
+per project, and AMF marks an answer when the code it was about has moved or
+gone. Press `?` inside Learning Mode for the full key list.
 
 ## Configuration
 

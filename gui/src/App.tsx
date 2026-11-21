@@ -2121,7 +2121,7 @@ function FeatureView({
                 ...(project.is_git ? [
                   { section: "Pull request" },
                   { label: "Review comments", icon: "gitPullRequest" as const, title: "Read and reply to review feedback on this pull request (PR Triage in the terminal app)", onSelect: onPrTriage },
-                  { label: "PR workspace", icon: "gitPullRequestDraft" as const, hint: "Experimental", title: "Files, review threads and AI findings in one page. New and still changing; your GitHub data is not affected.", onSelect: onPrWorkspace },
+                  { label: "PR workspace", icon: "gitPullRequestDraft" as const, title: "Files, review threads and AI findings in one page.", onSelect: onPrWorkspace },
                 ] : []),
               ]}
             />
